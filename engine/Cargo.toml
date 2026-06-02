@@ -1,0 +1,20 @@
+[package]
+name = "quince-engine"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+tokio.workspace = true
+futures-util.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+chrono.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+quince-core = { path = "../core" }
+quince-exchange = { path = "../exchange" }
+quince-strategy = { path = "../strategy" }
+quince-risk = { path = "../risk" }
+quince-logger = { path = "../logger" }
+quince-indicators = { path = "../indicators" }

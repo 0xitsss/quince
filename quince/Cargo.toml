@@ -1,0 +1,19 @@
+[package]
+name = "quince"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+quince-core = { path = "../core" }
+quince-exchange = { path = "../exchange" }
+quince-strategy = { path = "../strategy" }
+quince-engine = { path = "../engine" }
+quince-risk = { path = "../risk" }
+quince-logger = { path = "../logger" }
+quince-indicators = { path = "../indicators" }
+tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }
+tracing.workspace = true
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+async-trait.workspace = true
+chrono.workspace = true

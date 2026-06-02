@@ -1,0 +1,15 @@
+[package]
+name = "quince-strategy"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+tokio.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+quince-core = { path = "../core" }
+mlua.workspace = true
+chrono.workspace = true

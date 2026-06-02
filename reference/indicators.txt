@@ -1,0 +1,1188 @@
+Description
+
+Positive market data index (PMDI) is an indicator used in technical analysis, which gives signals about price dynamics based on positive changes in certain market data. PMDI helps to assess trend strength and potentially confirm price reversals.
+
+The indicator is represented by two lines:
+
+
+    PMDI;
+
+    PMDI moving average.
+
+
+PMDI is based on price movement depending on whether the current value of the tracked market data is higher than the previous period. If the tracked market data parameter does not increase from one period to another, PMDI remains the same.
+
+PMDI is calculated using the formula:
+
+$$
+\ PMDI_{t} = data_{t} > data_{t-1}\;?\; PMDI_{t-1} + \dfrac{Close_{t} + Close_{t-1}}{Close_{t-1}} \times PMDI_{t-1}:PMDI_{t-1}
+$$
+
+where: - $data_{t}$ is the tracked market data parameter at time $t$, - $Close_{t}$ is the closing price at time $t$.
+
+NMDI is based on price movement depending on whether the current value of the tracked market data is lower than the previous period. If the tracked market data parameter does not decrease from one period to the next, NMDI remains the same.
+
+NMDI is calculated using the formula:
+
+$$
+\ NMDI_{t} = data_{t} < data_{t-1}\;?\; NMDI_{t-1} + \dfrac{Close_{t} + Close_{t-1}}{Close_{t-1}} \times NMDI_{t-1}:NMDI_{t-1}
+$$
+
+Where:$data_{t}$ is the tracked market data parameter at time $t$,$Close_{t}$ is the closing price at time $t$.
+
+<aside>
+💡 There are also classic versions on the SpreadFighter platform: PVI & NVI. They take the volume value as the source argument.
+
+</aside>
+
+
+Description
+
+The main difference of the custom version of the indicator is that by default 2 moving averages are displayed: "fast" and "slow", and the space between them is colored green or red depending on the current trend. The user can select different smoothing options (SMA, EMA, VWMA, etc.) as well as the data source to plot the moving average.
+
+Application cases
+
+Moving Average is the simplest indicator for determining trend direction. This technical analysis indicator, simplistically speaking, adds up all prices for previous periods and divides them by the number of periods.
+
+There are different methods for calculating the moving average:
+
+
+    Simple (arithmetic average, SMA)
+
+    Exponential (EMA)
+
+    Weighted Average (WMA)
+
+    Volume Weighted Average (VWMA)
+
+    Open Interest Weighted Moving Average (OIWMA)
+
+    Linear regression (LSMA)
+
+
+This averaging results in an average price line that is either rising (uptrend) or falling (downtrend) or fluctuating in place (balance phase). Moving average smooths prices, removes sharp fluctuations.
+
+For different instruments and timeframes it is necessary to choose the length of the moving average and methods of calculation by experience.
+
+The main cases of moving averages application:
+
+
+    Determination of trend direction
+
+    Determination of support and resistance points
+
+    Intersection of moving averages with the price
+
+
+Description
+
+MFI is a classic tool for measuring the speed of price movement. The difference between the version and SpreadFighter is that the user can independently select the data source for calculating the indicator. Below is the algorithm of MFI calculation.
+
+Calculation of a typical price:
+
+$$
+MA_t = \frac{ \sum_{i=0}^{n-1} C_{t-i} }{n}
+$$
+
+$$
+TP_t=\frac{H_t+L_t+C_t}{3}
+$$
+
+where: - $TP_t$ - typical price, - $H_t$ - candle maximum, - $L_t$ - candle minimum, - $C_t$ - closing price.Calculation of cash flow:
+
+$$
+MF_t=TP_t×V_t
+$$
+
+Where: - $MF_t$ - cash flow, - $V_t$ - data source (volume by default).
+
+Definition of positive and negative cash flow:
+
+If $TP_t>TP_{t−1}$:
+
+$$
+PMF_t = \sum_{i=0}^{n-1}MF_{t-i}
+$$
+
+If $TP_t<TP_{t−1}$:
+
+$$
+NMF_t = \sum_{i=0}^{n-1}MF_{t-i}
+$$
+
+Where: - $PMF_t$ is positive cash flow, - $NMF_t$ is negative cash flow, - $n$ is the number of periods.
+
+Calculation of cash flow ratio:
+
+$$
+MFR_t=\frac{PMF_t}{NMF_t}
+$$
+
+Where: - $MFR_t$ is the cash flow ratio.
+
+Description
+
+Volume delta is an indicator that displays the difference between the volume of purchases and the volume of sales, as well as calculates derived metrics - moving averages for purchases and sales and the standard deviation of the delta.
+
+Cumulative volume delta is a classic volume analysis indicator that calculates the difference between the volume of purchases and sales of taker by cumulative total.
+
+Functionality
+
+Volume delta has 2 display forms: candlestick chart and histogram.
+
+Cumulative volume delta
+
+Cumulative volume delta.
+
+Cumulative volume delta.
+
+The indicator represents a candlestick chart, in which the values of opening, maximum, minimum and closing take the corresponding values of the cumulative volume delta.
+
+Volume delta
+
+Volume delta.
+
+Volume delta.
+
+The indicator is a histogram showing the volume of buys and sells bar by bar.
+
+Application cases
+
+Volume delta is a powerful tool of volume analysis on financial instruments markets. It provides traders with information about the difference between the volume of purchases and the volume of sales in a certain period of time. This indicator allows you to identify the dominant side of the market, as well as to track changes in the mood of traders
+
+Volume Delta
+
+The main application patterns of the Volume Delta tool:
+
+
+    Absorption - a market situation in which price movement bumps into resistance in the form of limit orders, which absorbs the aggression of market orders.
+
+    Exhaustion - a situation in the market, when the price reaches new marks, the total number of aggressors (market buyers or sellers) decreases, which indicates the unwillingness to trade at new price marks and the fixation of positions.
+
+
+Description
+
+Advanced versions of classic indicators of technical analysis. Now the user can choose between different types of base lines, price sources and volatility calculation models.
+
+Bollinger bands
+
+Bollinger band is a moving average around which a channel is built using standard deviations.
+
+Bollinger bands.
+
+Bollinger bands.
+
+RSI channel
+
+RSI channel is a moving average around which a channel is built with standard deviations. The background color of the channel changes depending on the value of the relative strength index for the asset price: red if the index is less than 50, green if it is more than 50. If the price goes beyond the upper boundary of the channel, the background color is red, if the price goes beyond the lower boundary - green.
+
+RSI channel.
+
+RSI channel.
+
+Keltner channel
+
+Keltner channel is a moving average around which a channel is built using the average of the true range.
+
+Keltner channel.
+
+Keltner channel.
+
+Application cases
+
+Bollinger bands
+
+The idea of Bollinger bands is to combine a trend indicator, a volatility indicator and an oscillator. The bands indicate on the chart the direction and range of price fluctuations, taking into account the trend and volatility characteristic of the current market phase. Graphically, the indicator represents three lines: a simple moving average in the middle, characterizing the main direction of movement, and two lines, limiting the price chart from both sides, representing the positive and negative standard deviation from the average line and characterizing the volatility of the traded asset.
+
+Basically, the indicator is used to determine the degree of volatility. When the bands expand, volatility increases, while when they contract, on the contrary, it falls.
+
+It is believed that quotes should walk inside the range between the upper and lower Bollinger bands, only rarely leaving it. The middle line sets the direction, also, everything revolves around it and periodically returns to it. The upper and lower lines are a kind of price movement channel.
+
+The most common patterns of using the indicator in trading:
+
+Description
+
+Accumulation & distribution is a classic tool of technical analysis, which shows in which phase the asset is: in the phase of accumulation or distribution.
+
+<aside>
+💡
+
+The difference of the version from SpreadFighter is that the user can independently select the data source for calculating the indicator.
+
+</aside>
+
+A moving average of indicator values has been added for the convenience of perception.
+
+Application cases
+
+The Accumulation/Distribution (A/D) indicator is a variation of the On-Balance Volume (OBV) indicator. It shows the general mood of large participants of trades in a certain asset on the selected time interval. It is believed that in the Accumulation phase, large players accumulate the asset before the onset of a powerful uptrend, and in the Distribution phase they sell it out.
+
+The A/D indicator chart largely repeats the price chart, but on it you can find patterns of divergence, indicating a probable imminent change of trend, or convergence, confirming the beginning of the trend.
+
+<aside>
+💡 The main pattern of divergence is divergence. This is a situation when the extremums of the asset price are updated, but the extremums of A/D are not updated, or change direction.
+
+</aside>
+
+Divergence.
+
+Divergence.
+
+The pattern "Convergence" is a situation in which the extremums of both the price and the A/D indicator are updated. This pattern confirms the trend development.
+
+Trend development.
+
+Trend development.
+
+Breakdowns of levels can appear on the A/D indicator chart. In the case when the price of an asset stands in a narrow balance or presses to the top of a triangle, and A/D updates the extrema, there is a high probability of a breakdown of the balance structure with the subsequent removal of the price to a new level.
+
+Breakdown.
+
+Breakdown.
+
+The A/D indicator is not without disadvantages, as it too often simply repeats the price chart. But in SpreadFighter implementation its visualization can be changed using different data sources - Volume, CVD, OI. You can also change the type of calculated moving average. For example, an exponential moving average (EMA) calculated by Volume will be more effective on small timeframes. A volume-weighted moving average (VWMA) will be more effective on older timeframes.
+
+The advantage of the variety of visualizations of the A/D indicator in SpreadFighter.
+
+The advantage of the variety of visualizations of the A/D indicator in SpreadFighter.
+
+Thus, by combining different types of A/D indicator visualizations, you can achieve the detection of patterns that allow you to correctly assess the current situation in the market and join the actions of major players to make a profit.
+
+
+Description
+
+Scanners of Technicals category calculate one or another technical analysis indicator for the whole broad market and rank assets depending on the indicator of this or that metric.
+
+Let's consider the Rate of change (ROC) indicator as an example. ROC is a technical indicator based on the dynamics of change of the tracked parameter. The indicator measures the percentage change in the series between the current value and the price a certain number of periods ago. The ROC indicator is built relative to the zero line, and the indicator moves up to the positive zone if price changes are directed upwards, and moves to the negative zone if price changes are directed downwards.
+
+The indicator is calculated by the formula:
+
+$$
+ROC_t=\dfrac{S_t}{S_{t-i}}×100%
+$$
+
+Where:$S_{t}$  is the closing price of the asset,$i$ is the length of the indicator.
+
+A similar metric is calculated for the whole market. Assets arrive in the table sorted according to the ROC indicator.
+
+Assets with the maximum ROC indicator.
+
+Assets with the maximum ROC indicator.
+
+<aside>
+💡
+
+RSI, MACD, CCI, ADX, etc. scanners work according to a similar logic.
+
+</aside>
+
+Arrangement
+
+Technical analysis widgets are located in the category with the same name.
+
+Location of scanners.
+
+Location of scanners.
+
+Functionality
+
+Technical analysis scanners have a unified view with one column - value. The column contains data that corresponds to a specific model. The user has the ability to filter and sort incoming signals by value metric.
+
+Technicals widgets.
+
+Technicals widgets.
+
+Application cases. What does the rate of change indicator tell us?
+
+The Rate of Change (ROC) is categorized as a momentum or velocity indicator because it measures the strength of momentum by the rate of change.
+
+Model description
+
+Crypto Drift is an indicator that tracks liquidity spillovers between bitcoin and altcoins. The idea is to analyze the behavior of bitcoin's market dominance relative to its price. When bitcoin's dominance increases, traders may exit altcoins in favor of BTC, and when dominance decreases, they may flow from BTC to altcoins.
+
+The indicator uses two key market parameters:
+
+
+    Benchmark price.
+
+    Benchmark dominance.
+
+
+The model readings can be interpreted as follows:
+
+Negative values of Crypto Drift:
+
+
+    This is a signal that BTC dominance is above its average relative to the price.
+
+    Indicates an outflow of liquidity from altcoins to bitcoin.
+
+    Potentially a bearish signal for altcoins.
+
+
+Positive Crypto Drift:
+
+
+    BTC dominance below its average relative to price.
+
+    Indicates an inflow of liquidity from bitcoin to altcoins.
+
+    Potentially bullish signal for altcoins.
+
+
+
+Model description
+
+The main purpose of the Activity Detector model is to identify structural changes in the price discovery of financial assets by analyzing volatility and trading volumes. The model detects sharp spikes in these indicators, evaluates their significance and classifies them as anomalous or not. When anomalies are detected, the system promptly notifies the user, helping him to react quickly to changes in market conditions.
+
+Volatility and trading volume analysis methods
+
+Activity Detector dynamically tracks changes in an asset's volatility and liquidity by analyzing time series of market data in real time. To do this, it:
+
+
+    Uses approximate statistical estimates of average and instantaneous volatility and volume values.
+
+    Applies smoothing filters and adaptive algorithms to minimize noise in the data and highlight significant changes.
+
+    Analyzes periods of accelerated changes in volatility and volume, comparing them to the historical context of the asset's market behavior.
+
+    Applies thresholds and dynamic adaptation to eliminate false signals.
+
+
+Definition of abnormal activity
+
+Abnormal activity is determined based on several factors at once:
+
+
+    The degree of deviation of current volatility and volume from their typical values over similar periods.
+
+    Rate of change of market parameters: sharp jumps in prices, volumes and spreads are analyzed.
+
+    Contextual parameters: general market conditions and macroeconomic factors are taken into account, excluding natural periods of increased activity (e.g., during the release of important economic news).
+
+
+Using machine learning
+
+Activity Detector uses machine learning algorithms to improve the accuracy of its analysis, but specific models are not disclosed. Basic principles of the system's use of AI include:
+
+
+    Training a model on historical data to recognize typical and atypical patterns of market behavior.
+
+    Automatic updating of statistical thresholds and logical dependencies based on dynamic market behavior.
+
+
+
+Model history
+
+Augmented Dickey-Fuller test (ADF-test) is a statistical test used to check the presence of a unit root in the autoregressive model and, therefore, to determine the stationarity of a time series. In financial markets, it is widely used to analyze time series of asset prices.
+
+The test was developed and described by British statisticians David Dickie and Wayne Fuller in 1979. An extended version of the test (ADF) was proposed to improve accuracy and reliability over the original Dickey-Fuller test.
+
+What the model is used for in financial markets
+
+
+    Stationarity test: The ADF test is used to determine whether a time series is stationary or trend-bearing (i.e., contains a unit root). Stationarity is important in time series modeling and econometric analysis because many methods require the data to be stationary.
+
+    Integration Analysis: Most often used in cointegration analysis, where multivariate time series are examined for long-run relationships.
+
+    Algorithmic Trading Solutions: Stationarity checking helps in the development of time series based strategies, including pair trading and time series predictions.
+
+
+How the extended version is better than the regular version
+
+
+    Accounting for autocorrelation: The ADF test incorporates additional lags of differences in the dependent variable into the model to account for high autocorrelation in the time series data, making the test more robust and accurate.
+
+    Flexibility: The extended version allows both random walks and deterministic trends, including linear trend, to be considered in model estimation.
+
+    Reduction of autocorrelated residuals: the ADF test corrects the problem of autocorrelation of residuals, which can skew the results in the original version of the Dickey-Fuller test.
+
+
+Dickey–Fuller test
+
+Functionality
+
+Widgets
+
+The ADF model has 2 widget options: ADF and ADF Time Dominance.
+
+
+    ADF calculates the Dickey-Fuller test score and ranks assets with minimum/maximum ADF score.
+
+
+
+Description
+
+The model captures executed clusters of stoploss orders, which stimulate price return or breakout, and allows you to calculate the volumes of positions closed by stoploss orders, leveling out the non-target volume. A simple but very accurate model is used. The information is confirmed by data from external affiliated sell side sources.
+
+The model has 2 meanings: accumulation of orders and sum of volumes. The accumulation of orders is subdivided into significant and critical levels, based on the total volume analysis and the range of executed stoploss orders.
+
+The main disadvantage is a strong loss in accuracy on instruments with very low liquidity and very large price steps.
+
+Tests
+
+<aside>
+💡
+
+Coming soon...
+
+</aside>
+
+Location
+
+To add the "Stop Killer" tool to your workspace, first click on the "Screeners" button in the platform header. Then click on the button of the same name in the "Microstructure" section.
+
+Widget Location.
+
+Widget Location.
+
+Functionality
+
+Indicators
+
+Stop killer highlights on the chart the points where stoploss orders were executed. Indicators receive data from the Stop killer model.
+
+Stop killer has 3 visualization options:
+
+
+    A histogram that reflects the volume of executed stoploss orders.
+
+    Background highlighting, which highlights bars with executed orders.
+
+    Candlestick chart (Cumulative stop killer delta), which calculates the cumulative sum of executed orders volumes.
+
+
+Appearance of indicators.
+
+Appearance of indicators.
+
+
+Description
+
+Spoofing (spoofing) in trading is a strategy in which a trader creates a false impression of an upcoming movement in the price of an asset by placing large buy or sell orders, which are then quickly canceled before they are executed. The purpose of spoofing is to create false signals about nonexistent trading volumes and market directions in order to manipulate prices and attract other market participants to make trades.
+
+The model determines the price and volume of limit order placement, which it recognizes as spoofing.
+
+Spoofing (finance)
+
+Layering in trading is a technique of manipulating market prices when traders create artificial trading volumes by placing a group of large buy or sell orders and then sequentially changing or canceling them. The purpose of leering is to create a false impression of real supply or demand volumes in the market, which may cause the price of an asset to change in the desired direction and benefit from it.
+
+Layering (finance)
+
+<aside>
+💡 Such practices can be illegal and are subject to oversight by market regulators.
+
+</aside>
+
+Layering on a futures contract.
+
+Layering on a futures contract.
+
+The performance of the Layering model is summarized on a scale of -10 to +10, where:
+
+
+
+
+        10 corresponds to maximum selling pressure ask,
+
+
+
+    +10 corresponds to the maximum pressure from the side of bid purchases,
+
+    0 - absence of any pressure.
+
+
+Tests
+
+<aside>
+💡
+
+Coming soon...
+
+</aside>
+
+Layering
+
+To add the "Layering" and "Spoofing" tools to your workspace, first click on the "Screeners" button in the platform header. Then click on the button of the same name in the "Microstructure" section.
+
+Widget Location.
+
+Widget Location.
+
+
+Description
+
+Spot futures spread displays the difference between the closing price of a futures contract and the index price for the asset.
+
+Spot futures dominance and Spot futures dominance highlighter display the dominance of a spot asset or open-ended futures contract in the total deal flow.
+
+Tests
+
+<aside>
+💡
+
+Coming soon...
+
+</aside>
+
+Functionality
+
+Indicators
+
+Spot perpetual spread
+
+The model calculates the difference between the index price of the underlying asset and the last transaction price of a perpetual futures contract. The results are displayed as a percentage.
+
+<aside>
+💡 You can read more about the different types of prices at this link.
+
+</aside>
+
+Spot futures spread.
+
+Spot futures spread.
+
+Spot perpetual dominance
+
+The model represents an oscillator, which is colored in two colors: orange corresponds to the dominance of the underlying asset, blue - to the futures contract. The background of the oscillator is colored accordingly.
+
+Spot futures dominance highlighter is an overlay variant of Spot futures dominance, which colors the background of the main working area in accordance with the model indicators. The areas with spot asset dominance are colored orange, while the areas with futures dominance are colored blue.
+
+Spot perpetual dominance.
+
+Spot perpetual dominance.
+
+Spot perpetual who
+
+Matrix model determining at the expense of which asset - spot or perpetual futures - the price change occurred. The actual value of the model at the moment of candle closing is recorded in the historical data.
+
+
+Predict Liquidations model description
+
+One of the features of the derivatives market is the ability to open leveraged or margin positions. Any such margin position will have a liquidation price. As soon as the price of the underlying asset reaches the level of the liquidation price, the exchange will forcibly close the trader's position at a loss in order to prevent the client's balance from going into the negative zone.
+
+Single liquidations are not of any interest, as their impact on the market is insignificant. However, the accumulation of such orders can significantly affect the price and provoke a jump in volatility. The accumulation of pending orders is otherwise called a margin zone.
+
+Ordinary users do not have access to information about them - data of such a high level is available only to exchanges (and usually to some affiliated persons conducting trading activities related to cryptocurrency assets of the exchange). Modern quantitative models in the field of market microstructure allow calculating margin zones with a fairly high accuracy.
+
+Based on the data analyzed using a dynamic neural network, we identified regularities in the placement of margin zones taking into account the specific behavior of a particular asset and built an appropriate model that depicts clusters of pending orders.
+
+An important part of our miscalculation algorithm is data obsolescence, which allows us to level out "hung" clusters.
+
+Model location
+
+To add the "Predict Liquidations" tool to your workspace, first click on the "Widget menu" button in the platform header. Then click on the button of the same name in the "Microstructure" section.
+
+image.png
+
+Tool functionality
+
+Predict LiquidaitionsChart
+
+The widget is a histogram in which:
+
+
+    Pending orders of short position holders are displayed in green color.
+
+    Pending orders of long position holders are displayed in red.
+
+
+Predicted location and volume of pending orders for SHORT positions.
+
+Predicted location and volume of pending orders for SHORT positions.
+
+Predicted location and volume of pending orders for LONG positions.
+
+Predicted location and volume of pending orders for LONG positions.
+
+In the lower part of the tool there is a scale of the volume of forecasted pending orders in dollars.
+
+Model description
+
+Quoted spread is the difference between the offer price (ask) and the bid price (bid), which is specified in the quotes. It is a popular spread metric that allows estimating market liquidity.
+
+Realized spread - a spread calculated on the basis of the actual price at which a transaction takes place and, as a rule, does not coincide with the quoted spread. In other words, the realized spread takes into account the slippage of the market bid.
+
+Effective spread - a spread measure that takes into account all transaction costs, including commissions, slippage and other over-the-counter costs. The effective spread gives a more accurate picture of the real cost of a transaction.
+
+All spreads in SpreadFighter are normalized relative to 0 and scaled using the following formula:
+
+$$
+Spread_{Norm}(t)= \dfrac{ask(t) - bid(t)}{Mark(t)})×100%
+$$
+
+where $ask_{t}$ is the ask price of the bid at time $t$, $bid_{t}$ is the bid price of the bid at time $t$, $Mark_{t}$ is the mark price at time t
+
+Best ask & bid size displays the size of the best ask & bid order in the limit order book respectively.
+
+Model tests
+
+<aside>
+💡
+
+Coming soon...
+
+</aside>
+
+Application cases
+
+<aside>
+💡
+
+Coming soon...
+
+</aside>
+
+
+Model description
+
+Adaptive advanced Power trades model evaluates volumes passing through the market in real time and categorizes them by their significance using Gaussian distribution and Z-score. The volumes are thus categorized into the following categories:
+
+
+
+
+Category
+	Probability of occurrence
+	Significance
+
+
+
+
+Tiny
+	31,7%
+	Minimal
+
+
+Small
+	4,5%
+	Minor
+
+
+Normal
+	0,3%
+	Medium
+
+
+Large
+	~0.01%
+	Large
+
+
+Huge
+	~0.001%
+	Maximum
+
+
+
+Thus, volumes in the tiny & small category can signal nascent activity, while volumes in the large & huge category can signal the culmination of trading activity.
+
+The model uses the standard deviation method, which allows it to adjust to the unique characteristics of individual assets, as well as to changing market conditions.
+
+Model tests
+
+<aside>
+💡
+
+Coming soon...
+
+</aside>
+
+Location
+
+To add the "Power trades" tool to your workspace, first click on the "Screeners" button in the platform header. Then click on the button of the same name in the "Microstructure" section.
+
+image.png
+
+Functionality
+
+Indicator
+
+Power trades displays abnormal bursts of volume, which are out of the general conjuncture.
+
+Power trades indicator.
+
+Power trades indicator.
+
+Widget
+
+Power trades is a scanner that displays abnormal volumes passing through the market in real time. The user receives the information in the form of a table.
+
+The table of the widget receives the following data:
+
+
+Description
+
+Open interest is the sum of open contracts on a futures contract. Each open in long contract corresponds to an open in short contract. The data comes directly from the exchange.
+
+Open interest indicator.
+
+Open interest indicator.
+
+In addition to the candlestick chart, Open interest has 2 alternative forms of display:
+
+
+    histogram,
+
+    highlighting of bursts (spikes).
+
+
+Open interest delta - is a histogram, which takes values of changes in open interest. In addition to the histogram, the standard deviation and 2 types of moving averages are calculated for positive and negative changes, respectively.
+
+Open interest delta.
+
+Open interest delta.
+
+The Open interest spike displays abnormal spikes of Open interest on the chart. Positive spikes are highlighted in green ("money in"), negative spikes are highlighted in red ("money out"). The indicator uses Z-score estimation, thus the model adjusts to changing market conditions, which allows it to work in any market conditions. The spike indicator has one parameter to change - the filter, which takes values from 1 to 5. The larger the filter values, the more abnormal spikes will be highlighted.
+
+Open interest spike.
+
+Open interest spike.
+
+Application cases
+
+The sum of open positions or Open Interest(OI) is a technical indicator whose value is equal to the number of active futures contracts, such as futures and options, which have not been settled yet. In simple words, it is a tool that reflects in real time the total number of ALL open derivative positions held by market participants, no matter in which direction.
+
+It is determined by adding the number of all open trades and then subtracting the number of all closed trades from that number.
+
+For example, if there is an increase in open interest in BTC futures at the same time as a slight increase in the BTC exchange rate, it usually indicates a continuation of the uptrend. Conversely, a decrease in open interest in BTC futures during a small correction in the BTC price usually indicates an emerging downtrend.
+
+A simultaneous increase in open interest and price indicates an active upward market movement. However, if the price is rising and Open Interest is declining, it indicates that the market's upward movement is weakening. Decrease of both open interest and price indicates the phase of market consolidation. And vice versa, a decrease in price, accompanied by an increase in the number of open orders, indicates market weakness.
+
+The Open Interest indicator by itself does not give a trading advantage. But in combination with other indicators, such as Price, Volume andVolume Delta, it allows estimating the prevailing moods of market participants, both large and small.
+
+Patterns that can be indicated by OI indicators to confirm the current trend and detect the potential for a trend change:
+
+
+
+Description
+
+The indicator takes as input 2 variables Volume delta and Open interest delta, which are further compared according to the following logic:
+
+
+
+
+
+	Open interest delta > 0
+	Open interest delta < 0
+
+
+
+
+Volume delta > 0
+	Net taker long delta = Open interest delta Net taker short delta = 0
+	Net taker long delta = 0 Net taker short delta = Open interest delta
+
+
+Volume delta < 0
+	Net taker long delta = 0 Net taker short delta = Open interest delta
+	Net taker long delta = Open interest delta Net taker short delta = 0
+
+
+
+As a result, the indicator gets 2 new variables:
+
+
+    Net taker long delta - net long interest opened by market orders,
+
+    Net taker short delta - net short interest opened by market orders.
+
+
+From the obtained variables Net taker long/short delta variables are calculated:
+
+
+    Net maker long delta - net long interest opened by limit orders,
+
+    Net maker short delta - net short interest opened by limit orders.
+
+
+Fair:
+
+
+    Net maker long delta = Net taker short delta;
+
+    Net maker short delta = Net taker long delta.
+
+
+Thus:
+
+Open interest = Net taker long delta + Net taker short delta = Net maker long delta + Net taker maker delta
+
+<aside>
+💡 Each Buy/Sell trade opened by a market/limit order always has a trade in the opposite direction of the opposite order type.
+
+</aside>
+
+<aside>
+💡 Important Note: Since the indicator is calculated on the basis of bar-aggregated data, its indicators on different timeframes may differ. The recommendation is to use the minimum available timeframe. In the future, we will move the model calculation on the backend to the tick frame.
+
+</aside>
+
+<aside>
+💡
+
+The Net open interest indicator has one peculiarity - sometimes its values can be negative. This is due to the peculiarities of its calculation. The matrix model Net open interest delta is calculated on the server (backend) side of the platform. The candlestick chart is calculated on the client (frontend) side by integrating (or cumulative sum) the Net open interest delta for the entire historical interval loaded by the user. Because of this, the absolute values of the indicator may change when loading additional historical data. Also, Net open interest values can go into the negative zone if negative values prevail in Net open interest delta. However, the relative changes in the model do not change.
+
+</aside>
+
+
+Appearance of the widget and the model.
+
+Appearance of the widget and the model.
+
+Model description
+
+In the modern cryptocurrency market, subtle manipulations are not always clearly visible and are often unnoticeable to the human eye. Major participants who have a direct impact on asset prices often hide their actions.
+
+The Manipulation Monitor is a high-tech advanced model that utilizes a wide range of data to detect manipulative activity on the micro timeframe. The model has two meanings. Formally, we call them PRICE ACTIVITY and VOLUME ACTIVITY. Both values range from 0% to 100%.
+
+<aside>
+💡
+
+The model analyzes the state of the asset relative to the broad market and captures abnormal bursts of activity. Activity by price corresponds to anomalies occurring in the volatility of the asset. Activity by volume corresponds to anomalies in the transaction feed.
+
+</aside>
+
+This powerful tool is designed to detect most market manipulation in any coin. It does not predict price behavior, but it effectively evaluates the manipulation activity of algorithms.
+
+Manipulation Monitor:
+
+
+    highlights all activities that could potentially lead to significant price changes, while filtering out the unbalancing of stacks by market makers, as well as the activity of various kinds of arbitrageurs;
+
+    saves traders from the necessity of manual monitoring of stacks, discorrelations between an individual asset and the general conjuncture;
+
+    gives a clear and comprehensible answer as to how pronounced is the activity of high-frequency manipulation algorithms, reducing the answer (like any good quantitative model) to a number.
+
+
+Model tests
+
+Strategic logic
+
+A short position is opened under the following conditions:
+
+
+    The price of the asset crosses the lower boundary of the linear regression channel (from top to bottom), plotted on a 10-minute interval, by the first standard deviation.
+
+    Additional entry filter: presence of signs of manipulation activity. Manipulation in volumes exceeds the threshold value of 75.
+
+    Manipulation activity in price is non-zero (more than 0).
+
+
+Position Management:
+
+
+    Hold time: 720 minutes (12 hours).
+
+
+
+Description
+
+Liquidations is a histogram that takes values of executed liquidations volume.
+
+Cumulative liquidations delta calculates the cumulative sum of the volume of liquidations that have passed.
+
+Liquidations highlighter highlights the bars on which traders' liquidations took place. The data comes directly from the exchange.
+
+Liquidations indicators.
+
+Liquidations indicators.
+
+The widget table includes:
+
+
+    V $ - value of the liquidated position,
+
+    P - average execution price,
+
+    Time - time of position liquidation.
+
+
+Liquidation widget.
+
+Liquidation widget.
+
+Cases of application
+
+The practical use of the widget is very similar to the Stop killer model. The tool can be used to find pivot points and to open and close positions more accurately. But, as with all other tools, each user has the right to decide for himself how to use Liquidations.
+
+Model description
+
+Tape is an oscillator of the number of trades
+
+Average trade size calculates the average trade size based on the volume and number of trades.
+
+$$
+\ AVS_{t} = \dfrac{\sum_{}Volume_{t}}{ \sum_{}Count_t}
+$$
+
+Order flow intensity - oscillator of order flow intensity with coloring by a gradient depending on the Z-Score score of the metric.
+
+<aside>
+💡 A standardized score(Z-Score) is a measure of the relative spread of an observed or measured value that shows how many standard deviations make up its spread of the relative mean.
+
+</aside>
+
+HFT Activity plots anomalous activity of high-frequency algorithms that breaks out of the overall conjecture. The adaptive advanced HFT activity model estimates the tape speed in real time and using Gaussian distribution and Z-score score classifies the speed by significance. Thus orderflow intensities are categorized into the following categories:
+
+
+
+
+Category
+	Probability of occurrence
+	Significance
+
+
+
+
+Tiny
+	31,7%
+	Minimal
+
+
+Small
+	4,5%
+	Minor
+
+
+Normal
+	0,3%
+	Medium
+
+
+Large
+	~0.01%
+	Large
+
+
+Huge
+	~0.001%
+	Maximum
+
+
+
+Thus, the orderflow intensity of the tiny & small category can signal nascent activity, while the orderflow intensity of the large & huge categories can signal the culmination of trading activity.
+
+The model uses the method of standard deviations, which allows it to adjust to the unique features of the functioning of individual assets, as well as to the changing market conditions.
+
+<aside>
+💡 The main differences and advantages of HFT activity over Power trades are the speed of processing (signals come a few seconds faster) and accuracy
+
+</aside>
+
+Tests
+
+<aside>
+💡
+
+Coming soon...
+
+</aside>
+
+Location
+
+Tape, Average trade size, Order flow intensity models are available exclusively as indicators.
+
+To add the "HFT activity" tool to your workspace, first click on the "Screeners" button in the platform header. Then click on the button of the same name in the "Microstructure" section.
+
+Widget location.
+
+Widget location.
+
+
+Description
+
+Depth of market (DOM) calculates the depth of market indicator in increments of 1% from the marking price, starting from 1% and ending at 10%. Market depth is calculated as the sum of separately standing limit orders.
+
+$$
+DOM(x)= \sum_{i=Mark}^{x}{limit}
+$$
+
+Indicator indicators are displayed as a histogram with gradient coloring. The warmest color corresponds to the depth closest to the marking price, the coldest - to the most distant one.
+
+Settings of the indicator graphic.
+
+Settings of the indicator graphic.
+
+Tests
+
+<aside>
+💡
+
+Coming soon...
+
+</aside>
+
+Location
+
+The model is available exclusively as an indicator.
+
+Functionality
+
+The user can select the asset for which the market depth should be displayed, as well as the units of measurement: either USD or quoted asset (Coin).
+
+In the chart settings window, the user can select the display colors and transparency of the indicator for each depth value.
+
+Use cases
+
+The liquidity oscillator allows to quantify how liquid the ask and bid side of the bet is.
+
+Let's look at an example with RUNE. On 24.02.2024 at 12:15 UTC+3 the DOM oscillator indicates an increase in the number of bids on the bid side.
+
+How the imbalance situation looks like in the limit order book.
+
+How the imbalance situation looks like in the limit order book.
+
+How the imbalance situation looks like in the limit order book.
+
+How the imbalance situation looks like in the limit order book.
+
+
+Description
+
+Bid & ask delta - calculates the absolute difference in the volume of different ask and bid limit orders and displays the values in the form of a bar chart. Positive values indicate that the volume of bid orders is larger than ask. Negative values indicate the opposite.
+
+Bid & ask imbalance is the ratio of the difference between the market depth on the bid side and the ask side and the total market depth.
+
+$$
+Imbalance =\dfrac{\sum_{i=Mark}^{x}{bid}-\sum_{i=Mark}^{x}{ask}}{\sum_{i=Mark}^{x}{bid}+\sum_{i=Mark}^{x}{ask}}×100%
+$$
+
+Tests
+
+<aside>
+💡
+
+Coming soon...
+
+</aside>
+
+Location
+
+Bid & ask delta model is available exclusively as an indicator
+
+Functionality
+
+The user can change the values of the following parameters:
+
+
+    Symbol - the asset for which the model indicators should be displayed.
+
+    Source - source of data for calculation. Available options: 'Filled orders', 'Best bid & ask size', 'DOM by 1%', 'DOM by 2%', 'DOM by 3%', 'DOM by 4%', 'DOM by 5%', 'DOM by 6%', 'DOM by 7%', 'DOM by 8%', 'DOM by 9%', 'DOM by 10%'.
+
+    Measure - units of measurement: either in the quoted asset or in dollars;
+
+    Moving average typeline - type of calculated moving average. It can take the following values: 'SMA' (simple moving average), 'EMA' (exponential moving average), 'WMA' (weighted moving average), 'VWMA' (volume weighted moving average), 'LSMA' (linear regression);
+
+    Length - period of moving average and standard deviation;
+
+    Show metrics? - button to activate the standard deviation and moving average display.
+
+
+image.png
+
+
+
+    Detecting the probability of local alt season, as well as price dynamics of the broad market in the moment.
+
+
+Appearance of the indicator.
+
+Appearance of the indicator.
+
+Description
+
+Alt meter shows how well the altcoin market is doing relative to BTC. Indicator values exceeding 50% mean that the altcoin market shows better dynamics than BTC. In this case, the indicator chart is colored green. Conversely, if the Alt meter values are below 50%, altcoins show the worst dynamics relative to Bitcoin. Then the indicator chart is colored red.
+
+Tick index and RT index are calculated based on the prices of all instruments traded on Binance Futures and show the price dynamics of the broad market: the number of coins that are rising is compared to the number of coins that are falling. The user receives a score in the form of a number from -200 to +200 in the case of the Tick index and from -100% to +100% in the case of the RT index.
+
+Tick Index
+
+Tick Index is a popular indicator used by intraday traders to view the overall market sentiment at a given time. Observing the ratio of coins "up" to "down" allows traders to make quick trading decisions depending on market movements. Tick Index tracks the number of coins that are rising compared to the number of coins that are falling. Readings closer to +200 and -200 are considered extreme. The Tick Index in DOG includes the entire range of futures instruments on the Binance Futures exchange (about 200 instruments as of summer 2023 and adjusted +/- depending on new listings and delistings).
+
+Tick Index is calculated using the formula:
+
+$$
+Growing_t=close_t>close_{t-1} ? 1 : 0
+$$
+
+$$
+Falling_t=close_t<close_{t-1} ? 1 : 0
+$$
+
+$$
+Tick Index_t=\sum Growing_t - \sum Falling_t
+$$
+
+Where $Growing_{t}$  is the number of growing coins, $Falling_{t}$  is the number of falling coins; $t$ is the comparison period in seconds. The SMA for the same period is used as a point for comparison.
+
+RT Index
+
+RT Index is a synthetic tool that evaluates the sentiment in real time relative to the average values of both the instrument itself and the general conjuncture as a whole.
+
+Its main difference is that it does not work with absolute values (coin fell/grew). RT Index:
+
+
+    finds the average fair price of an asset on a micro timeframe;
+
+    calculates how much percent the coin price has deviated from the average;
+
+    calculates the weighted sum of deviations for all coins according to their dominance relative to the broad market.
+
+
+The effectiveness of the RT Index can be seen in the following examples. The large graph on the left is the coin prices used for the calculation. The upper chart on the right is the Tick Index. Bottom chart on the right - RT Index.
+
+
+
+
+    A model that tracks the dynamics of tape speed and passing volumes
+
+
+Appearance of the widget.
+
+Appearance of the widget.
+
+Model description
+
+The logic of Speedrush is based on the classic well-known quantitative model Average Day Trade Volume.
+
+Average Daily Trading Volume (ADTV): Definition, How To Use It
+
+The SpreadFighter version differs in that:
+
+
+    model value indicators are normalized and brought to the percentage scale;
+
+    in addition to trade volumes, the model also accepts the number of trades as input.
+
+
+The model is calculated by the formula
+
+$$
+ADTV(ADTS)(n)= \dfrac{\sum_n{}volume(speed)}{n * \bar{x}(ADTV(ADTS))}×100 %
+$$
+
+where $volume$ - trading volume for period $n$, $speed$ - tape speed, $n$ - number of days, \overline{x} $\overline{x}(ADTV(ADTS))$ ) - is the average value of ADTV(ADTS).
+
+Model Tests
+
+<aside>
+💡
+
+Coming soon...
+
+</aside>
+
+Location
+
+To add the "ADTV/ADTS" tool to your workspace, first click on the "Widget menu" button in the platform header. Then click on the button of the same name in the "Microstructure" section.
+
+Widget location.
+
+Widget location.
+
+Functionality
+
+Indicator
+
+ADTV & ADTS indicators are oscillators that display the average daily volume/number of trades per minute.
+
