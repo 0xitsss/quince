@@ -1,5 +1,6 @@
-# Quince
+# Quince 🚧
 
+[![Work In Progress](https://img.shields.io/badge/status-WIP-yellow)](https://github.com/0xitsss/quince)
 [![Build](https://img.shields.io/badge/build-passing-brightgreen)](https://github.com/0xitsss/quince)
 [![Tests](https://img.shields.io/badge/tests-191%20passing-brightgreen)](https://github.com/0xitsss/quince)
 [![License](https://img.shields.io/badge/license-GPLv3-blue)](https://www.gnu.org/licenses/gpl-3.0)
@@ -16,45 +17,45 @@ Low-latency trading engine using crossbeam channels throughout. No `tokio::sync:
 graph TB
     subgraph Exchange["Exchange Layer"]
         T[Exchange Trait]
-        B[Binance Connector<br/>crossbeam::Sender]
-        M[Mock Exchange<br/>std::thread + crossbeam]
-        P[BinancePublic<br/>Public WS Mode]
+        B[Binance Connector]
+        M[Mock Exchange]
+        P[BinancePublic]
         T --> B
         T --> M
         T --> P
     end
 
     subgraph Engine["Engine Core"]
-        EL[ULL Priority Loop<br/>try_recv: stream > orders > eval > acct]
-        OM[Order Manager<br/>HashMap + exchange_to_client O(1)]
-        IB[Indicator Bank<br/>RingVec-based 20+ indicators]
+        EL[ULL Priority Loop<br/>try_recv stream]
+        OM[Order Manager<br/>exchange_to_client map]
+        IB[Indicator Bank<br/>20+ RingVec indicators]
         RC[Risk Controls]
     end
 
     subgraph Strategy["Strategy Layer"]
-        L[Lua VM<br/>mlua in std::thread]
-        S[Strategy Script<br/>on_trade / on_depth / on_fill / on_eval]
+        L[Lua VM / mlua]
+        S[on_trade / on_depth / on_fill / on_eval]
         L --> S
     end
 
-    subgraph Channel["Crossbeam Channels"]
-        MD[Market Data<br/>bounded 1024]
-        LE[Lua Events<br/>bounded 1024]
-        OC[Orders<br/>crossbeam::Sender]
+    subgraph Channels["Crossbeam Channels"]
+        MD[Market Data]
+        LE[Lua Events]
+        OC[Orders]
     end
 
     subgraph Output["Output"]
-        TL[Trade Log<br/>JSON]
+        TL[Trade Log]
         CO[Console]
     end
 
-    Exchange -->|try_send| MD
-    MD --> EL
-    EL -->|try_send| LE
-    LE -->|recv| Strategy
-    Strategy --> OC
-    OC -->|try_recv| EL
-    EL -->|Log| Output
+    Exchange -- try_send --> MD
+    MD -- try_recv --> EL
+    EL -- try_send --> LE
+    LE -- recv --> Strategy
+    Strategy -- try_send --> OC
+    OC -- try_recv --> EL
+    EL -- Log --> Output
     EL <--> RC
 ```
 
@@ -98,8 +99,8 @@ sequenceDiagram
 ```mermaid
 classDiagram
     class core {
-        RingBuffer<T,N>
-        RingVec (power-of-2 mask)
+        RingBuffer
+        RingVec
         Trade, Depth, Order
     }
     class exchange {
@@ -117,8 +118,8 @@ classDiagram
     }
     class engine {
         ULL Priority Loop
-        Order Manager (HashMap O(1) lookup)
-        Indicator Bank (20+ indicators)
+        Order Manager
+        Indicator Bank
     }
     class risk {
         max_position_size
