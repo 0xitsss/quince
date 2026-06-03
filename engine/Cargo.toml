@@ -4,6 +4,10 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 
+[features]
+default = []
+profiling = ["puffin"]
+
 [dependencies]
 tokio.workspace = true
 futures-util.workspace = true
@@ -12,9 +16,11 @@ serde_json.workspace = true
 chrono.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
+crossbeam-channel.workspace = true
 quince-core = { path = "../core" }
 quince-exchange = { path = "../exchange" }
 quince-strategy = { path = "../strategy" }
 quince-risk = { path = "../risk" }
 quince-logger = { path = "../logger" }
 quince-indicators = { path = "../indicators" }
+puffin = { workspace = true, optional = true }

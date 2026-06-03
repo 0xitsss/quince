@@ -6,9 +6,11 @@ use quince_logger::TradeLog;
 use quince_risk::RiskControls;
 use quince_strategy::runtime::{spawn_strategy, LuaEvent, StrategyCtx};
 use std::collections::HashMap;
+use crossbeam_channel;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
-use tokio::sync::mpsc;
+
+const IDLE_SLEEP_MS: u64 = 1;
 
 #[derive(Debug, thiserror::Error)]
 pub enum EngineError {
@@ -31,8 +33,8 @@ pub struct Engine<E: Exchange> {
     exchange: E,
     symbols: Vec<String>,
 
-    event_tx: mpsc::UnboundedSender<LuaEvent>,
-    orders_rx: mpsc::UnboundedReceiver<Order>,
+    event_tx: crossbeam_channel::Sender<LuaEvent>,
+    orders_rx: crossbeam_channel::Receiver<Order>,
     ctx: Arc<Mutex<StrategyCtx>>,
 
     risk: RiskControls,
@@ -42,10 +44,16 @@ pub struct Engine<E: Exchange> {
     indicators: IndicatorBank,
 
     last_price: f64,
-    last_depth: Option<Depth>,
     daily_pnl: f64,
     peak_equity: f64,
     order_timestamps: Vec<Instant>,
+
+    next_eval: Instant,
+    next_account: Instant,
+
+    // Profiling / latency stats (reserved)
+    #[cfg(feature = "profiling")]
+    profiling_frame: u64,
 }
 
 impl<E: Exchange> Engine<E> {
@@ -56,8 +64,8 @@ impl<E: Exchange> Engine<E> {
         risk: RiskControls,
         log_path: &str,
     ) -> Result<Self, EngineError> {
-        let (event_tx, event_rx) = mpsc::unbounded_channel();
-        let (orders_tx, orders_rx) = mpsc::unbounded_channel();
+        let (event_tx, event_rx) = crossbeam_channel::bounded(1024);
+        let (orders_tx, orders_rx) = crossbeam_channel::unbounded();
 
         let ctx = StrategyCtx {
             trades: Vec::with_capacity(MAX_TRADES),
@@ -71,11 +79,50 @@ impl<E: Exchange> Engine<E> {
 
         spawn_strategy(strategy_path, event_rx, Arc::clone(&ctx))
             .map_err(|e| EngineError::Strategy(e))?;
+        tracing::info!("Lua VM spawned: {strategy_path}");
 
         let src = std::fs::read_to_string(strategy_path)
             .map_err(|e| EngineError::Strategy(format!("read {}: {}", strategy_path, e)))?;
+        tracing::info!("strategy loaded: {strategy_path} ({} lines)", src.lines().count());
+
         let ind_cfg = parse_using(&src);
+        for entry in &ind_cfg {
+            tracing::info!("  indicator: {} params={:?} buffer={}", entry.name, entry.params, entry.buffer);
+        }
+        tracing::info!("parsed {} indicator directives", ind_cfg.len());
+
         let indicators = IndicatorBank::new(&ind_cfg);
+        tracing::info!("indicator bank ready: {} indicators", ind_cfg.len());
+        drop(src);
+
+        // Pre-populate ctx.indicators keys so Lua can read them immediately
+        {
+            let mut ctx = ctx.lock().unwrap();
+            for entry in &ind_cfg {
+                match entry.name.as_str() {
+                    "macd" => { ctx.indicators.insert("macd", 0.0); ctx.indicators.insert("macd.signal", 0.0); ctx.indicators.insert("macd.histogram", 0.0); }
+                    "bb" => { ctx.indicators.insert("bb.middle", 0.0); ctx.indicators.insert("bb.upper", 0.0); ctx.indicators.insert("bb.lower", 0.0); ctx.indicators.insert("bb.bandwidth", 0.0); }
+                    "kc" => { ctx.indicators.insert("kc.middle", 0.0); ctx.indicators.insert("kc.upper", 0.0); ctx.indicators.insert("kc.lower", 0.0); }
+                    _ => {}
+                }
+            }
+            ctx.indicators.insert("price", 0.0);
+            ctx.indicators.insert("volume_delta", 0.0);
+            ctx.indicators.insert("avg_trade_size", 0.0);
+            ctx.indicators.insert("trade_count", 0.0);
+            ctx.indicators.insert("bid_depth", 0.0);
+            ctx.indicators.insert("ask_depth", 0.0);
+            ctx.indicators.insert("depth_imbalance", 0.0);
+        }
+
+        tracing::info!("symbols: {:?}, log: {log_path}", symbols);
+        tracing::info!(
+            "risk: max_pos={} max_dd={}% max_order_freq={}/s max_daily_loss={}",
+            risk.max_position_size,
+            risk.max_drawdown * 100.0,
+            risk.max_order_freq,
+            risk.max_daily_loss,
+        );
 
         let logger = TradeLog::new(log_path);
 
@@ -90,40 +137,88 @@ impl<E: Exchange> Engine<E> {
             order_manager: OrderManager::new(),
             indicators,
             last_price: 0.0,
-            last_depth: None,
             daily_pnl: 0.0,
             peak_equity: 0.0,
             order_timestamps: Vec::new(),
+            next_eval: Instant::now() + EVAL_INTERVAL,
+            next_account: Instant::now() + ACCOUNT_SYNC_INTERVAL,
+            #[cfg(feature = "profiling")]
+            profiling_frame: 0,
         })
     }
 
     pub async fn run(&mut self) -> Result<(), EngineError> {
         let stream = self.exchange.subscribe(&self.symbols).await?;
-        let mut rx = stream.rx;
-        let mut eval_tick = tokio::time::interval(EVAL_INTERVAL);
-        let mut account_tick = tokio::time::interval(ACCOUNT_SYNC_INTERVAL);
+        let rx = stream.rx;
+
+        tracing::info!(
+            "engine loop starting — {} symbol(s) subscribed, {} stream(s) active",
+            self.symbols.len(),
+            self.symbols.len() * 2,
+        );
 
         loop {
-            tokio::select! {
-                Some(msg) = rx.recv() => {
-                    self.on_stream_msg(msg).await;
-                }
-                Some(order) = self.orders_rx.recv() => {
-                    self.on_strategy_order(order).await;
-                }
-                _ = eval_tick.tick() => {
-                    self.on_eval().await;
-                }
-                _ = account_tick.tick() => {
-                    self.sync_account().await;
-                }
-                else => break,
+            #[cfg(feature = "profiling")]
+            {
+                puffin::GlobalProfiler::lock().new_frame();
+                self.profiling_frame += 1;
             }
 
-            self.check_timeouts().await;
-        }
+            let mut did_work = false;
 
-        Ok(())
+            // Priority 0: Stream messages (market data — most latency-sensitive)
+            while let Ok(msg) = rx.try_recv() {
+                #[cfg(feature = "profiling")]
+                puffin::profile_scope!("StreamMsg");
+                did_work = true;
+                self.on_stream_msg(msg).await;
+            }
+
+            // Priority 1: Strategy orders
+            while let Ok(order) = self.orders_rx.try_recv() {
+                #[cfg(feature = "profiling")]
+                puffin::profile_scope!("StrategyOrder");
+                did_work = true;
+                self.on_strategy_order(order).await;
+            }
+
+            // Priority 2: Periodic eval
+            let now = Instant::now();
+            if now >= self.next_eval {
+                #[cfg(feature = "profiling")]
+                puffin::profile_scope!("Eval");
+                did_work = true;
+                self.on_eval().await;
+                self.next_eval = now + EVAL_INTERVAL;
+            }
+
+            // Priority 3: Periodic account sync
+            if now >= self.next_account {
+                #[cfg(feature = "profiling")]
+                puffin::profile_scope!("AccountSync");
+                did_work = true;
+                self.sync_account().await;
+                self.next_account = now + ACCOUNT_SYNC_INTERVAL;
+            }
+
+            // Always: check timeouts and SL/TP
+            {
+                #[cfg(feature = "profiling")]
+                puffin::profile_scope!("CheckTimeouts");
+                self.check_timeouts().await;
+            }
+            {
+                #[cfg(feature = "profiling")]
+                puffin::profile_scope!("CheckSlTp");
+                self.check_sl_tp().await;
+            }
+
+            // Backoff: sleep when idle to avoid busy spin
+            if !did_work {
+                tokio::time::sleep(Duration::from_millis(IDLE_SLEEP_MS)).await;
+            }
+
+        }
     }
 
     async fn on_stream_msg(&mut self, msg: StreamMsg) {
@@ -134,7 +229,9 @@ impl<E: Exchange> Engine<E> {
                 {
                     let mut ctx = self.ctx.lock().unwrap();
                     ctx.trades.push(trade);
-                    ctx.indicators.extend(ind_vals);
+                    for &(k, v) in ind_vals {
+                        ctx.indicators.insert(k, v);
+                    }
                     let overflow = ctx.trades.len().saturating_sub(MAX_TRADES);
                     if overflow > 0 {
                         ctx.trades.drain(0..overflow);
@@ -143,11 +240,12 @@ impl<E: Exchange> Engine<E> {
                 let _ = self.event_tx.send(LuaEvent::Trade(trade));
             }
             StreamMsg::Depth(depth) => {
-                self.last_depth = Some(depth.clone());
                 let ind_vals = self.indicators.on_depth(&depth);
                 {
                     let mut ctx = self.ctx.lock().unwrap();
-                    ctx.indicators.extend(ind_vals);
+                    for &(k, v) in ind_vals {
+                        ctx.indicators.insert(k, v);
+                    }
                     ctx.depth = Some(depth.clone());
                 }
                 let _ = self.event_tx.send(LuaEvent::Depth(depth));
@@ -156,17 +254,10 @@ impl<E: Exchange> Engine<E> {
                 self.last_price = price;
             }
             StreamMsg::OrderUpdate(fill) => {
-                let symbol = self.symbols.first().cloned().unwrap_or_default();
-                let matched = self.order_manager.pending_order_ids().iter().any(|cid| {
-                    if let Some(po) = self.order_manager.get(cid) {
-                        po.order.symbol == symbol
-                            && po.order.side == fill.side
-                    } else {
-                        false
-                    }
-                });
-
-                if matched {
+                let cid = self.order_manager.find_client_by_exchange_id(&fill.order_id);
+                if let Some(cid) = cid {
+                    let cid = cid.to_string();
+                    self.order_manager.update_fill(&cid, fill.qty, fill.price);
                     self.logger.log_fill(&fill);
                     self.daily_pnl -= fill.fee;
                     let _ = self.event_tx.send(LuaEvent::Fill(fill));
@@ -253,6 +344,67 @@ impl<E: Exchange> Engine<E> {
         }
 
         self.order_manager.cleanup_filled();
+    }
+
+    async fn check_sl_tp(&mut self) {
+        let price = self.last_price;
+        if price <= 0.0 { return; }
+
+        let triggered: Vec<(String, Side, f64)> = self
+            .order_manager
+            .active_sl_tp()
+            .into_iter()
+            .filter_map(|stop| {
+                // Long (close_side=Sell): SL below entry, TP above
+                // Short (close_side=Buy): SL above entry, TP below
+                if stop.side == Side::Sell {
+                    if let Some(sl) = stop.stop_loss {
+                        if price <= sl {
+                            return Some((stop.client_id, stop.side, stop.qty));
+                        }
+                    }
+                    if let Some(tp) = stop.take_profit {
+                        if price >= tp {
+                            return Some((stop.client_id, stop.side, stop.qty));
+                        }
+                    }
+                } else {
+                    if let Some(sl) = stop.stop_loss {
+                        if price >= sl {
+                            return Some((stop.client_id, stop.side, stop.qty));
+                        }
+                    }
+                    if let Some(tp) = stop.take_profit {
+                        if price <= tp {
+                            return Some((stop.client_id, stop.side, stop.qty));
+                        }
+                    }
+                }
+                None
+            })
+            .collect();
+
+        for (cid, side, qty) in triggered {
+            let close = Order {
+                symbol: self.symbols.first().cloned().unwrap_or_default(),
+                side,
+                qty,
+                price: None,
+                order_type: OrderType::Market,
+                reduce_only: true,
+                stop_loss: None,
+                take_profit: None,
+            };
+            match self.exchange.place_order(close).await {
+                Ok(id) => {
+                    self.order_manager.deactivate_sl_tp(&cid);
+                    tracing::info!("SL/TP triggered for {cid}: close {side:?} {qty} order={id}");
+                }
+                Err(e) => {
+                    tracing::warn!("SL/TP close order failed for {cid}: {e}");
+                }
+            }
+        }
     }
 
     fn equity_check(&mut self) {

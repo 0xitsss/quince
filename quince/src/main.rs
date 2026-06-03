@@ -13,7 +13,17 @@ async fn main() -> Result<(), EngineError> {
         )
         .init();
 
+    #[cfg(feature = "profiling")]
+    {
+        puffin::set_scopes_on(true);
+        let addr = "127.0.0.1:29012";
+        let server = puffin_http::Server::new(addr).unwrap();
+        tracing::info!("puffin profiler listening on http://{addr}");
+        std::mem::forget(server);
+    }
+
     let is_mock = std::env::var("QUINCE_MOCK").is_ok();
+    let is_public = std::env::var("QUINCE_PUBLIC").is_ok();
     let symbol = std::env::var("QUINCE_SYMBOL").unwrap_or_else(|_| "btcusdt".into());
     let strategy = std::env::var("QUINCE_STRATEGY")
         .unwrap_or_else(|_| "strategies/test_all.lua".into());
@@ -37,18 +47,29 @@ async fn main() -> Result<(), EngineError> {
     };
     let risk = RiskControls::new(risk_config);
 
-    if is_mock {
-        tracing::info!("starting in MOCK mode (no API keys)");
+    if is_public {
+        tracing::info!("starting in PUBLIC mode (Binance WS, no API keys)");
+        let exchange = mock::MockExchange::new_public();
+        let mut engine = Engine::new(exchange, &[symbol], &strategy, risk, &log_path)?;
+        engine.run().await
+    } else if is_mock {
+        tracing::info!("starting in MOCK mode (simulated data)");
         let exchange = mock::MockExchange::new();
         let mut engine = Engine::new(exchange, &[symbol], &strategy, risk, &log_path)?;
         engine.run().await
-    } else {
-        let api_key = std::env::var("BINANCE_API_KEY").expect("BINANCE_API_KEY required");
-        let secret_key = std::env::var("BINANCE_SECRET_KEY").expect("BINANCE_SECRET_KEY required");
+    } else if let (Ok(api_key), Ok(secret_key)) = (
+        std::env::var("BINANCE_API_KEY"),
+        std::env::var("BINANCE_SECRET_KEY"),
+    ) {
         let testnet = std::env::var("QUINCE_TESTNET").is_ok();
         let exchange = quince::exchange::binance::Binance::new(&api_key, &secret_key, testnet);
         let mut engine = Engine::new(exchange, &[symbol], &strategy, risk, &log_path)?;
         tracing::info!("quince engine starting");
+        engine.run().await
+    } else {
+        tracing::info!("no BINANCE_API_KEY set — falling back to PUBLIC mode (Binance WS, no keys)");
+        let exchange = mock::MockExchange::new_public();
+        let mut engine = Engine::new(exchange, &[symbol], &strategy, risk, &log_path)?;
         engine.run().await
     }
 }

@@ -1,22 +1,22 @@
--- USING sma 20
--- USING ema 20
--- USING wma 20
--- USING vwma 20
--- USING lsma 20
--- USING rsi 14
--- USING macd 12 26 9
--- USING cci 20 0.015
--- USING roc 14
--- USING stoch 14
--- USING bb 20 2.0
--- USING kc 20 1.5
--- USING atr 14
--- USING mfi 14
--- USING adx 14
+-- USING sma 20; SET BUFFER 1024
+-- USING ema 20; SET BUFFER 1024
+-- USING wma 20; SET BUFFER 1024
+-- USING vwma 20; SET BUFFER 1024
+-- USING lsma 20; SET BUFFER 1024
+-- USING rsi 14; SET BUFFER 1024
+-- USING macd 12 26 9; SET BUFFER 1024
+-- USING cci 20 0.015; SET BUFFER 1024
+-- USING roc 14; SET BUFFER 1024
+-- USING stoch 14; SET BUFFER 1024
+-- USING bb 20 2.0; SET BUFFER 1024
+-- USING kc 20 1.5; SET BUFFER 1024
+-- USING atr 14; SET BUFFER 512
+-- USING mfi 14; SET BUFFER 512
+-- USING adx 14; SET BUFFER 512
 -- USING cvd
 -- USING pmdi
 -- USING nmdi
--- USING zscore 20
+-- USING zscore 20; SET BUFFER 1024
 
 local counter = 0
 

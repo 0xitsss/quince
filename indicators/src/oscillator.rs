@@ -1,9 +1,9 @@
-use std::collections::VecDeque;
+use quince_core::ring::RingVec;
 
 pub struct Rsi {
     period: usize,
-    gains: VecDeque<f64>,
-    losses: VecDeque<f64>,
+    gains: RingVec,
+    losses: RingVec,
     avg_gain: Option<f64>,
     avg_loss: Option<f64>,
     prev: Option<f64>,
@@ -13,7 +13,7 @@ pub struct Rsi {
 impl Rsi {
     pub fn new(period: usize) -> Self {
         assert!(period > 0, "RSI period must be > 0");
-        Self { period, gains: VecDeque::with_capacity(period), losses: VecDeque::with_capacity(period), avg_gain: None, avg_loss: None, prev: None, count: 0 }
+        Self { period, gains: RingVec::new(period), losses: RingVec::new(period), avg_gain: None, avg_loss: None, prev: None, count: 0 }
     }
 
     pub fn update(&mut self, price: f64) -> Option<f64> {
@@ -23,8 +23,8 @@ impl Rsi {
             let loss = (-diff).max(0.0);
 
             if self.count < self.period {
-                self.gains.push_back(gain);
-                self.losses.push_back(loss);
+                self.gains.push(gain);
+                self.losses.push(loss);
                 self.count += 1;
                 if self.count == self.period {
                     self.avg_gain = Some(self.gains.iter().sum::<f64>() / self.period as f64);
@@ -105,25 +105,22 @@ pub struct MacdOutput {
 
 pub struct Cci {
     period: usize,
-    typical_buffer: VecDeque<f64>,
+    typical_buffer: RingVec,
     constant: f64,
 }
 
 impl Cci {
     pub fn new(period: usize, constant: f64) -> Self {
         assert!(period > 0, "CCI period must be > 0");
-        Self { period, typical_buffer: VecDeque::with_capacity(period), constant }
+        Self { period, typical_buffer: RingVec::new(period), constant }
     }
 
     pub fn update(&mut self, high: f64, low: f64, close: f64) -> Option<f64> {
         let tp = (high + low + close) / 3.0;
-        self.typical_buffer.push_back(tp);
-        if self.typical_buffer.len() > self.period {
-            self.typical_buffer.pop_front();
-        }
+        self.typical_buffer.push(tp);
         if self.typical_buffer.len() == self.period {
             let sma_tp: f64 = self.typical_buffer.iter().sum::<f64>() / self.period as f64;
-            let mad: f64 = self.typical_buffer.iter().map(|&v| (v - sma_tp).abs()).sum::<f64>() / self.period as f64;
+            let mad: f64 = self.typical_buffer.iter().map(|v| (v - sma_tp).abs()).sum::<f64>() / self.period as f64;
             if mad == 0.0 { return Some(0.0) }
             Some((tp - sma_tp) / (self.constant * mad))
         } else {
@@ -136,23 +133,20 @@ impl Cci {
 
 pub struct Roc {
     period: usize,
-    buffer: VecDeque<f64>,
+    buffer: RingVec,
 }
 
 impl Roc {
     pub fn new(period: usize) -> Self {
         assert!(period > 0, "ROC period must be > 0");
-        Self { period, buffer: VecDeque::with_capacity(period + 1) }
+        Self { period, buffer: RingVec::new(period + 1) }
     }
 
     pub fn update(&mut self, price: f64) -> Option<f64> {
-        self.buffer.push_back(price);
-        if self.buffer.len() > self.period + 1 {
-            self.buffer.pop_front();
-        }
+        self.buffer.push(price);
         if self.buffer.len() == self.period + 1 {
-            let prev = self.buffer.front().unwrap();
-            if *prev == 0.0 { return None }
+            let prev = self.buffer.get(0).unwrap();
+            if prev == 0.0 { return None }
             Some((price - prev) / prev * 100.0)
         } else {
             None
@@ -164,26 +158,22 @@ impl Roc {
 
 pub struct Stochastic {
     period: usize,
-    high_buffer: VecDeque<f64>,
-    low_buffer: VecDeque<f64>,
+    high_buffer: RingVec,
+    low_buffer: RingVec,
 }
 
 impl Stochastic {
     pub fn new(period: usize) -> Self {
         assert!(period > 0, "Stochastic period must be > 0");
-        Self { period, high_buffer: VecDeque::with_capacity(period), low_buffer: VecDeque::with_capacity(period) }
+        Self { period, high_buffer: RingVec::new(period), low_buffer: RingVec::new(period) }
     }
 
     pub fn update(&mut self, high: f64, low: f64, close: f64) -> Option<f64> {
-        self.high_buffer.push_back(high);
-        self.low_buffer.push_back(low);
-        if self.high_buffer.len() > self.period {
-            self.high_buffer.pop_front();
-            self.low_buffer.pop_front();
-        }
+        self.high_buffer.push(high);
+        self.low_buffer.push(low);
         if self.high_buffer.len() == self.period {
-            let highest = self.high_buffer.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
-            let lowest = self.low_buffer.iter().cloned().fold(f64::INFINITY, f64::min);
+            let highest = self.high_buffer.iter().fold(f64::NEG_INFINITY, f64::max);
+            let lowest = self.low_buffer.iter().fold(f64::INFINITY, f64::min);
             if highest == lowest { return Some(50.0) }
             Some((close - lowest) / (highest - lowest) * 100.0)
         } else {

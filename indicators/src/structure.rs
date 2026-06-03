@@ -1,11 +1,11 @@
 use crate::Candle;
-use std::collections::VecDeque;
+use quince_core::ring::RingVec;
 
 pub struct Adx {
     period: usize,
-    tr_buffer: VecDeque<f64>,
-    plus_dm_buffer: VecDeque<f64>,
-    minus_dm_buffer: VecDeque<f64>,
+    tr_buffer: RingVec,
+    plus_dm_buffer: RingVec,
+    minus_dm_buffer: RingVec,
     prev_candle: Option<Candle>,
     count: usize,
     tr_smooth: Option<f64>,
@@ -18,9 +18,9 @@ impl Adx {
     pub fn new(period: usize) -> Self {
         assert!(period > 1, "ADX period must be > 1");
         Self {
-            period, tr_buffer: VecDeque::with_capacity(period),
-            plus_dm_buffer: VecDeque::with_capacity(period),
-            minus_dm_buffer: VecDeque::with_capacity(period),
+            period, tr_buffer: RingVec::new(period),
+            plus_dm_buffer: RingVec::new(period),
+            minus_dm_buffer: RingVec::new(period),
             prev_candle: None, count: 0,
             tr_smooth: None, plus_di: None, minus_di: None, adx_ema: None,
         }
@@ -35,9 +35,9 @@ impl Adx {
             let tr = ((candle.high - candle.low).max((candle.high - prev.close).abs()).max((candle.low - prev.close).abs())).max(0.0);
 
             if self.count < self.period {
-                self.tr_buffer.push_back(tr);
-                self.plus_dm_buffer.push_back(plus_dm);
-                self.minus_dm_buffer.push_back(minus_dm);
+                self.tr_buffer.push(tr);
+                self.plus_dm_buffer.push(plus_dm);
+                self.minus_dm_buffer.push(minus_dm);
                 self.count += 1;
                 if self.count == self.period {
                     let tr_sum: f64 = self.tr_buffer.iter().sum();
@@ -116,23 +116,20 @@ impl DomDepth {
 
 pub struct ZScore {
     period: usize,
-    buffer: VecDeque<f64>,
+    buffer: RingVec,
 }
 
 impl ZScore {
     pub fn new(period: usize) -> Self {
         assert!(period > 1, "ZScore period must be > 1");
-        Self { period, buffer: VecDeque::with_capacity(period) }
+        Self { period, buffer: RingVec::new(period) }
     }
 
     pub fn update(&mut self, value: f64) -> Option<f64> {
-        self.buffer.push_back(value);
-        if self.buffer.len() > self.period {
-            self.buffer.pop_front();
-        }
+        self.buffer.push(value);
         if self.buffer.len() == self.period {
             let mean: f64 = self.buffer.iter().sum::<f64>() / self.period as f64;
-            let variance: f64 = self.buffer.iter().map(|&v| (v - mean).powi(2)).sum::<f64>() / self.period as f64;
+            let variance: f64 = self.buffer.iter().map(|v| (v - mean).powi(2)).sum::<f64>() / self.period as f64;
             let stddev = variance.sqrt();
             if stddev == 0.0 { return Some(0.0) }
             Some((value - mean) / stddev)

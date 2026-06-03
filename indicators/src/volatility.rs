@@ -1,4 +1,4 @@
-use std::collections::VecDeque;
+use quince_core::ring::RingVec;
 
 pub struct TrueRange;
 
@@ -16,13 +16,13 @@ pub struct Atr {
     atr: Option<f64>,
     prev_close: Option<f64>,
     count: usize,
-    initial_tr: VecDeque<f64>,
+    initial_tr: RingVec,
 }
 
 impl Atr {
     pub fn new(period: usize) -> Self {
         assert!(period > 0, "ATR period must be > 0");
-        Self { period, atr: None, prev_close: None, count: 0, initial_tr: VecDeque::with_capacity(period) }
+        Self { period, atr: None, prev_close: None, count: 0, initial_tr: RingVec::new(period) }
     }
 
     pub fn update(&mut self, high: f64, low: f64, close: f64) -> Option<f64> {
@@ -33,7 +33,7 @@ impl Atr {
         self.prev_close = Some(close);
 
         if self.count < self.period {
-            self.initial_tr.push_back(tr);
+            self.initial_tr.push(tr);
             self.count += 1;
             if self.count == self.period {
                 self.atr = Some(self.initial_tr.iter().sum::<f64>() / self.period as f64);
@@ -52,23 +52,20 @@ pub struct BollingerBands {
     period: usize,
     multiplier: f64,
     sma: super::ma::Sma,
-    buffer: VecDeque<f64>,
+    buffer: RingVec,
 }
 
 impl BollingerBands {
     pub fn new(period: usize, multiplier: f64) -> Self {
         assert!(period > 0 && multiplier > 0.0);
-        Self { period, multiplier, sma: super::ma::Sma::new(period), buffer: VecDeque::with_capacity(period) }
+        Self { period, multiplier, sma: super::ma::Sma::new(period), buffer: RingVec::new(period) }
     }
 
     pub fn update(&mut self, price: f64) -> Option<BollingerOutput> {
-        self.buffer.push_back(price);
-        if self.buffer.len() > self.period {
-            self.buffer.pop_front();
-        }
+        self.buffer.push(price);
         let middle = self.sma.update(price)?;
         if self.buffer.len() == self.period {
-            let variance: f64 = self.buffer.iter().map(|&v| (v - middle).powi(2)).sum::<f64>() / self.period as f64;
+            let variance: f64 = self.buffer.iter().map(|v| (v - middle).powi(2)).sum::<f64>() / self.period as f64;
             let stddev = variance.sqrt();
             Some(BollingerOutput {
                 middle,

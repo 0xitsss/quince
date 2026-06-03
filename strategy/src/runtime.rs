@@ -1,8 +1,8 @@
+use crossbeam_channel;
 use mlua::{Function, Lua, Table};
 use quince_core::types::*;
 use std::collections::HashMap;
 use std::sync::Arc;
-use tokio::sync::mpsc;
 
 pub enum LuaEvent {
     Trade(Trade),
@@ -13,7 +13,7 @@ pub enum LuaEvent {
 
 pub fn spawn_strategy(
     path: &str,
-    mut event_rx: mpsc::UnboundedReceiver<LuaEvent>,
+    event_rx: crossbeam_channel::Receiver<LuaEvent>,
     ctx: Arc<std::sync::Mutex<StrategyCtx>>,
 ) -> Result<(), String> {
     let code = std::fs::read_to_string(path)
@@ -38,7 +38,7 @@ pub fn spawn_strategy(
         let has_on_fill = lua.globals().get::<Function>("on_fill").is_ok();
         let has_on_eval = lua.globals().get::<Function>("on_eval").is_ok();
 
-        while let Some(event) = event_rx.blocking_recv() {
+        while let Ok(event) = event_rx.recv() {
             match event {
                 LuaEvent::Trade(trade) if has_on_trade => {
                     if let Ok(t) = trade_to_table(&lua, &trade) {
@@ -84,6 +84,8 @@ fn setup_api(lua: &Lua, ctx: Arc<std::sync::Mutex<StrategyCtx>>) -> Result<(), m
         let price: Option<f64> = args.get("price").ok();
         let typ: String = args.get("type").unwrap_or("market".into());
         let reduce: bool = args.get("reduce_only").unwrap_or(false);
+        let sl: Option<f64> = args.get("stop_loss").ok();
+        let tp: Option<f64> = args.get("take_profit").ok();
 
         let order = Order {
             symbol: "btcusdt".to_string(),
@@ -92,6 +94,8 @@ fn setup_api(lua: &Lua, ctx: Arc<std::sync::Mutex<StrategyCtx>>) -> Result<(), m
             price,
             order_type: if typ == "limit" { OrderType::Limit } else { OrderType::Market },
             reduce_only: reduce,
+            stop_loss: sl,
+            take_profit: tp,
         };
 
         if let Ok(ctx) = ctx2.lock() {
@@ -181,7 +185,7 @@ fn setup_api(lua: &Lua, ctx: Arc<std::sync::Mutex<StrategyCtx>>) -> Result<(), m
     let ctx_i = Arc::clone(&ctx);
     let get_fn = lua.create_function(move |_, name: String| {
         let ctx = ctx_i.lock().unwrap();
-        Ok(ctx.indicators.get(&name).copied().unwrap_or(0.0))
+        Ok(ctx.indicators.get(name.as_str()).copied().unwrap_or(0.0))
     })?;
     table.raw_set("get", get_fn)?;
 
@@ -246,8 +250,8 @@ fn fill_to_table(lua: &Lua, fill: &OrderFill) -> Result<Table, mlua::Error> {
 pub struct StrategyCtx {
     pub trades: Vec<Trade>,
     pub depth: Option<Depth>,
-    pub indicators: HashMap<String, f64>,
+    pub indicators: HashMap<&'static str, f64>,
     pub balance: HashMap<String, f64>,
     pub position: Option<Position>,
-    pub orders_tx: mpsc::UnboundedSender<Order>,
+    pub orders_tx: crossbeam_channel::Sender<Order>,
 }

@@ -4,13 +4,13 @@ use serde_json::{Map, Value};
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
-use tokio::sync::{mpsc, oneshot};
+use tokio::sync::oneshot;
 
 const CHAN_CAP: usize = 64;
 const MAX_PENDING: usize = 32;
 
 pub struct WsClient {
-    pub req_tx: mpsc::Sender<WsRequest>,
+    pub req_tx: crossbeam_channel::Sender<WsRequest>,
 }
 
 pub struct WsRequest {
@@ -87,14 +87,14 @@ impl BinanceWs {
     pub async fn connect(
         &self,
         symbols: &[String],
-    ) -> Result<(WsClient, mpsc::Receiver<StreamMsg>)> {
+    ) -> Result<(WsClient, crossbeam_channel::Receiver<StreamMsg>)> {
         let (ws_stream, _) = tokio_tungstenite::connect_async(&self.url)
             .await
             .map_err(|e| ExchangeError::Ws(e.to_string()))?;
 
         let (mut writer, mut reader) = ws_stream.split();
-        let (market_tx, market_rx) = mpsc::channel(1024);
-        let (req_tx, mut req_rx) = mpsc::channel::<WsRequest>(CHAN_CAP);
+        let (market_tx, market_rx) = crossbeam_channel::bounded(1024);
+        let (req_tx, req_rx) = crossbeam_channel::bounded::<WsRequest>(CHAN_CAP);
 
         let streams: Vec<String> = symbols
             .iter()
@@ -129,51 +129,78 @@ impl BinanceWs {
             let mut pending: HashMap<u64, oneshot::Sender<Result<Value>>> =
                 HashMap::with_capacity(MAX_PENDING);
             let next_id: AtomicU64 = AtomicU64::new(1);
+            let mut reader_alive = true;
 
             loop {
                 tokio::select! {
-                    Some(Ok(msg)) = reader.next() => {
-                        if let tokio_tungstenite::tungstenite::Message::Text(text) = msg {
-                            if let Ok(json) = serde_json::from_str::<Value>(&text) {
-                                if let Some(id_val) = json.get("id") {
-                                    let id = match id_val {
-                                        Value::Number(n) => n.as_u64().unwrap_or(u64::MAX),
-                                        Value::String(s) => s.parse().unwrap_or(u64::MAX),
-                                        _ => continue,
-                                    };
-                                    if let Some(sender) = pending.remove(&id) {
-                                        if json.get("error").is_some() {
-                                            let err_msg = json["error"]["msg"].as_str().unwrap_or("ws error");
-                                            let _ = sender.send(Err(ExchangeError::Order(err_msg.into())));
-                                        } else {
-                                            let _ = sender.send(Ok(json.get("result").cloned().unwrap_or(Value::Null)));
+                    msg = reader.next(), if reader_alive => {
+                        match msg {
+                            Some(Ok(tokio_tungstenite::tungstenite::Message::Text(text))) => {
+                                if let Ok(json) = serde_json::from_str::<Value>(&text) {
+                                    if let Some(id_val) = json.get("id") {
+                                        let id = match id_val {
+                                            Value::Number(n) => n.as_u64().unwrap_or(u64::MAX),
+                                            Value::String(s) => s.parse().unwrap_or(u64::MAX),
+                                            _ => continue,
+                                        };
+                                        if let Some(sender) = pending.remove(&id) {
+                                            if json.get("error").is_some() {
+                                                let err_msg = json["error"]["msg"].as_str().unwrap_or("ws error");
+                                                let _ = sender.send(Err(ExchangeError::Order(err_msg.into())));
+                                            } else {
+                                                let _ = sender.send(Ok(json.get("result").cloned().unwrap_or(Value::Null)));
+                                            }
                                         }
-                                    }
-                                } else if json.get("e").is_some() {
-                                    if let Some(stream_msg) = super::types::parse_ws_msg(&text) {
-                                        let _ = market_tx.send(stream_msg).await;
+                                    } else if json.get("e").is_some() {
+                                        if let Some(stream_msg) = super::types::parse_ws_msg(text) {
+                                            let _ = market_tx.try_send(stream_msg);
+                                        }
                                     }
                                 }
                             }
+                            Some(Ok(_)) => {}
+                            _ => reader_alive = false,
                         }
                     }
-                    Some(req) = req_rx.recv() => {
-                        let id = next_id.fetch_add(1, Ordering::Relaxed);
-                        let mut params = req.params;
-                        sign_params(&api_key, &secret_key, &mut params);
-                        let mut request = Map::new();
-                        request.insert("id".into(), Value::Number(id.into()));
-                        request.insert("method".into(), Value::String(req.method));
-                        request.insert("params".into(), Value::Object(params));
+                    _ = tokio::time::sleep(std::time::Duration::from_millis(10)) => {
+                        while let Ok(req) = req_rx.try_recv() {
+                            let id = next_id.fetch_add(1, Ordering::Relaxed);
+                            let mut params = req.params;
+                            sign_params(&api_key, &secret_key, &mut params);
+                            let mut request = Map::new();
+                            request.insert("id".into(), Value::Number(id.into()));
+                            request.insert("method".into(), Value::String(req.method));
+                            request.insert("params".into(), Value::Object(params));
 
-                        let payload = serde_json::to_string(&request).unwrap();
-                        if let Err(e) = writer.send(
-                            tokio_tungstenite::tungstenite::Message::Text(payload),
-                        ).await {
-                            let _ = req.response_tx.send(Err(ExchangeError::Ws(e.to_string())));
-                            continue;
+                            let payload = serde_json::to_string(&request).unwrap();
+                            if let Err(e) = writer.send(
+                                tokio_tungstenite::tungstenite::Message::Text(payload),
+                            ).await {
+                                let _ = req.response_tx.send(Err(ExchangeError::Ws(e.to_string())));
+                                continue;
+                            }
+                            pending.insert(id, req.response_tx);
                         }
-                        pending.insert(id, req.response_tx);
+                        if !reader_alive {
+                            while let Ok(req) = req_rx.try_recv() {
+                                let id = next_id.fetch_add(1, Ordering::Relaxed);
+                                let mut params = req.params;
+                                sign_params(&api_key, &secret_key, &mut params);
+                                let mut request = Map::new();
+                                request.insert("id".into(), Value::Number(id.into()));
+                                request.insert("method".into(), Value::String(req.method));
+                                request.insert("params".into(), Value::Object(params));
+                                let payload = serde_json::to_string(&request).unwrap();
+                                if let Err(e) = writer.send(
+                                    tokio_tungstenite::tungstenite::Message::Text(payload),
+                                ).await {
+                                    let _ = req.response_tx.send(Err(ExchangeError::Ws(e.to_string())));
+                                    continue;
+                                }
+                                pending.insert(id, req.response_tx);
+                            }
+                            break;
+                        }
                     }
                     else => break,
                 }

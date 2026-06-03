@@ -12,7 +12,7 @@ members = [
 resolver = "2"
 
 [workspace.package]
-version = "0.1.0"
+version = "0.1.1"
 edition = "2021"
 license = "GPL-3.0-only"
 
@@ -29,3 +29,7 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 async-trait = "0.1"
 mlua = { version = "0.10", features = ["lua54", "vendored", "send"] }
+puffin = "0.20"
+puffin_http = "0.17"
+simd-json = "0.14"
+crossbeam-channel = "0.5"

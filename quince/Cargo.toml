@@ -4,6 +4,10 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 
+[features]
+default = []
+profiling = ["puffin", "puffin_http", "quince-engine/profiling"]
+
 [dependencies]
 quince-core = { path = "../core" }
 quince-exchange = { path = "../exchange" }
@@ -15,5 +19,8 @@ quince-indicators = { path = "../indicators" }
 tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }
 tracing.workspace = true
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+crossbeam-channel.workspace = true
 async-trait.workspace = true
 chrono.workspace = true
+puffin = { workspace = true, optional = true }
+puffin_http = { workspace = true, optional = true }

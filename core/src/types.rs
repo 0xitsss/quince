@@ -24,7 +24,7 @@ impl Side {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Copy)]
 pub struct DepthLevel {
     pub price: f64,
     pub qty: f64,
@@ -44,6 +44,8 @@ pub struct Order {
     pub price: Option<f64>,
     pub order_type: OrderType,
     pub reduce_only: bool,
+    pub stop_loss: Option<f64>,
+    pub take_profit: Option<f64>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]

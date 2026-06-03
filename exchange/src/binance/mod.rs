@@ -1,7 +1,9 @@
+pub mod public;
 pub mod ws;
 pub mod types;
 
 use crate::r#trait::{Exchange, ExchangeError, OrderStatus, Result, Stream};
+use crossbeam_channel;
 use quince_core::types::*;
 use serde_json::{Map, Value};
 use std::sync::OnceLock;
@@ -23,7 +25,7 @@ impl Binance {
         }
     }
 
-    fn req_tx(&self) -> Result<tokio::sync::mpsc::Sender<ws::WsRequest>> {
+    fn req_tx(&self) -> Result<crossbeam_channel::Sender<ws::WsRequest>> {
         self.client
             .get()
             .map(|c| c.req_tx.clone())
@@ -131,12 +133,11 @@ impl Exchange for Binance {
         let req_tx = self.req_tx()?;
         let (tx, rx) = tokio::sync::oneshot::channel();
         req_tx
-            .send(ws::WsRequest {
+            .try_send(ws::WsRequest {
                 method: "order.place".into(),
                 params,
                 response_tx: tx,
             })
-            .await
             .map_err(|_| ExchangeError::Disconnected)?;
         let result = rx.await.map_err(|_| ExchangeError::Disconnected)??;
 
@@ -156,12 +157,11 @@ impl Exchange for Binance {
         let req_tx = self.req_tx()?;
         let (tx, rx) = tokio::sync::oneshot::channel();
         req_tx
-            .send(ws::WsRequest {
+            .try_send(ws::WsRequest {
                 method: "order.cancel".into(),
                 params,
                 response_tx: tx,
             })
-            .await
             .map_err(|_| ExchangeError::Disconnected)?;
         rx.await.map_err(|_| ExchangeError::Disconnected)??;
         Ok(())
@@ -177,12 +177,11 @@ impl Exchange for Binance {
         let req_tx = self.req_tx()?;
         let (tx, rx) = tokio::sync::oneshot::channel();
         req_tx
-            .send(ws::WsRequest {
+            .try_send(ws::WsRequest {
                 method: "order.status".into(),
                 params,
                 response_tx: tx,
             })
-            .await
             .map_err(|_| ExchangeError::Disconnected)?;
         let result = rx.await.map_err(|_| ExchangeError::Disconnected)??;
 
@@ -221,12 +220,11 @@ impl Exchange for Binance {
         let req_tx = self.req_tx()?;
         let (tx, rx) = tokio::sync::oneshot::channel();
         req_tx
-            .send(ws::WsRequest {
+            .try_send(ws::WsRequest {
                 method: "account.info".into(),
                 params: Map::new(),
                 response_tx: tx,
             })
-            .await
             .map_err(|_| ExchangeError::Disconnected)?;
         let result = rx.await.map_err(|_| ExchangeError::Disconnected)??;
         Self::parse_account_info(result)
@@ -241,12 +239,11 @@ impl Exchange for Binance {
         let req_tx = self.req_tx()?;
         let (tx, rx) = tokio::sync::oneshot::channel();
         req_tx
-            .send(ws::WsRequest {
+            .try_send(ws::WsRequest {
                 method: "ticker.price".into(),
                 params,
                 response_tx: tx,
             })
-            .await
             .map_err(|_| ExchangeError::Disconnected)?;
         let result = rx.await.map_err(|_| ExchangeError::Disconnected)??;
         result["price"]

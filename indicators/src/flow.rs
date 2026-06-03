@@ -1,18 +1,18 @@
 use crate::Candle;
-use std::collections::VecDeque;
+use quince_core::ring::RingVec;
 
 pub struct Mfi {
     period: usize,
     typical_prev: Option<f64>,
-    pos_flow: VecDeque<f64>,
-    neg_flow: VecDeque<f64>,
+    pos_flow: RingVec,
+    neg_flow: RingVec,
     count: usize,
 }
 
 impl Mfi {
     pub fn new(period: usize) -> Self {
         assert!(period > 0, "MFI period must be > 0");
-        Self { period, typical_prev: None, pos_flow: VecDeque::with_capacity(period), neg_flow: VecDeque::with_capacity(period), count: 0 }
+        Self { period, typical_prev: None, pos_flow: RingVec::new(period), neg_flow: RingVec::new(period), count: 0 }
     }
 
     pub fn update(&mut self, candle: &Candle) -> Option<f64> {
@@ -21,21 +21,14 @@ impl Mfi {
 
         if let Some(prev_tp) = self.typical_prev {
             if self.count < self.period {
-                if tp > prev_tp { self.pos_flow.push_back(money_flow); self.neg_flow.push_back(0.0); }
-                else if tp < prev_tp { self.pos_flow.push_back(0.0); self.neg_flow.push_back(money_flow); }
-                else { self.pos_flow.push_back(0.0); self.neg_flow.push_back(0.0); }
+                if tp > prev_tp { self.pos_flow.push(money_flow); self.neg_flow.push(0.0); }
+                else if tp < prev_tp { self.pos_flow.push(0.0); self.neg_flow.push(money_flow); }
+                else { self.pos_flow.push(0.0); self.neg_flow.push(0.0); }
                 self.count += 1;
             } else {
-                if tp > prev_tp {
-                    let _ = self.pos_flow.pop_front().map(|_v| self.pos_flow.push_back(money_flow));
-                    let _ = self.neg_flow.pop_front().map(|_v| self.neg_flow.push_back(0.0));
-                } else if tp < prev_tp {
-                    let _ = self.pos_flow.pop_front().map(|_v| self.pos_flow.push_back(0.0));
-                    let _ = self.neg_flow.pop_front().map(|_v| self.neg_flow.push_back(money_flow));
-                } else {
-                    let _ = self.pos_flow.pop_front().map(|_v| self.pos_flow.push_back(0.0));
-                    let _ = self.neg_flow.pop_front().map(|_v| self.neg_flow.push_back(0.0));
-                }
+                if tp > prev_tp { self.pos_flow.push(money_flow); self.neg_flow.push(0.0); }
+                else if tp < prev_tp { self.pos_flow.push(0.0); self.neg_flow.push(money_flow); }
+                else { self.pos_flow.push(0.0); self.neg_flow.push(0.0); }
             }
 
             if self.count >= self.period {

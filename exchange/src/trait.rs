@@ -19,9 +19,10 @@ pub enum ExchangeError {
 }
 
 pub struct Stream {
-    pub rx: tokio::sync::mpsc::Receiver<StreamMsg>,
+    pub rx: crossbeam_channel::Receiver<StreamMsg>,
 }
 
+#[derive(Debug)]
 pub enum StreamMsg {
     Trade(Trade),
     Depth(Depth),

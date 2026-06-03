@@ -1,232 +1,330 @@
 use quince_core::types::*;
-use quince_indicators::{
-    ma::*, oscillator::*, volatility::*, flow::*, structure::*, Candle,
-};
-use std::collections::HashMap;
+use quince_indicators::Candle;
 
-macro_rules! upd_single {
-    ($self:ident, $opt:ident, $key:expr, $val:expr, $m:ident) => {
-        if let Some(ref mut ind) = $self.$opt {
-            if let Some(r) = ind.update($val) {
-                $m.insert($key.into(), r);
-            }
-        }
-    };
-}
-
-macro_rules! upd_triple {
-    ($self:ident, $opt:ident, $key:expr, $a:expr, $b:expr, $c:expr, $m:ident) => {
-        if let Some(ref mut ind) = $self.$opt {
-            if let Some(r) = ind.update($a, $b, $c) {
-                $m.insert($key.into(), r);
-            }
-        }
-    };
-}
+const DEFAULT_BUFFER: usize = 256;
 
 #[derive(Debug, Clone)]
-pub struct IndicatorConfig {
-    pub sma: Option<usize>,
-    pub ema: Option<usize>,
-    pub wma: Option<usize>,
-    pub vwma: Option<usize>,
-    pub lsma: Option<usize>,
-    pub rsi: Option<usize>,
-    pub macd: Option<(usize, usize, usize)>,
-    pub cci: Option<(usize, f64)>,
-    pub roc: Option<usize>,
-    pub stoch: Option<usize>,
-    pub bb: Option<(usize, f64)>,
-    pub kc: Option<(usize, f64)>,
-    pub atr: Option<usize>,
-    pub mfi: Option<usize>,
-    pub adx: Option<usize>,
-    pub cvd: bool,
-    pub pmdi: bool,
-    pub nmdi: bool,
-    pub zscore: Option<usize>,
+pub struct IndicatorEntry {
+    pub name: String,
+    pub params: Vec<f64>,
+    pub buffer: usize,
 }
 
-/// Parse `USING` declarations from a strategy file.
-/// Lines matching `-- USING <name> [params...]` configure indicators.
-pub fn parse_using(src: &str) -> IndicatorConfig {
-    let mut cfg = IndicatorConfig {
-        sma: None, ema: None, wma: None, vwma: None, lsma: None,
-        rsi: None, macd: None, cci: None, roc: None, stoch: None,
-        bb: None, kc: None, atr: None, mfi: None, adx: None,
-        cvd: false, pmdi: false, nmdi: false, zscore: None,
-    };
+pub fn parse_using(src: &str) -> Vec<IndicatorEntry> {
+    let mut entries: Vec<IndicatorEntry> = Vec::new();
 
     for line in src.lines() {
         let line = line.trim();
-        let rest = match line.strip_prefix("-- USING ") {
-            Some(r) => r,
-            _ => continue,
-        };
-        let parts: Vec<&str> = rest.split_whitespace().collect();
-        if parts.is_empty() { continue; }
-        let name = parts[0].to_lowercase();
-        let p = |i: usize| parts.get(i).and_then(|s| s.parse::<usize>().ok());
-        let pf = |i: usize| parts.get(i).and_then(|s| s.parse::<f64>().ok());
-        match name.as_str() {
-            "sma" => cfg.sma = p(1),
-            "ema" => cfg.ema = p(1),
-            "wma" => cfg.wma = p(1),
-            "vwma" => cfg.vwma = p(1),
-            "lsma" => cfg.lsma = p(1),
-            "rsi" => cfg.rsi = p(1),
-            "roc" => cfg.roc = p(1),
-            "stoch" => cfg.stoch = p(1),
-            "atr" => cfg.atr = p(1),
-            "mfi" => cfg.mfi = p(1),
-            "adx" => cfg.adx = p(1),
-            "zscore" => cfg.zscore = p(1),
-            "macd" => {
-                if let (Some(f), Some(s), Some(sig)) = (p(1), p(2), p(3)) {
-                    cfg.macd = Some((f, s, sig));
+        if let Some(rest) = line.strip_prefix("-- USING ") {
+            // Split on ';' to handle inline "; SET BUFFER <N>"
+            let (decl, extra) = match rest.find(';') {
+                Some(pos) => (&rest[..pos], Some(&rest[pos + 1..])),
+                None => (rest, None),
+            };
+
+            let parts: Vec<&str> = decl.split_whitespace().collect();
+            if parts.is_empty() { continue; }
+            let name = parts[0].to_lowercase();
+            let params: Vec<f64> = parts[1..].iter()
+                .filter_map(|s| s.parse::<f64>().ok())
+                .collect();
+            let mut buf = default_buffer(&name, &params);
+
+            if let Some(xtra) = extra {
+                let xtra = xtra.trim();
+                if let Some(bstr) = xtra.strip_prefix("SET BUFFER ") {
+                    if let Ok(n) = bstr.trim().parse::<usize>() {
+                        if n > 0 { buf = n; }
+                    }
                 }
             }
-            "cci" => {
-                if let (Some(per), Some(c)) = (p(1), pf(2)) {
-                    cfg.cci = Some((per, c));
+
+            entries.push(IndicatorEntry { name, params, buffer: buf });
+        } else if let Some(rest) = line.strip_prefix("-- SET BUFFER ") {
+            // Standalone line (for the last entry)
+            if let Ok(n) = rest.trim().parse::<usize>() {
+                if n > 0 {
+                    if let Some(entry) = entries.last_mut() {
+                        entry.buffer = n;
+                    }
                 }
             }
-            "bb" => {
-                if let (Some(per), Some(m)) = (p(1), pf(2)) {
-                    cfg.bb = Some((per, m));
-                }
-            }
-            "kc" => {
-                if let (Some(per), Some(m)) = (p(1), pf(2)) {
-                    cfg.kc = Some((per, m));
-                }
-            }
-            "cvd" => cfg.cvd = true,
-            "pmdi" => cfg.pmdi = true,
-            "nmdi" => cfg.nmdi = true,
-            _ => {}
         }
     }
-    cfg
+
+    entries
 }
 
+fn default_buffer(_: &str, params: &[f64]) -> usize {
+    let period = params.first().copied().unwrap_or(20.0) as usize;
+    (period * 2).max(DEFAULT_BUFFER)
+}
+
+// ── ActiveIndicator wraps quince-indicators types ──
+
+enum ActiveIndicator {
+    Sma(quince_indicators::ma::Sma),
+    Ema(quince_indicators::ma::Ema),
+    Wma(quince_indicators::ma::Wma),
+    Vwma(quince_indicators::ma::Vwma),
+    Lsma(quince_indicators::ma::Lsma),
+    Rsi(quince_indicators::oscillator::Rsi),
+    Macd(quince_indicators::oscillator::Macd),
+    Cci(quince_indicators::oscillator::Cci),
+    Roc(quince_indicators::oscillator::Roc),
+    Stoch(quince_indicators::oscillator::Stochastic),
+    Bb(quince_indicators::volatility::BollingerBands),
+    Kc(quince_indicators::volatility::KeltnerChannel),
+    Atr(quince_indicators::volatility::Atr),
+    Mfi(quince_indicators::flow::Mfi),
+    Adx(quince_indicators::structure::Adx),
+    Zscore(quince_indicators::structure::ZScore),
+    Cvd(f64),
+    Pmdi { value: f64, prev_data: f64, has_prev: bool },
+    Nmdi { value: f64, prev_data: f64, has_prev: bool },
+}
+
+// ── IndicatorBank ──
+
 pub struct IndicatorBank {
-    sma: Option<Sma>,
-    ema: Option<Ema>,
-    wma: Option<Wma>,
-    vwma: Option<Vwma>,
-    lsma: Option<Lsma>,
-    rsi: Option<Rsi>,
-    macd: Option<Macd>,
-    cci: Option<Cci>,
-    roc: Option<Roc>,
-    stoch: Option<Stochastic>,
-    bb: Option<BollingerBands>,
-    kc: Option<KeltnerChannel>,
-    atr: Option<Atr>,
-    mfi: Option<Mfi>,
-    adx: Option<Adx>,
-    cvd: Cvd,
-    pmdi: Pmdi,
-    nmdi: Nmdi,
-    zscore: Option<ZScore>,
+    indicators: Vec<ActiveIndicator>,
+    results: Vec<(&'static str, f64)>,
     cum_buy: f64,
     cum_sell: f64,
     trades: u64,
 }
 
 impl IndicatorBank {
-    pub fn new(cfg: &IndicatorConfig) -> Self {
+    pub fn new(cfg: &[IndicatorEntry]) -> Self {
+        let mut indicators = Vec::with_capacity(cfg.len());
+
+        for entry in cfg {
+            let p = |i: usize| entry.params.get(i).copied();
+            let pf = |i: usize| p(i).unwrap_or(0.0);
+            let ind = match entry.name.as_str() {
+                "sma" => ActiveIndicator::Sma(quince_indicators::ma::Sma::new(pf(0) as usize)),
+                "ema" => ActiveIndicator::Ema(quince_indicators::ma::Ema::new(pf(0) as usize)),
+                "wma" => ActiveIndicator::Wma(quince_indicators::ma::Wma::new(pf(0) as usize)),
+                "vwma" => ActiveIndicator::Vwma(quince_indicators::ma::Vwma::new(pf(0) as usize)),
+                "lsma" => ActiveIndicator::Lsma(quince_indicators::ma::Lsma::new(pf(0) as usize)),
+                "rsi" => ActiveIndicator::Rsi(quince_indicators::oscillator::Rsi::new(pf(0) as usize)),
+                "macd" => ActiveIndicator::Macd(quince_indicators::oscillator::Macd::new(pf(0) as usize, pf(1) as usize, pf(2) as usize)),
+                "cci" => ActiveIndicator::Cci(quince_indicators::oscillator::Cci::new(pf(0) as usize, pf(1))),
+                "roc" => ActiveIndicator::Roc(quince_indicators::oscillator::Roc::new(pf(0) as usize)),
+                "stoch" => ActiveIndicator::Stoch(quince_indicators::oscillator::Stochastic::new(pf(0) as usize)),
+                "bb" => ActiveIndicator::Bb(quince_indicators::volatility::BollingerBands::new(pf(0) as usize, pf(1))),
+                "kc" => ActiveIndicator::Kc(quince_indicators::volatility::KeltnerChannel::new(pf(0) as usize, pf(1))),
+                "atr" => ActiveIndicator::Atr(quince_indicators::volatility::Atr::new(pf(0) as usize)),
+                "mfi" => ActiveIndicator::Mfi(quince_indicators::flow::Mfi::new(pf(0) as usize)),
+                "adx" => ActiveIndicator::Adx(quince_indicators::structure::Adx::new(pf(0) as usize)),
+                "zscore" => ActiveIndicator::Zscore(quince_indicators::structure::ZScore::new(pf(0) as usize)),
+                "cvd" => ActiveIndicator::Cvd(0.0),
+                "pmdi" => ActiveIndicator::Pmdi { value: 0.0, prev_data: 0.0, has_prev: false },
+                "nmdi" => ActiveIndicator::Nmdi { value: 0.0, prev_data: 0.0, has_prev: false },
+                _ => continue,
+            };
+            indicators.push(ind);
+        }
+
         Self {
-            sma: cfg.sma.map(Sma::new),
-            ema: cfg.ema.map(Ema::new),
-            wma: cfg.wma.map(Wma::new),
-            vwma: cfg.vwma.map(Vwma::new),
-            lsma: cfg.lsma.map(Lsma::new),
-            rsi: cfg.rsi.map(Rsi::new),
-            macd: cfg.macd.map(|(f, s, sig)| Macd::new(f, s, sig)),
-            cci: cfg.cci.map(|(p, c)| Cci::new(p, c)),
-            roc: cfg.roc.map(Roc::new),
-            stoch: cfg.stoch.map(Stochastic::new),
-            bb: cfg.bb.map(|(p, m)| BollingerBands::new(p, m)),
-            kc: cfg.kc.map(|(p, m)| KeltnerChannel::new(p, m)),
-            atr: cfg.atr.map(Atr::new),
-            mfi: cfg.mfi.map(Mfi::new),
-            adx: cfg.adx.map(Adx::new),
-            cvd: Cvd::new(),
-            pmdi: Pmdi::new(),
-            nmdi: Nmdi::new(),
-            zscore: cfg.zscore.map(ZScore::new),
-            cum_buy: 0.0, cum_sell: 0.0, trades: 0,
+            indicators,
+            results: Vec::with_capacity(64),
+            cum_buy: 0.0,
+            cum_sell: 0.0,
+            trades: 0,
         }
     }
 
-    pub fn on_trade(&mut self, trade: &Trade) -> HashMap<String, f64> {
+    pub fn on_trade(&mut self, trade: &Trade) -> &[(&'static str, f64)] {
+        self.results.clear();
         let p = trade.price;
         let v = trade.qty;
+        let buy = trade.side == Side::Buy;
+
         self.trades += 1;
-        if trade.side == Side::Buy { self.cum_buy += v } else { self.cum_sell += v }
+        if buy { self.cum_buy += v } else { self.cum_sell += v }
 
-        let candle = Candle::from_trade(p, v);
-        let mut m = HashMap::new();
-
-        upd_single!(self, sma, "sma", p, m);
-        if let Some(ref mut ind) = self.ema { m.insert("ema".into(), ind.update(p)); }
-        upd_single!(self, wma, "wma", p, m);
-        if let Some(ref mut ind) = self.vwma { if let Some(r) = ind.update(p, v) { m.insert("vwma".into(), r); } }
-        upd_single!(self, lsma, "lsma", p, m);
-        upd_single!(self, rsi, "rsi", p, m);
-        if let Some(ref mut ind) = self.macd {
-            if let Some(o) = ind.update(p) {
-                m.insert("macd".into(), o.macd_line);
-                m.insert("macd.signal".into(), o.signal_line);
-                m.insert("macd.histogram".into(), o.histogram);
+        for ind in &mut self.indicators {
+            match ind {
+                ActiveIndicator::Sma(ind) => { if let Some(val) = ind.update(p) { self.results.push(("sma", val)); } }
+                ActiveIndicator::Ema(ind) => { self.results.push(("ema", ind.update(p))); }
+                ActiveIndicator::Wma(ind) => { if let Some(val) = ind.update(p) { self.results.push(("wma", val)); } }
+                ActiveIndicator::Vwma(ind) => { if let Some(val) = ind.update(p, v) { self.results.push(("vwma", val)); } }
+                ActiveIndicator::Lsma(ind) => { if let Some(val) = ind.update(p) { self.results.push(("lsma", val)); } }
+                ActiveIndicator::Rsi(ind) => { if let Some(val) = ind.update(p) { self.results.push(("rsi", val)); } }
+                ActiveIndicator::Macd(ind) => {
+                    if let Some(o) = ind.update(p) {
+                        self.results.push(("macd", o.macd_line));
+                        self.results.push(("macd.signal", o.signal_line));
+                        self.results.push(("macd.histogram", o.histogram));
+                    }
+                }
+                ActiveIndicator::Cci(ind) => { if let Some(val) = ind.update(p, p, p) { self.results.push(("cci", val)); } }
+                ActiveIndicator::Roc(ind) => { if let Some(val) = ind.update(p) { self.results.push(("roc", val)); } }
+                ActiveIndicator::Stoch(ind) => { if let Some(val) = ind.update(p, p, p) { self.results.push(("stoch", val)); } }
+                ActiveIndicator::Bb(ind) => {
+                    if let Some(o) = ind.update(p) {
+                        self.results.push(("bb.middle", o.middle));
+                        self.results.push(("bb.upper", o.upper));
+                        self.results.push(("bb.lower", o.lower));
+                        self.results.push(("bb.bandwidth", o.bandwidth));
+                    }
+                }
+                ActiveIndicator::Kc(ind) => {
+                    if let Some(o) = ind.update(p, p, p) {
+                        self.results.push(("kc.middle", o.middle));
+                        self.results.push(("kc.upper", o.upper));
+                        self.results.push(("kc.lower", o.lower));
+                    }
+                }
+                ActiveIndicator::Atr(ind) => { if let Some(val) = ind.update(p, p, p) { self.results.push(("atr", val)); } }
+                ActiveIndicator::Mfi(ind) => {
+                    let candle = Candle::from_trade(p, v);
+                    if let Some(val) = ind.update(&candle) { self.results.push(("mfi", val)); }
+                }
+                ActiveIndicator::Adx(ind) => {
+                    let candle = Candle::from_trade(p, v);
+                    if let Some(val) = ind.update(&candle) { self.results.push(("adx", val)); }
+                }
+                ActiveIndicator::Zscore(ind) => { if let Some(val) = ind.update(p) { self.results.push(("zscore", val)); } }
+                ActiveIndicator::Cvd(cum) => {
+                    if buy { *cum += v } else { *cum -= v }
+                    self.results.push(("cvd", *cum));
+                }
+                ActiveIndicator::Pmdi { value, prev_data, has_prev } => {
+                    if *has_prev {
+                        if p > *prev_data { *value += value.max(1.0) * ((p + *prev_data) / *prev_data); }
+                        *prev_data = p;
+                    } else { *value = p; *prev_data = p; *has_prev = true; }
+                    self.results.push(("pmdi", *value));
+                }
+                ActiveIndicator::Nmdi { value, prev_data, has_prev } => {
+                    if *has_prev {
+                        if p < *prev_data { *value += value.max(1.0) * ((p + *prev_data) / *prev_data); }
+                        *prev_data = p;
+                    } else { *value = p; *prev_data = p; *has_prev = true; }
+                    self.results.push(("nmdi", *value));
+                }
             }
         }
-        upd_triple!(self, cci, "cci", p, p, p, m);
-        upd_single!(self, roc, "roc", p, m);
-        upd_triple!(self, stoch, "stoch", p, p, p, m);
-        if let Some(ref mut ind) = self.bb {
-            if let Some(o) = ind.update(p) {
-                m.insert("bb.middle".into(), o.middle);
-                m.insert("bb.upper".into(), o.upper);
-                m.insert("bb.lower".into(), o.lower);
-                m.insert("bb.bandwidth".into(), o.bandwidth);
-            }
-        }
-        if let Some(ref mut ind) = self.kc {
-            if let Some(o) = ind.update(p, p, p) {
-                m.insert("kc.middle".into(), o.middle);
-                m.insert("kc.upper".into(), o.upper);
-                m.insert("kc.lower".into(), o.lower);
-            }
-        }
-        upd_triple!(self, atr, "atr", p, p, p, m);
-        if let Some(ref mut ind) = self.mfi {
-            if let Some(r) = ind.update(&candle) { m.insert("mfi".into(), r); }
-        }
-        if let Some(ref mut ind) = self.adx {
-            if let Some(r) = ind.update(&candle) { m.insert("adx".into(), r); }
-        }
 
-        m.insert("cvd".into(), self.cvd.update(p, v, trade.side == Side::Buy));
-        m.insert("pmdi".into(), self.pmdi.update(p, v));
-        m.insert("nmdi".into(), self.nmdi.update(p, v));
-        m.insert("volume_delta".into(), VolumeDelta::update(self.cum_buy, self.cum_sell));
-        m.insert("avg_trade_size".into(), AverageTradeSize::update(self.cum_buy + self.cum_sell, self.trades as f64));
-        upd_single!(self, zscore, "zscore", p, m);
-        m.insert("price".into(), p);
-        m.insert("trade_count".into(), self.trades as f64);
-        m
+        self.results.push(("price", p));
+        self.results.push(("volume_delta", self.cum_buy - self.cum_sell));
+        self.results.push(("avg_trade_size", if self.trades == 0 { 0.0 } else { (self.cum_buy + self.cum_sell) / self.trades as f64 }));
+        self.results.push(("trade_count", self.trades as f64));
+
+        &self.results
     }
 
-    pub fn on_depth(&mut self, depth: &Depth) -> HashMap<String, f64> {
+    pub fn on_depth(&mut self, depth: &Depth) -> &[(&'static str, f64)] {
+        self.results.clear();
         let bid_vol: f64 = depth.bids.iter().map(|l| l.qty).sum();
         let ask_vol: f64 = depth.asks.iter().map(|l| l.qty).sum();
-        let mut m = HashMap::new();
-        m.insert("bid_depth".into(), bid_vol);
-        m.insert("ask_depth".into(), ask_vol);
-        m.insert("depth_imbalance".into(), BidAskImbalance::update(bid_vol, ask_vol));
-        m
+        self.results.push(("bid_depth", bid_vol));
+        self.results.push(("ask_depth", ask_vol));
+        let imb = if bid_vol + ask_vol == 0.0 { 0.0 } else { (bid_vol - ask_vol) / (bid_vol + ask_vol) * 100.0 };
+        self.results.push(("depth_imbalance", imb));
+        &self.results
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_using_simple() {
+        let src = "-- USING sma 20\n-- USING ema 20";
+        let entries = parse_using(src);
+        assert_eq!(entries.len(), 2);
+        assert_eq!(entries[0].name, "sma");
+        assert_eq!(entries[0].params, vec![20.0]);
+        assert!(entries[0].buffer >= 256);
+        assert_eq!(entries[1].name, "ema");
+    }
+
+    #[test]
+    fn parse_using_with_buffer() {
+        let src = "-- USING sma 20; SET BUFFER 2048\n-- USING ema 20";
+        let entries = parse_using(src);
+        assert_eq!(entries.len(), 2);
+        assert_eq!(entries[0].buffer, 2048);
+        assert_eq!(entries[1].name, "ema");
+    }
+
+    #[test]
+    fn parse_using_multi_param() {
+        let src = "-- USING bb 20 2.0; SET BUFFER 512";
+        let entries = parse_using(src);
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].name, "bb");
+        assert_eq!(entries[0].params, vec![20.0, 2.0]);
+        assert_eq!(entries[0].buffer, 512);
+    }
+
+    #[test]
+    fn parse_using_no_params() {
+        let src = "-- USING cvd\n-- USING pmdi";
+        let entries = parse_using(src);
+        assert_eq!(entries.len(), 2);
+        assert_eq!(entries[0].name, "cvd");
+        assert!(entries[0].params.is_empty());
+    }
+
+    #[test]
+    fn parse_using_unknown_skipped() {
+        let src = "-- USING unknown 42\n-- USING sma 10";
+        let entries = parse_using(src);
+        // unknown is still parsed (it's the caller's choice to skip)
+        assert_eq!(entries.len(), 2);
+    }
+
+    #[test]
+    fn indicator_bank_new_all_types() {
+        let src = "-- USING sma 20; SET BUFFER 64\n-- USING cvd\n-- USING pmdi\n-- USING nmdi\n-- USING zscore 20";
+        let entries = parse_using(src);
+        let mut bank = IndicatorBank::new(&entries);
+        assert_eq!(bank.indicators.len(), 5);
+
+        let trade = Trade { price: 100.0, qty: 1.0, time: chrono::Utc::now(), side: Side::Buy, trade_id: 1 };
+        let r = bank.on_trade(&trade);
+        assert!(!r.is_empty());
+        // at minimum: price, volume_delta, avg_trade_size, trade_count + cvd + pmdi + nmdi
+        assert!(r.len() >= 7);
+        let map: std::collections::HashMap<&str, f64> = r.iter().map(|&(k, v)| (k, v)).collect();
+        assert_eq!(map.get("price"), Some(&100.0));
+        assert_eq!(map.get("cvd"), Some(&1.0));
+        assert!(map.contains_key("pmdi"));
+        assert!(map.contains_key("nmdi"));
+        assert!(map.contains_key("trade_count"));
+    }
+
+    #[test]
+    fn indicator_bank_depth() {
+        let entries = parse_using("-- USING cvd");
+        let mut bank = IndicatorBank::new(&entries);
+        let depth = Depth {
+            bids: vec![DepthLevel { price: 100.0, qty: 10.0 }, DepthLevel { price: 99.0, qty: 20.0 }],
+            asks: vec![DepthLevel { price: 101.0, qty: 15.0 }],
+        };
+        let r = bank.on_depth(&depth);
+        assert_eq!(r.len(), 3);
+        let map: std::collections::HashMap<&str, f64> = r.iter().map(|&(k, v)| (k, v)).collect();
+        assert_eq!(map.get("bid_depth"), Some(&30.0));
+        assert_eq!(map.get("ask_depth"), Some(&15.0));
+    }
+
+    #[test]
+    fn indicator_bank_zero_allocs_per_tick() {
+        let entries = parse_using("-- USING sma 10; SET BUFFER 64\n-- USING ema 10\n-- USING cvd");
+        let mut bank = IndicatorBank::new(&entries);
+        let trade = Trade { price: 100.0, qty: 1.0, time: chrono::Utc::now(), side: Side::Buy, trade_id: 1 };
+
+        // Warmup
+        bank.on_trade(&trade);
+
+        let len1 = bank.on_trade(&trade).len();
+        let len2 = bank.on_trade(&trade).len();
+        assert_eq!(len1, len2);
     }
 }

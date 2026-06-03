@@ -9,6 +9,7 @@ tokio.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
+crossbeam-channel.workspace = true
 tracing.workspace = true
 quince-core = { path = "../core" }
 mlua.workspace = true

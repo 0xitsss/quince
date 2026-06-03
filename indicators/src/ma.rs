@@ -1,23 +1,22 @@
-use std::collections::VecDeque;
+use quince_core::ring::RingVec;
 
 pub struct Sma {
     period: usize,
-    buffer: VecDeque<f64>,
+    buffer: RingVec,
     sum: f64,
 }
 
 impl Sma {
     pub fn new(period: usize) -> Self {
         assert!(period > 0, "SMA period must be > 0");
-        Self { period, buffer: VecDeque::with_capacity(period), sum: 0.0 }
+        Self { period, buffer: RingVec::new(period), sum: 0.0 }
     }
 
     pub fn update(&mut self, value: f64) -> Option<f64> {
-        self.sum += value;
-        self.buffer.push_back(value);
-        if self.buffer.len() > self.period {
-            self.sum -= self.buffer.pop_front().unwrap();
+        if let Some(evicted) = self.buffer.push(value) {
+            self.sum -= evicted;
         }
+        self.sum += value;
         if self.buffer.len() == self.period {
             Some(self.sum / self.period as f64)
         } else {
@@ -58,7 +57,7 @@ impl Ema {
 
 pub struct Wma {
     period: usize,
-    buffer: VecDeque<f64>,
+    buffer: RingVec,
     denominator: f64,
 }
 
@@ -66,17 +65,14 @@ impl Wma {
     pub fn new(period: usize) -> Self {
         assert!(period > 0, "WMA period must be > 0");
         let denominator = (period * (period + 1) / 2) as f64;
-        Self { period, buffer: VecDeque::with_capacity(period), denominator }
+        Self { period, buffer: RingVec::new(period), denominator }
     }
 
     pub fn update(&mut self, value: f64) -> Option<f64> {
-        self.buffer.push_back(value);
-        if self.buffer.len() > self.period {
-            self.buffer.pop_front();
-        }
+        self.buffer.push(value);
         if self.buffer.len() == self.period {
             let weighted: f64 = self.buffer.iter().enumerate()
-                .map(|(i, &v)| v * (i + 1) as f64)
+                .map(|(i, v)| v * (i + 1) as f64)
                 .sum();
             Some(weighted / self.denominator)
         } else {
@@ -90,8 +86,8 @@ impl Wma {
 
 pub struct Vwma {
     period: usize,
-    price_buffer: VecDeque<f64>,
-    vol_buffer: VecDeque<f64>,
+    price_buffer: RingVec,
+    vol_buffer: RingVec,
     pv_sum: f64,
     v_sum: f64,
 }
@@ -99,20 +95,21 @@ pub struct Vwma {
 impl Vwma {
     pub fn new(period: usize) -> Self {
         assert!(period > 0, "VWMA period must be > 0");
-        Self { period, price_buffer: VecDeque::with_capacity(period), vol_buffer: VecDeque::with_capacity(period), pv_sum: 0.0, v_sum: 0.0 }
+        Self { period, price_buffer: RingVec::new(period), vol_buffer: RingVec::new(period), pv_sum: 0.0, v_sum: 0.0 }
     }
 
     pub fn update(&mut self, price: f64, volume: f64) -> Option<f64> {
+        let evicted_p = self.price_buffer.push(price);
+        let evicted_v = self.vol_buffer.push(volume);
+
         self.pv_sum += price * volume;
         self.v_sum += volume;
-        self.price_buffer.push_back(price);
-        self.vol_buffer.push_back(volume);
-        if self.price_buffer.len() > self.period {
-            let old_p = self.price_buffer.pop_front().unwrap();
-            let old_v = self.vol_buffer.pop_front().unwrap();
-            self.pv_sum -= old_p * old_v;
-            self.v_sum -= old_v;
+
+        if let (Some(ep), Some(ev)) = (evicted_p, evicted_v) {
+            self.pv_sum -= ep * ev;
+            self.v_sum -= ev;
         }
+
         if self.price_buffer.len() == self.period {
             if self.v_sum == 0.0 { return None }
             Some(self.pv_sum / self.v_sum)
@@ -130,7 +127,7 @@ impl Vwma {
 
 pub struct Lsma {
     period: usize,
-    buffer: VecDeque<f64>,
+    buffer: RingVec,
     sum_x: f64,
     sum_x2: f64,
 }
@@ -141,18 +138,15 @@ impl Lsma {
         let n = period as f64;
         let sum_x = n * (n - 1.0) / 2.0;
         let sum_x2 = (n - 1.0) * n * (2.0 * n - 1.0) / 6.0;
-        Self { period, buffer: VecDeque::with_capacity(period), sum_x, sum_x2 }
+        Self { period, buffer: RingVec::new(period), sum_x, sum_x2 }
     }
 
     pub fn update(&mut self, value: f64) -> Option<f64> {
-        self.buffer.push_back(value);
-        if self.buffer.len() > self.period {
-            self.buffer.pop_front();
-        }
+        self.buffer.push(value);
         if self.buffer.len() == self.period {
             let n = self.period as f64;
             let sum_y: f64 = self.buffer.iter().sum();
-            let sum_xy: f64 = self.buffer.iter().enumerate().map(|(i, &v)| v * i as f64).sum();
+            let sum_xy: f64 = self.buffer.iter().enumerate().map(|(i, v)| v * i as f64).sum();
             let slope = (n * sum_xy - self.sum_x * sum_y) / (n * self.sum_x2 - self.sum_x * self.sum_x);
             let intercept = (sum_y - slope * self.sum_x) / n;
             Some(intercept + slope * (n - 1.0))
