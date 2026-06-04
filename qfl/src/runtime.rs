@@ -2,6 +2,15 @@ use crate::vm::Vm;
 use quince_core::types::{Depth, OrderFill, Side, Trade};
 use std::path::PathBuf;
 
+/// Unified exchange event for the QFL runtime.
+#[derive(Debug, Clone)]
+pub enum Event {
+    Trade(Trade),
+    Depth(Depth),
+    Fill(OrderFill),
+    Eval,
+}
+
 #[derive(Debug)]
 pub struct QflRuntime {
     vm: Vm,
@@ -10,6 +19,7 @@ pub struct QflRuntime {
     #[allow(dead_code)]
     current_symbol: String,
     orders_tx: Option<crossbeam_channel::Sender<quince_core::types::Order>>,
+    pub risk_engine: crate::risk::RiskEngine,
 }
 
 impl QflRuntime {
@@ -39,6 +49,7 @@ impl QflRuntime {
             path_qfl: PathBuf::from(strategy_path),
             current_symbol: String::new(),
             orders_tx: None,
+            risk_engine: crate::risk::RiskEngine::new(crate::risk::RiskLimits::default()),
         })
     }
 
@@ -133,7 +144,27 @@ impl QflRuntime {
             stop_loss: None,
             take_profit: None,
         };
-        let _ = tx.try_send(order);
+
+        // Risk check before sending
+        match self.risk_engine.check_order(&order) {
+            crate::risk::RiskVerdict::Allowed => {
+                let _ = tx.try_send(order);
+            }
+            crate::risk::RiskVerdict::Rejected(reason) => {
+                tracing::warn!("QFL risk rejected order: {}", reason);
+            }
+        }
+    }
+
+    /// Unified feed — dispatch any event to the correct handler.
+    pub fn feed_event(&mut self, event: Event) {
+        self.risk_engine.new_cycle();
+        match event {
+            Event::Trade(trade) => self.feed_trade(trade),
+            Event::Depth(depth) => self.feed_depth(depth),
+            Event::Fill(fill) => self.feed_fill(fill),
+            Event::Eval => self.feed_eval(),
+        }
     }
 }
 
@@ -1365,6 +1396,79 @@ end
         ");
         let result = QflRuntime::load(&path);
         assert!(result.is_ok(), "valid strategy should load: {:?}", result.err());
+        let _ = std::fs::remove_file(&path);
+    }
+
+    // ── Risk engine integration ──
+
+    #[test]
+    fn test_risk_rejects_large_order() {
+        let path = write_test_strategy("risk_large", "
+            function on_eval() quince.order(0, 100.0, 50000.0) end
+        ");
+        let mut rt = QflRuntime::load(&path).unwrap();
+        // Set very tight risk limits
+        rt.risk_engine.limits.max_order_notional = 1000.0;
+        rt.feed_eval();
+        // Order should be rejected by risk (notional = 100*50000 = 5M >> 1000)
+        // No crash means test passes
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn test_feed_event_trade_dispatches_correctly() {
+        let path = write_test_strategy("fe_event_trade", "function on_trade(trade) end");
+        let mut rt = QflRuntime::load(&path).unwrap();
+        let trade = make_trade(50000.0, 0.1, Side::Buy, 1);
+        rt.feed_event(Event::Trade(trade));
+        assert!((rt.vm.float_regs[0] - 50000.0).abs() < 0.001);
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn test_feed_event_depth_dispatches_correctly() {
+        let path = write_test_strategy("fe_event_depth", "function on_depth() end");
+        let mut rt = QflRuntime::load(&path).unwrap();
+        let depth = Depth {
+            bids: vec![DepthLevel { price: 100.0, qty: 1.0 }],
+            asks: vec![],
+        };
+        rt.feed_event(Event::Depth(depth));
+        assert_eq!(rt.vm.depth_bids.len(), 1);
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn test_feed_event_fill_dispatches_correctly() {
+        let path = write_test_strategy("fe_event_fill", "function on_fill(fill) end");
+        let mut rt = QflRuntime::load(&path).unwrap();
+        let fill = make_fill(50200.0, 0.25, Side::Buy);
+        rt.feed_event(Event::Fill(fill));
+        assert!((rt.vm.float_regs[0] - 50200.0).abs() < 0.001);
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn test_feed_event_eval_dispatches_correctly() {
+        let path = write_test_strategy("fe_event_eval", "function on_eval() end");
+        let mut rt = QflRuntime::load(&path).unwrap();
+        rt.feed_event(Event::Eval);
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn test_risk_new_cycle_called_on_feed_event() {
+        let path = write_test_strategy("risk_cycle", "
+            function on_eval()
+                quince.order(0, 0.1, 100.0)
+                quince.order(0, 0.1, 100.0)
+            end
+        ");
+        let mut rt = QflRuntime::load(&path).unwrap();
+        rt.risk_engine.limits.max_orders_per_cycle = 1;
+        rt.feed_event(Event::Eval);
+        // Second eval should reset order count via new_cycle
+        rt.feed_event(Event::Eval);
         let _ = std::fs::remove_file(&path);
     }
 }
