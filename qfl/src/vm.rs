@@ -66,6 +66,18 @@ pub struct Vm {
     pub windows: Vec<Option<crate::window::RollingWindow>>,
 }
 
+/// A complete snapshot of VM state for replay and hot-reload.
+#[derive(Debug, Clone)]
+pub struct VmSnapshot {
+    pub int_regs: [i64; INT_REGS],
+    pub float_regs: [f64; FLOAT_REGS],
+    pub persist: [PersistSlot; PERSIST_SLOTS],
+    pub pc: usize,
+    /// Captured window contents as Vec<f64>.
+    pub windows: Vec<Option<Vec<f64>>>,
+    pub indicators: std::collections::HashMap<String, f64>,
+}
+
 impl Vm {
     pub fn new(program: QfrProgram) -> Self {
         Vm {
@@ -414,6 +426,50 @@ impl Vm {
                 self.running = false;
             }
             Opcode::MaxOpcode => unreachable!(),
+        }
+    }
+
+    // ── Snapshot / Replay ──
+
+    /// Save full VM state for replay or hot-reload.
+    pub fn snapshot(&self) -> VmSnapshot {
+        let windows: Vec<Option<Vec<f64>>> = self.windows.iter().map(|w| {
+            w.as_ref().map(|win| {
+                let mut vals = Vec::with_capacity(win.len());
+                for i in 0..win.len() {
+                    vals.push(win.get(i).unwrap_or(0.0));
+                }
+                vals
+            })
+        }).collect();
+
+        VmSnapshot {
+            int_regs: self.int_regs,
+            float_regs: self.float_regs,
+            persist: self.persist,
+            pc: self.pc,
+            windows,
+            indicators: self.indicators.clone(),
+        }
+    }
+
+    /// Restore VM state from a snapshot.
+    pub fn restore(&mut self, snap: &VmSnapshot) {
+        self.int_regs = snap.int_regs;
+        self.float_regs = snap.float_regs;
+        self.persist = snap.persist;
+        self.pc = snap.pc;
+        self.indicators = snap.indicators.clone();
+        for (i, win_data) in snap.windows.iter().enumerate() {
+            if let Some(vals) = win_data {
+                let mut w = crate::window::RollingWindow::new(vals.len());
+                for &v in vals {
+                    w.push(v);
+                }
+                self.windows[i] = Some(w);
+            } else {
+                self.windows[i] = None;
+            }
         }
     }
 
@@ -2212,5 +2268,87 @@ mod tests {
         assert_eq!(vm.float_regs[2], 0.0);
         assert_eq!(vm.float_regs[3], 0.0);
         assert_eq!(vm.float_regs[4], 0.0);
+    }
+
+    // ── Snapshot / Replay ──
+
+    #[test]
+    fn snapshot_captures_registers() {
+        let mut vm = Vm::new(make_prog(vec![
+            Instruction::rri(Opcode::Ldi, 0, 0, 42),
+            Instruction::single(Opcode::Halt),
+        ]));
+        vm.call("main");
+        let snap = vm.snapshot();
+        assert_eq!(snap.int_regs[0], 42);
+    }
+
+    #[test]
+    fn snapshot_captures_persist() {
+        let mut prog = QfrProgram::new();
+        prog.entries.push(crate::ir::EntryPoint { name: "main".into(), code_offset: 0 });
+        prog.code = vec![
+            Instruction::rri(Opcode::Ldi, 0, 0, 42),
+            Instruction::rri(Opcode::PersistSet, 0, 0, 5),
+            Instruction::single(Opcode::Halt),
+        ];
+        let mut vm = Vm::new(prog);
+        vm.call("main");
+        let snap = vm.snapshot();
+        assert_eq!(snap.persist[5].int_val, 42);
+    }
+
+    #[test]
+    fn restore_recovers_int_register() {
+        let mut vm = Vm::new(make_prog(vec![
+            Instruction::rri(Opcode::Ldi, 0, 0, 99),
+            Instruction::single(Opcode::Halt),
+        ]));
+        vm.call("main");
+        let snap = vm.snapshot();
+
+        // New VM with fresh state
+        let mut vm2 = Vm::new(make_prog(vec![
+            Instruction::rri(Opcode::Ldi, 0, 0, 0),
+            Instruction::single(Opcode::Halt),
+        ]));
+        vm2.restore(&snap);
+        assert_eq!(vm2.int_regs[0], 99);
+    }
+
+    #[test]
+    fn snapshot_window_push_then_restore() {
+        let mut vm = Vm::new(make_prog(vec![
+            Instruction::ri40(Opcode::Ldi64, 0, 42),
+            Instruction::rr(Opcode::I2F, 192, 0),
+            Instruction::rri(Opcode::WindowPush, 192, 192, 0),
+            Instruction::single(Opcode::Halt),
+        ]));
+        vm.call("main");
+        let snap = vm.snapshot();
+
+        let mut vm2 = Vm::new(make_prog(vec![
+            Instruction::single(Opcode::Halt),
+        ]));
+        vm2.restore(&snap);
+        assert!(vm2.windows[0].is_some());
+        if let Some(ref w) = vm2.windows[0] {
+            assert!((w.mean() - 42.0).abs() < 1e-10);
+        }
+    }
+
+    #[test]
+    fn snapshot_and_restore_indicators() {
+        let mut vm = Vm::new(make_prog(vec![
+            Instruction::single(Opcode::Halt),
+        ]));
+        vm.indicators.insert("ema".into(), 1.5);
+        let snap = vm.snapshot();
+
+        let mut vm2 = Vm::new(make_prog(vec![
+            Instruction::single(Opcode::Halt),
+        ]));
+        vm2.restore(&snap);
+        assert!((vm2.indicators.get("ema").unwrap() - 1.5).abs() < 1e-10);
     }
 }
