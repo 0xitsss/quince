@@ -10,6 +10,7 @@ use std::collections::HashMap;
 /// Run the full optimization pipeline on a compiled program.
 pub fn optimize(prog: &QfrProgram) -> QfrProgram {
     let prog = constant_fold(prog);
+    let prog = common_subexpr_elim(&prog);
     dead_code_eliminate(&prog)
 }
 
@@ -141,6 +142,107 @@ fn adjust_jump_offset(offset_map: &[Option<usize>], from_old: usize, target_old:
         Some(target_new) => target_new as i64 - new_idx as i64 - 1,
         None => 0, // target was removed (shouldn't happen), fall through
     }
+}
+
+/// Common Subexpression Elimination pass.
+///
+/// Within a basic block, replaces repeated identical computations
+/// with Mov from the first result register.
+pub fn common_subexpr_elim(prog: &QfrProgram) -> QfrProgram {
+    let mut out = QfrProgram::new();
+    out.entries = prog.entries.clone();
+    out.const_pool = prog.const_pool.clone();
+    out.const_map = prog.const_map.clone();
+
+    // Cache: (op, rs1, operand2_u32) → rd
+    let mut cache: HashMap<(O, u8, u32), u8> = HashMap::new();
+
+    for instr in &prog.code {
+        let op = instr.opcode();
+        let rd = instr.rd();
+
+        // Control flow: clear cache (basic block boundary)
+        if is_control_flow(op) {
+            cache.clear();
+            out.code.push(*instr);
+            continue;
+        }
+
+        // Invalidate cache entries that depend on rd (dest reg just changed)
+        invalidate_for_reg(&mut cache, rd);
+
+        // Try CSE match for eligible operations
+        let key_opt = cse_key(op, instr);
+        if let Some(key) = key_opt {
+            let (rs1, operand2) = key;
+            if let Some(&cached_rd) = cache.get(&(op, rs1, operand2)) {
+                // CSE hit: emit Mov instead
+                out.code.push(Instruction::rr(O::Mov, rd, cached_rd));
+                // Update cache to point to new register too
+                cache.insert((op, rs1, operand2), rd);
+            } else {
+                // Cache this computation
+                cache.insert((op, rs1, operand2), rd);
+                out.code.push(*instr);
+            }
+        } else {
+            out.code.push(*instr);
+        }
+    }
+
+    out
+}
+
+/// Build CSE key for an instruction if it is eligible.
+/// Returns Some((rs1, operand2)) where operand2 = rs2 (RRR) or imm (RRI).
+fn cse_key(op: O, instr: &Instruction) -> Option<(u8, u32)> {
+    match op.encoding() {
+        InstrEncoding::RRR => {
+            match op {
+                O::Add | O::Sub | O::Mul | O::Div | O::Mod
+                | O::FAdd | O::FSub | O::FMul | O::FDiv
+                | O::Eq | O::Ne | O::Lt | O::Gt | O::Le | O::Ge
+                | O::FEq | O::FNe | O::FLt | O::FGt | O::FLe | O::FGe
+                | O::BitAnd | O::BitOr | O::BitXor
+                | O::Shl | O::Shr => {
+                    Some((instr.rs1(), instr.rs2() as u32))
+                }
+                _ => None,
+            }
+        }
+        InstrEncoding::RRI => {
+            match op {
+                O::AddI | O::SubI | O::MulI | O::DivI
+                | O::EqI | O::LtI | O::GtI => {
+                    Some((instr.rs1(), instr.imm()))
+                }
+                _ => None,
+            }
+        }
+        InstrEncoding::RR => {
+            match op {
+                O::Neg | O::FNeg | O::BitNot => {
+                    Some((instr.rs1(), 0))
+                }
+                _ => None,
+            }
+        }
+        _ => None,
+    }
+}
+
+/// Remove all cache entries that depend on register `reg`.
+fn invalidate_for_reg(cache: &mut HashMap<(O, u8, u32), u8>, reg: u8) {
+    cache.retain(|key, val| {
+        let &(op, rs1, op2) = key;
+        let cached_rd = *val;
+        if rs1 == reg { return false; }
+        if cached_rd == reg { return false; }
+        if op.encoding() == InstrEncoding::RRR || op.encoding() == InstrEncoding::RR {
+            if op2 as u8 == reg { return false; }
+        }
+        true
+    });
 }
 
 /// Constant-folding pass.
@@ -1146,5 +1248,245 @@ mod tests {
         // Reachable: [0], [1], [4], [5]
         let opt = optimize(&p);
         assert_eq!(opt.code.len(), 4);
+    }
+
+    // ── Common Subexpression Elimination ──
+
+    #[test]
+    fn cse_same_add_replaced_with_mov() {
+        let p = make_prog(vec![
+            I::rrr(O::Add, 2, 0, 1), // r2 = r0 + r1
+            I::rrr(O::Add, 3, 0, 1), // r3 = r0 + r1 → Mov r3, r2
+        ]);
+        let opt = common_subexpr_elim(&p);
+        assert_eq!(opt.code.len(), 2);
+        assert_eq!(opt.code[0].opcode(), O::Add);
+        assert_eq!(opt.code[1].opcode(), O::Mov);
+        assert_eq!(opt.code[1].rd(), 3);
+        assert_eq!(opt.code[1].rs1(), 2);
+    }
+
+    #[test]
+    fn cse_same_fadd_replaced() {
+        let p = make_prog(vec![
+            I::rrr(O::FAdd, 194, 192, 193),
+            I::rrr(O::FAdd, 195, 192, 193),
+        ]);
+        let opt = common_subexpr_elim(&p);
+        assert_eq!(opt.code.len(), 2);
+        assert_eq!(opt.code[1].opcode(), O::Mov);
+    }
+
+    #[test]
+    fn cse_different_op_not_eliminated() {
+        let p = make_prog(vec![
+            I::rrr(O::Add, 2, 0, 1),
+            I::rrr(O::Sub, 3, 0, 1), // different op → not eliminated
+        ]);
+        let opt = common_subexpr_elim(&p);
+        assert_eq!(opt.code.len(), 2);
+        assert_eq!(opt.code[1].opcode(), O::Sub);
+    }
+
+    #[test]
+    fn cse_different_regs_not_eliminated() {
+        let p = make_prog(vec![
+            I::rrr(O::Add, 2, 0, 1),
+            I::rrr(O::Add, 3, 0, 2), // different rs2 → not eliminated
+        ]);
+        let opt = common_subexpr_elim(&p);
+        assert_eq!(opt.code.len(), 2);
+        assert_eq!(opt.code[1].opcode(), O::Add);
+    }
+
+    #[test]
+    fn cse_cleared_on_control_flow() {
+        let p = make_prog(vec![
+            I::rrr(O::Add, 2, 0, 1),
+            I::single(O::Ret),
+            I::rrr(O::Add, 3, 0, 1), // after Ret → cache cleared → not eliminated
+        ]);
+        let opt = common_subexpr_elim(&p);
+        assert_eq!(opt.code.len(), 3);
+        assert_eq!(opt.code[2].opcode(), O::Add);
+    }
+
+    #[test]
+    fn cse_thrice_twice_replaced() {
+        let p = make_prog(vec![
+            I::rrr(O::Mul, 2, 0, 1), // cached
+            I::rrr(O::Mul, 3, 0, 1), // Mov r3, r2
+            I::rrr(O::Mul, 4, 0, 1), // Mov r4, r3 (cache updated to r3)
+        ]);
+        let opt = common_subexpr_elim(&p);
+        assert_eq!(opt.code.len(), 3);
+        assert_eq!(opt.code[0].opcode(), O::Mul);
+        assert_eq!(opt.code[1].opcode(), O::Mov);
+        assert_eq!(opt.code[1].rs1(), 2);
+        assert_eq!(opt.code[2].opcode(), O::Mov);
+    }
+
+    #[test]
+    fn cse_addi_eliminated() {
+        let p = make_prog(vec![
+            I::rri(O::AddI, 1, 0, 5),
+            I::rri(O::AddI, 2, 0, 5), // same r0, imm=5 → Mov r2, r1
+        ]);
+        let opt = common_subexpr_elim(&p);
+        assert_eq!(opt.code.len(), 2);
+        assert_eq!(opt.code[1].opcode(), O::Mov);
+    }
+
+    #[test]
+    fn cse_muli_with_different_imm_not_eliminated() {
+        let p = make_prog(vec![
+            I::rri(O::MulI, 1, 0, 5),
+            I::rri(O::MulI, 2, 0, 3), // different imm → not eliminated
+        ]);
+        let opt = common_subexpr_elim(&p);
+        assert_eq!(opt.code.len(), 2);
+        assert_eq!(opt.code[1].opcode(), O::MulI);
+    }
+
+    #[test]
+    fn cse_neg_eliminated() {
+        let p = make_prog(vec![
+            I::rr(O::Neg, 1, 0),
+            I::rr(O::Neg, 2, 0), // same r0 → Mov r2, r1
+        ]);
+        let opt = common_subexpr_elim(&p);
+        assert_eq!(opt.code.len(), 2);
+        assert_eq!(opt.code[1].opcode(), O::Mov);
+    }
+
+    #[test]
+    fn cse_bitwise_eliminated() {
+        let p = make_prog(vec![
+            I::rrr(O::BitAnd, 2, 0, 1),
+            I::rrr(O::BitAnd, 3, 0, 1),
+        ]);
+        let opt = common_subexpr_elim(&p);
+        assert_eq!(opt.code.len(), 2);
+        assert_eq!(opt.code[1].opcode(), O::Mov);
+    }
+
+    #[test]
+    fn cse_comparison_eliminated() {
+        let p = make_prog(vec![
+            I::rrr(O::Gt, 2, 0, 1),
+            I::rrr(O::Gt, 3, 0, 1),
+        ]);
+        let opt = common_subexpr_elim(&p);
+        assert_eq!(opt.code.len(), 2);
+        assert_eq!(opt.code[1].opcode(), O::Mov);
+    }
+
+    #[test]
+    fn cse_invalidated_when_source_reg_overwritten() {
+        let p = make_prog(vec![
+            I::rrr(O::Add, 2, 0, 1), // cache (Add, r0, r1) → r2
+            I::rri(O::Ldi, 0, 0, 5), // r0 overwritten → invalidates cache
+            I::rrr(O::Add, 3, 0, 1), // no longer matches → full computation
+        ]);
+        let opt = common_subexpr_elim(&p);
+        assert_eq!(opt.code.len(), 3);
+        assert_eq!(opt.code[2].opcode(), O::Add); // not Mov
+    }
+
+    #[test]
+    fn cse_invalidated_when_rs2_overwritten() {
+        let p = make_prog(vec![
+            I::rrr(O::Add, 2, 0, 1), // cache (Add, r0, r1) → r2
+            I::rri(O::Ldi, 1, 0, 10), // r1 overwritten → invalidates
+            I::rrr(O::Add, 3, 0, 1), // no match → full Add
+        ]);
+        let opt = common_subexpr_elim(&p);
+        assert_eq!(opt.code[2].opcode(), O::Add);
+    }
+
+    #[test]
+    fn cse_invalidated_when_cached_rd_overwritten() {
+        let p = make_prog(vec![
+            I::rrr(O::Add, 2, 0, 1), // cache (Add, r0, r1) → r2
+            I::rri(O::Ldi, 2, 0, 99), // r2 overwritten → cache entry invalid
+            I::rrr(O::Add, 3, 0, 1), // no match → full Add (r2's value lost)
+        ]);
+        let opt = common_subexpr_elim(&p);
+        assert_eq!(opt.code[2].opcode(), O::Add);
+    }
+
+    #[test]
+    fn cse_preserves_entry_points_and_const_pool() {
+        let mut p = QfrProgram::new();
+        p.entries.push(crate::ir::EntryPoint { name: "main".into(), code_offset: 0 });
+        let _idx = p.intern_string("test");
+        p.code = vec![
+            I::rrr(O::Add, 2, 0, 1),
+            I::rrr(O::Add, 3, 0, 1),
+            I::single(O::Ret),
+        ];
+        let opt = common_subexpr_elim(&p);
+        assert_eq!(opt.entries.len(), 1);
+        assert!(opt.const_map.contains_key("test"));
+        assert_eq!(opt.code.len(), 3);
+        assert_eq!(opt.code[1].opcode(), O::Mov);
+    }
+
+    #[test]
+    fn cse_float_neg_eliminated() {
+        let p = make_prog(vec![
+            I::rr(O::FNeg, 193, 192),
+            I::rr(O::FNeg, 194, 192),
+        ]);
+        let opt = common_subexpr_elim(&p);
+        assert_eq!(opt.code[1].opcode(), O::Mov);
+    }
+
+    #[test]
+    fn cse_eq_eliminated() {
+        let p = make_prog(vec![
+            I::rrr(O::Eq, 2, 0, 1),
+            I::rrr(O::Eq, 3, 0, 1),
+        ]);
+        let opt = common_subexpr_elim(&p);
+        assert_eq!(opt.code[1].opcode(), O::Mov);
+    }
+
+    #[test]
+    fn cse_empty_program() {
+        let p = QfrProgram::new();
+        let opt = common_subexpr_elim(&p);
+        assert!(opt.code.is_empty());
+    }
+
+    #[test]
+    fn cse_shl_eliminated() {
+        let p = make_prog(vec![
+            I::rrr(O::Shl, 2, 0, 1),
+            I::rrr(O::Shl, 3, 0, 1),
+        ]);
+        let opt = common_subexpr_elim(&p);
+        assert_eq!(opt.code.len(), 2);
+        assert_eq!(opt.code[1].opcode(), O::Mov);
+    }
+
+    #[test]
+    fn cse_chain_keeps_working_after_invalidation() {
+        // Add r2, r0, r1 → cache
+        // Ldi r0, 5 → invalidates
+        // Add r3, r0, r1 → full Add (new cache)
+        // Add r4, r0, r1 → Mov r4, r3
+        let p = make_prog(vec![
+            I::rrr(O::Add, 2, 0, 1),
+            I::rri(O::Ldi, 0, 0, 5),
+            I::rrr(O::Add, 3, 0, 1),
+            I::rrr(O::Add, 4, 0, 1),
+        ]);
+        let opt = common_subexpr_elim(&p);
+        assert_eq!(opt.code.len(), 4);
+        assert_eq!(opt.code[0].opcode(), O::Add);
+        assert_eq!(opt.code[1].opcode(), O::Ldi);
+        assert_eq!(opt.code[2].opcode(), O::Add);
+        assert_eq!(opt.code[3].opcode(), O::Mov);
     }
 }
