@@ -61,6 +61,9 @@ pub struct Vm {
     // Depth data (for on_depth callback)
     pub depth_bids: Vec<(f64, f64)>,
     pub depth_asks: Vec<(f64, f64)>,
+
+    // Rolling windows (lazily initialized, max 64)
+    pub windows: Vec<Option<crate::window::RollingWindow>>,
 }
 
 impl Vm {
@@ -84,6 +87,7 @@ impl Vm {
             balances: HashMap::new(),
             depth_bids: Vec::new(),
             depth_asks: Vec::new(),
+            windows: (0..64).map(|_| None).collect(),
         }
     }
 
@@ -352,6 +356,59 @@ impl Vm {
                     _ => "",
                 };
                 tracing::info!("QFL: {}", msg);
+            }
+            Opcode::WindowPush => {
+                let wid = imm as usize;
+                if wid < self.windows.len() {
+                    let val = self.float(rs1);
+                    if self.windows[wid].is_none() {
+                        self.windows[wid] = Some(crate::window::RollingWindow::new(64));
+                    }
+                    if let Some(ref mut w) = self.windows[wid] {
+                        w.push(val);
+                        self.set_float(rd, val);
+                    }
+                }
+            }
+            Opcode::WindowMean => {
+                let wid = imm as usize;
+                if wid < self.windows.len() {
+                    if let Some(ref w) = self.windows[wid] {
+                        self.set_float(rd, w.mean());
+                    }
+                }
+            }
+            Opcode::WindowStddev => {
+                let wid = imm as usize;
+                if wid < self.windows.len() {
+                    if let Some(ref w) = self.windows[wid] {
+                        self.set_float(rd, w.stddev());
+                    }
+                }
+            }
+            Opcode::WindowMin => {
+                let wid = imm as usize;
+                if wid < self.windows.len() {
+                    if let Some(ref w) = self.windows[wid] {
+                        self.set_float(rd, w.min());
+                    }
+                }
+            }
+            Opcode::WindowMax => {
+                let wid = imm as usize;
+                if wid < self.windows.len() {
+                    if let Some(ref w) = self.windows[wid] {
+                        self.set_float(rd, w.max());
+                    }
+                }
+            }
+            Opcode::WindowSum => {
+                let wid = imm as usize;
+                if wid < self.windows.len() {
+                    if let Some(ref w) = self.windows[wid] {
+                        self.set_float(rd, w.sum());
+                    }
+                }
             }
             Opcode::Halt => {
                 self.running = false;
@@ -2014,5 +2071,146 @@ mod tests {
         let mut vm = Vm::new(prog);
         vm.call("main");
         assert_eq!(vm.float_regs[2], 0.0);
+    }
+
+    // ── Rolling Window opcodes ──
+
+    #[test]
+    fn window_push_and_mean() {
+        let mut vm = Vm::new(make_prog(vec![
+            Instruction::ri40(Opcode::Ldi64, 0, 10),        // [0] r0 = 10 (int)
+            Instruction::rr(Opcode::I2F, 192, 0),            // [1] f0 = 10.0
+            Instruction::rri(Opcode::WindowPush, 192, 192, 0), // [2] window[0].push(10.0)
+            Instruction::ri(Opcode::WindowMean, 193, 0),     // [3] f1 = window[0].mean()
+            Instruction::single(Opcode::Halt),                // [4]
+        ]));
+        vm.call("main");
+        assert!((vm.float_regs[1] - 10.0).abs() < 1e-10);
+    }
+
+    #[test]
+    fn window_multiple_values_correct_mean() {
+        let mut vm = Vm::new(make_prog(vec![
+            Instruction::ri40(Opcode::Ldi64, 0, 10),
+            Instruction::rr(Opcode::I2F, 192, 0),
+            Instruction::rri(Opcode::WindowPush, 192, 192, 0), // push 10
+            Instruction::ri40(Opcode::Ldi64, 1, 20),
+            Instruction::rr(Opcode::I2F, 193, 1),
+            Instruction::rri(Opcode::WindowPush, 192, 193, 0), // push 20
+            Instruction::ri40(Opcode::Ldi64, 2, 30),
+            Instruction::rr(Opcode::I2F, 194, 2),
+            Instruction::rri(Opcode::WindowPush, 192, 194, 0), // push 30
+            Instruction::ri(Opcode::WindowMean, 195, 0),       // mean
+            Instruction::single(Opcode::Halt),
+        ]));
+        vm.call("main");
+        assert!((vm.float_regs[3] - 20.0).abs() < 1e-10);
+    }
+
+    #[test]
+    fn window_mean_of_single_value() {
+        let mut vm = Vm::new(make_prog(vec![
+            Instruction::ri40(Opcode::Ldi64, 0, 42),
+            Instruction::rr(Opcode::I2F, 192, 0),
+            Instruction::rri(Opcode::WindowPush, 192, 192, 0),
+            Instruction::ri(Opcode::WindowMean, 193, 0),
+            Instruction::single(Opcode::Halt),
+        ]));
+        vm.call("main");
+        assert!((vm.float_regs[1] - 42.0).abs() < 1e-10);
+    }
+
+    #[test]
+    fn window_min_and_max() {
+        let mut vm = Vm::new(make_prog(vec![
+            Instruction::ri40(Opcode::Ldi64, 0, 5),
+            Instruction::rr(Opcode::I2F, 192, 0),
+            Instruction::rri(Opcode::WindowPush, 192, 192, 0), // push 5
+            Instruction::ri40(Opcode::Ldi64, 1, 3),
+            Instruction::rr(Opcode::I2F, 193, 1),
+            Instruction::rri(Opcode::WindowPush, 192, 193, 0), // push 3
+            Instruction::ri40(Opcode::Ldi64, 2, 8),
+            Instruction::rr(Opcode::I2F, 194, 2),
+            Instruction::rri(Opcode::WindowPush, 192, 194, 0), // push 8
+            Instruction::ri(Opcode::WindowMin, 195, 0),
+            Instruction::ri(Opcode::WindowMax, 196, 0),
+            Instruction::single(Opcode::Halt),
+        ]));
+        vm.call("main");
+        assert!((vm.float_regs[3] - 3.0).abs() < 1e-10, "min should be 3.0");
+        assert!((vm.float_regs[4] - 8.0).abs() < 1e-10, "max should be 8.0");
+    }
+
+    #[test]
+    fn window_stddev_of_constant_values() {
+        let mut vm = Vm::new(make_prog(vec![
+            Instruction::ri40(Opcode::Ldi64, 0, 100),
+            Instruction::rr(Opcode::I2F, 192, 0),
+            Instruction::rri(Opcode::WindowPush, 192, 192, 0),
+            Instruction::rri(Opcode::WindowPush, 192, 192, 0),
+            Instruction::rri(Opcode::WindowPush, 192, 192, 0),
+            Instruction::ri(Opcode::WindowStddev, 193, 0),
+            Instruction::single(Opcode::Halt),
+        ]));
+        vm.call("main");
+        assert!((vm.float_regs[1] - 0.0).abs() < 1e-10);
+    }
+
+    #[test]
+    fn window_sum_of_multiple_values() {
+        let mut vm = Vm::new(make_prog(vec![
+            Instruction::ri40(Opcode::Ldi64, 0, 1),
+            Instruction::rr(Opcode::I2F, 192, 0),
+            Instruction::rri(Opcode::WindowPush, 192, 192, 0), // push 1
+            Instruction::ri40(Opcode::Ldi64, 1, 2),
+            Instruction::rr(Opcode::I2F, 193, 1),
+            Instruction::rri(Opcode::WindowPush, 192, 193, 0), // push 2
+            Instruction::ri40(Opcode::Ldi64, 2, 3),
+            Instruction::rr(Opcode::I2F, 194, 2),
+            Instruction::rri(Opcode::WindowPush, 192, 194, 0), // push 3
+            Instruction::ri(Opcode::WindowSum, 195, 0),
+            Instruction::single(Opcode::Halt),
+        ]));
+        vm.call("main");
+        assert!((vm.float_regs[3] - 6.0).abs() < 1e-10);
+    }
+
+    #[test]
+    fn window_multiple_ids_independent() {
+        let mut vm = Vm::new(make_prog(vec![
+            // Push 10 to window 0
+            Instruction::ri40(Opcode::Ldi64, 0, 10),
+            Instruction::rr(Opcode::I2F, 192, 0),
+            Instruction::rri(Opcode::WindowPush, 192, 192, 0),
+            // Push 20 to window 1
+            Instruction::ri40(Opcode::Ldi64, 1, 20),
+            Instruction::rr(Opcode::I2F, 193, 1),
+            Instruction::rri(Opcode::WindowPush, 192, 193, 1),
+            // Read means
+            Instruction::ri(Opcode::WindowMean, 194, 0),
+            Instruction::ri(Opcode::WindowMean, 195, 1),
+            Instruction::single(Opcode::Halt),
+        ]));
+        vm.call("main");
+        assert!((vm.float_regs[2] - 10.0).abs() < 1e-10, "window 0 mean should be 10");
+        assert!((vm.float_regs[3] - 20.0).abs() < 1e-10, "window 1 mean should be 20");
+    }
+
+    #[test]
+    fn window_empty_returns_zero() {
+        let mut vm = Vm::new(make_prog(vec![
+            Instruction::ri(Opcode::WindowMean, 192, 0),
+            Instruction::ri(Opcode::WindowStddev, 193, 0),
+            Instruction::ri(Opcode::WindowMin, 194, 0),
+            Instruction::ri(Opcode::WindowMax, 195, 0),
+            Instruction::ri(Opcode::WindowSum, 196, 0),
+            Instruction::single(Opcode::Halt),
+        ]));
+        vm.call("main");
+        assert_eq!(vm.float_regs[0], 0.0);
+        assert_eq!(vm.float_regs[1], 0.0);
+        assert_eq!(vm.float_regs[2], 0.0);
+        assert_eq!(vm.float_regs[3], 0.0);
+        assert_eq!(vm.float_regs[4], 0.0);
     }
 }

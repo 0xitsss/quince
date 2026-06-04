@@ -179,6 +179,14 @@ pub enum Opcode {
     Log = 56,
     Halt = 57,
 
+    // Rolling Window opcodes
+    WindowPush = 58,    // RRI: push rs1 into window[imm]
+    WindowMean = 59,    // RI:  rd = mean(window[imm])
+    WindowStddev = 60,  // RI:  rd = stddev(window[imm])
+    WindowMin = 61,     // RI:  rd = min(window[imm])
+    WindowMax = 62,     // RI:  rd = max(window[imm])
+    WindowSum = 63,     // RI:  rd = sum(window[imm])
+
     // Sentinel for array sizing
     MaxOpcode,
 }
@@ -244,6 +252,12 @@ impl Opcode {
             55 => Opcode::PersistSet,
             56 => Opcode::Log,
             57 => Opcode::Halt,
+            58 => Opcode::WindowPush,
+            59 => Opcode::WindowMean,
+            60 => Opcode::WindowStddev,
+            61 => Opcode::WindowMin,
+            62 => Opcode::WindowMax,
+            63 => Opcode::WindowSum,
             _ => Opcode::Halt,
         }
     }
@@ -272,7 +286,11 @@ impl Opcode {
             | Ldi | Ldc => InstrEncoding::RRI,
 
             // RI: 1 register + imm32
-            Jmp | GetPrice | GetPos | Log => InstrEncoding::RI,
+            Jmp | GetPrice | GetPos | Log
+            | WindowMean | WindowStddev | WindowMin | WindowMax | WindowSum => InstrEncoding::RI,
+
+            // RRI: push val into window
+            WindowPush => InstrEncoding::RRI,
 
             // RI40: 1 register + 40-bit imm
             Ldi64 => InstrEncoding::RI40,
