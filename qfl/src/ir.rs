@@ -299,6 +299,20 @@ pub fn deserialize(data: &[u8]) -> Result<QfrProgram, String> {
     })
 }
 
+impl QfrProgram {
+    /// Save to .qfr file
+    pub fn save(&self, path: &str) -> Result<(), String> {
+        let bytes = serialize(self);
+        std::fs::write(path, bytes).map_err(|e| format!("write {}: {}", path, e))
+    }
+
+    /// Load from .qfr file
+    pub fn load(path: &str) -> Result<Self, String> {
+        let data = std::fs::read(path).map_err(|e| format!("read {}: {}", path, e))?;
+        deserialize(&data)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -431,6 +445,37 @@ mod tests {
         // const pool: tag = 99 (invalid)
         bytes.push(99);
         let result = deserialize(&bytes);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn save_load_roundtrip_file() {
+        let mut prog = QfrProgram::new();
+        prog.entries.push(EntryPoint {
+            name: "on_trade".into(),
+            code_offset: 10,
+        });
+        let _ = prog.intern_string("btcusdt");
+        let _ = prog.intern_i64(42);
+        let _ = prog.intern_f64(3.14);
+        prog.code.push(Instruction::rrr(Opcode::Add, 1, 2, 3));
+        prog.code.push(Instruction::single(Opcode::Ret));
+
+        let path = "test_save_load.qfr";
+        prog.save(path).unwrap();
+        let loaded = QfrProgram::load(path).unwrap();
+        let _ = std::fs::remove_file(path);
+
+        assert_eq!(loaded.entries.len(), 1);
+        assert_eq!(loaded.entries[0].name, "on_trade");
+        assert_eq!(loaded.entries[0].code_offset, 10);
+        assert_eq!(loaded.const_pool.len(), 3);
+        assert_eq!(loaded.code.len(), 2);
+    }
+
+    #[test]
+    fn load_nonexistent_file_returns_error() {
+        let result = QfrProgram::load("nonexistent.qfr");
         assert!(result.is_err());
     }
 }

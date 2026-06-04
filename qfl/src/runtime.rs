@@ -53,6 +53,32 @@ impl QflRuntime {
         })
     }
 
+    /// Load from pre-compiled .qfr file (bypasses parsing + type checking)
+    pub fn load_qfr(qfr_path: &str) -> Result<Self, String> {
+        let qfr = crate::ir::QfrProgram::load(qfr_path)?;
+
+        tracing::info!(
+            "QFL VM loaded from .qfr: {} ({} entry, {} instr, {} consts)",
+            qfr_path,
+            qfr.entries.len(),
+            qfr.code.len(),
+            qfr.const_pool.len(),
+        );
+
+        Ok(QflRuntime {
+            vm: Vm::new(qfr),
+            path_qfl: PathBuf::from(qfr_path),
+            current_symbol: String::new(),
+            orders_tx: None,
+            risk_engine: crate::risk::RiskEngine::new(crate::risk::RiskLimits::default()),
+        })
+    }
+
+    /// Save current program to .qfr file
+    pub fn save_qfr(&self, qfr_path: &str) -> Result<(), String> {
+        self.vm.program.save(qfr_path)
+    }
+
     pub fn set_order_sender(&mut self, tx: crossbeam_channel::Sender<quince_core::types::Order>) {
         self.orders_tx = Some(tx);
     }
@@ -1593,5 +1619,45 @@ end
         rt.feed_fill(make_fill(100.0, 1.0, Side::Buy));
         rt.feed_eval();
         let _ = std::fs::remove_file(&path);
+    }
+
+    // ── .qfr save/load integration ──
+
+    #[test]
+    fn qfr_save_load_roundtrip() {
+        let src = "
+            @persist local pos = 0
+            function on_trade(trade)
+                local fast = quince.get(\"sma10\")
+                local slow = quince.get(\"sma50\")
+                if fast > slow and pos <= 0 then
+                    quince.order(0, 1.0, 0)
+                    pos = 1
+                end
+            end
+            function on_eval()
+                quince.log(\"eval\")
+            end
+        ";
+        let path = write_test_strategy("qfr_rt_save", src);
+        let rt = QflRuntime::load(&path).unwrap();
+
+        let qfr_path = "test_roundtrip.qfr";
+        rt.save_qfr(qfr_path).unwrap();
+
+        let rt2 = QflRuntime::load_qfr(qfr_path).unwrap();
+        let _ = std::fs::remove_file(&path);
+        let _ = std::fs::remove_file(qfr_path);
+
+        // Verify loaded program has same structure
+        assert_eq!(rt2.vm.program.entries.len(), 2);
+        assert_eq!(rt2.vm.program.code.len(), rt.vm.program.code.len());
+        assert_eq!(rt2.vm.program.const_pool.len(), rt.vm.program.const_pool.len());
+    }
+
+    #[test]
+    fn qfr_load_nonexistent_returns_error() {
+        let result = QflRuntime::load_qfr("nonexistent.qfr");
+        assert!(result.is_err());
     }
 }
