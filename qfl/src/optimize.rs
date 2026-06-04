@@ -4,12 +4,143 @@
 /// Operates on basic blocks (bounded by control-flow instructions).
 
 use crate::ir::QfrProgram;
-use crate::opcodes::{Instruction, Opcode as O};
+use crate::opcodes::{InstrEncoding, Instruction, Opcode as O};
 use std::collections::HashMap;
 
 /// Run the full optimization pipeline on a compiled program.
 pub fn optimize(prog: &QfrProgram) -> QfrProgram {
-    constant_fold(prog)
+    let prog = constant_fold(prog);
+    dead_code_eliminate(&prog)
+}
+
+/// Dead Code Elimination pass.
+///
+/// Removes instructions unreachable from any entry point.
+/// Correctly adjusts jump offsets for remaining instructions.
+pub fn dead_code_eliminate(prog: &QfrProgram) -> QfrProgram {
+    let n = prog.code.len();
+    if n == 0 {
+        return prog.clone();
+    }
+
+    // Trace reachability from each entry point
+    let mut reachable = vec![false; n];
+    let mut worklist: Vec<usize> = Vec::new();
+    for entry in &prog.entries {
+        let start = entry.code_offset as usize;
+        if start < n {
+            worklist.push(start);
+        }
+    }
+
+    while let Some(mut pc) = worklist.pop() {
+        while pc < n {
+            if reachable[pc] {
+                break;
+            }
+            reachable[pc] = true;
+            let op = prog.code[pc].opcode();
+
+            match op {
+                O::Jmp => {
+                    // target = pc + 1 + imm (pc points to next after fetch)
+                    let imm = prog.code[pc].imm_signed() as i64;
+                    let target = (pc as i64 + 1 + imm) as usize;
+                    if target < n && !reachable[target] {
+                        worklist.push(target);
+                    }
+                    break; // instructions after unconditional Jmp are unreachable
+                }
+                O::Jz | O::Jnz => {
+                    let imm = prog.code[pc].imm_signed() as i64;
+                    let target = (pc as i64 + 1 + imm) as usize;
+                    if target < n && !reachable[target] {
+                        worklist.push(target);
+                    }
+                    pc += 1; // fall-through is reachable
+                }
+                O::Call => {
+                    // Call is like Jmp + push return address
+                    // The return is handled by Ret, so we can continue tracing
+                    let imm = prog.code[pc].imm_signed() as i64;
+                    let target = (pc as i64 + 1 + imm) as usize;
+                    if target < n && !reachable[target] {
+                        worklist.push(target);
+                    }
+                    pc += 1; // fall-through is reachable (via Ret)
+                }
+                O::Ret | O::Halt => {
+                    break; // execution stops
+                }
+                _ => {
+                    pc += 1;
+                }
+            }
+        }
+    }
+
+    // Build offset mapping: old index → new index (or None if removed)
+    let mut offset_map: Vec<Option<usize>> = vec![None; n];
+    let mut new_len = 0;
+    for i in 0..n {
+        if reachable[i] {
+            offset_map[i] = Some(new_len);
+            new_len += 1;
+        }
+    }
+
+    // Rebuild code with adjusted jump offsets
+    let mut new_code = Vec::with_capacity(new_len);
+    for i in 0..n {
+        if !reachable[i] {
+            continue;
+        }
+        let instr = prog.code[i];
+        let op = instr.opcode();
+        let encoding = op.encoding();
+
+        let adjusted = match encoding {
+            InstrEncoding::RI => {
+                // Jmp: imm = relative offset
+                let old_imm = instr.imm_signed() as i64;
+                let target_old = i as i64 + 1 + old_imm;
+                let new_imm = adjust_jump_offset(&offset_map, i, target_old);
+                Instruction::ri(op, instr.rd(), new_imm as u32)
+            }
+            InstrEncoding::RRI => {
+                // Jz, Jnz, Call: imm = relative offset
+                if matches!(op, O::Jz | O::Jnz | O::Call) {
+                    let old_imm = instr.imm_signed() as i64;
+                    let target_old = i as i64 + 1 + old_imm;
+                    let new_imm = adjust_jump_offset(&offset_map, i, target_old);
+                    Instruction::rri(op, instr.rd(), instr.rs1(), new_imm as u32)
+                } else {
+                    instr // not a jump — keep as-is
+                }
+            }
+            _ => instr,
+        };
+        new_code.push(adjusted);
+    }
+
+    let mut out = QfrProgram::new();
+    out.entries = prog.entries.clone();
+    out.const_pool = prog.const_pool.clone();
+    out.const_map = prog.const_map.clone();
+    out.code = new_code;
+    out
+}
+
+fn adjust_jump_offset(offset_map: &[Option<usize>], from_old: usize, target_old: i64) -> i64 {
+    let new_idx = offset_map[from_old].expect("jump instruction should be reachable");
+    if target_old < 0 || target_old as usize >= offset_map.len() {
+        // Target out of bounds — leave offset as-is (will trap at runtime)
+        return target_old as i64 - from_old as i64 - 1;
+    }
+    match offset_map[target_old as usize] {
+        Some(target_new) => target_new as i64 - new_idx as i64 - 1,
+        None => 0, // target was removed (shouldn't happen), fall through
+    }
 }
 
 /// Constant-folding pass.
@@ -648,15 +779,17 @@ mod tests {
 
     #[test]
     fn optimize_runs_without_panicking() {
-        let p = make_prog(vec![I::single(O::Ret)]);
+        let mut p = QfrProgram::new();
+        p.entries.push(crate::ir::EntryPoint { name: "main".into(), code_offset: 0 });
+        p.code = vec![I::single(O::Ret)];
         let opt = optimize(&p);
         assert_eq!(opt.code.len(), 1);
         assert_eq!(opt.code[0].opcode(), O::Ret);
     }
 
     #[test]
-    fn optimize_empty_program() {
-        let p = QfrProgram::new();
+    fn optimize_with_no_entries_removes_all_code() {
+        let p = make_prog(vec![I::single(O::Ret)]);
         let opt = optimize(&p);
         assert!(opt.code.is_empty());
     }
@@ -831,5 +964,187 @@ mod tests {
         } else {
             panic!("expected string");
         }
+    }
+
+    // ── Dead Code Elimination ──
+
+    #[test]
+    fn dce_retains_all_when_everything_reachable() {
+        let mut p = QfrProgram::new();
+        p.entries.push(crate::ir::EntryPoint { name: "main".into(), code_offset: 0 });
+        p.code = vec![
+            I::rri(O::Ldi, 0, 0, 1),
+            I::rri(O::Ldi, 1, 0, 2),
+            I::rrr(O::Add, 2, 0, 1),
+            I::single(O::Ret),
+        ];
+        let opt = dead_code_eliminate(&p);
+        assert_eq!(opt.code.len(), 4);
+    }
+
+    #[test]
+    fn dce_removes_code_after_unconditional_jmp() {
+        let mut p = QfrProgram::new();
+        p.entries.push(crate::ir::EntryPoint { name: "main".into(), code_offset: 0 });
+        p.code = vec![
+            I::ri(O::Jmp, 0, 3),     // [0] jump to [4]
+            I::rri(O::Ldi, 0, 0, 1), // [1] unreachable
+            I::rri(O::Ldi, 1, 0, 2), // [2] unreachable
+            I::rrr(O::Add, 2, 0, 1), // [3] unreachable
+            I::rri(O::Ldi, 3, 0, 42), // [4] target
+            I::single(O::Ret),        // [5]
+        ];
+        // Reachable: [0], [4], [5]
+        // New: 0→0, 4→1, 5→2
+        let opt = dead_code_eliminate(&p);
+        assert_eq!(opt.code.len(), 3);
+        assert_eq!(opt.code[0].opcode(), O::Jmp);
+        // Jmp at new[0], target old[4]→new[1]: offset = 1 - 0 - 1 = 0
+        assert_eq!(opt.code[0].imm_signed(), 0);
+        assert_eq!(opt.code[1].opcode(), O::Ldi);
+        assert_eq!(opt.code[2].opcode(), O::Ret);
+    }
+
+    #[test]
+    fn dce_preserves_both_branches_of_jz() {
+        let mut p = QfrProgram::new();
+        p.entries.push(crate::ir::EntryPoint { name: "main".into(), code_offset: 0 });
+        p.code = vec![
+            I::rri(O::Ldi, 0, 0, 1),  // [0]
+            I::rri(O::Jz, 0, 0, 2),   // [1] if r0==0 → jump to [4]
+            I::rri(O::Ldi, 1, 0, 10), // [2] fall-through
+            I::single(O::Ret),         // [3]
+            I::rri(O::Ldi, 2, 0, 20), // [4] branch target
+            I::single(O::Ret),         // [5]
+        ];
+        let opt = dead_code_eliminate(&p);
+        assert_eq!(opt.code.len(), 6); // nothing removed
+    }
+
+    #[test]
+    fn dce_removes_dead_code_between_entry_points() {
+        let mut p = QfrProgram::new();
+        p.entries.push(crate::ir::EntryPoint { name: "fn1".into(), code_offset: 0 });
+        p.entries.push(crate::ir::EntryPoint { name: "fn2".into(), code_offset: 4 });
+        p.code = vec![
+            I::rri(O::Ldi, 0, 0, 1),  // [0] fn1 entry
+            I::single(O::Ret),         // [1]
+            I::rri(O::Ldi, 1, 0, 99), // [2] dead — between fn1 and fn2
+            I::rri(O::Ldi, 2, 0, 99), // [3] dead
+            I::rri(O::Ldi, 3, 0, 42), // [4] fn2 entry
+            I::single(O::Ret),         // [5]
+        ];
+        let opt = dead_code_eliminate(&p);
+        assert_eq!(opt.code.len(), 4);
+        assert_eq!(opt.code[0].opcode(), O::Ldi);
+        assert_eq!(opt.code[1].opcode(), O::Ret);
+        assert_eq!(opt.code[2].opcode(), O::Ldi);
+        assert_eq!(opt.code[2].rd(), 3);
+        assert_eq!(opt.code[3].opcode(), O::Ret);
+    }
+
+    #[test]
+    fn dce_jz_still_preserves_both_paths() {
+        let mut p = QfrProgram::new();
+        p.entries.push(crate::ir::EntryPoint { name: "main".into(), code_offset: 0 });
+        p.code = vec![
+            I::rri(O::Ldi, 0, 0, 1),   // [0]
+            I::rri(O::Ldi, 1, 0, 0),   // [1]
+            I::rri(O::Jz, 0, 1, 3),    // [2] if r1==0 → jump to [6]
+            I::rri(O::Ldi, 2, 0, 10),  // [3] fall-through
+            I::single(O::Ret),          // [4]
+            I::rri(O::Ldi, 3, 0, 99),  // [5] after Ret, unreachable
+            I::rri(O::Ldi, 4, 0, 42),  // [6] branch target
+            I::single(O::Ret),          // [7]
+        ];
+        // Reachable: [0][1][2][3][4][6][7], dead: [5]
+        // New: 0→0, 1→1, 2→2, 3→3, 4→4, 5→removed, 6→5, 7→6
+        let opt = dead_code_eliminate(&p);
+        assert_eq!(opt.code.len(), 7);
+        // Jz at new[2]: target old[6]→new[5], offset = 5-2-1 = 2
+        assert_eq!(opt.code[2].opcode(), O::Jz);
+        assert_eq!(opt.code[2].imm_signed(), 2);
+    }
+
+    #[test]
+    fn dce_handles_backward_jump_loop() {
+        let mut p = QfrProgram::new();
+        p.entries.push(crate::ir::EntryPoint { name: "main".into(), code_offset: 0 });
+        p.code = vec![
+            I::rri(O::Ldi, 0, 0, 5),    // [0]
+            I::rri(O::Jz, 0, 0, 3),     // [1] if r0==0 → exit to [5]
+            I::rri(O::AddI, 0, 0, (-1i32) as u32),  // [2] r0 -= 1
+            I::ri(O::Jmp, 0, (-3i32) as u32), // [3] back to [1] (3+1+(-3)=1)
+            I::rri(O::Ldi, 1, 0, 99),   // [4] dead (after Jmp)
+            I::rri(O::Ldi, 2, 0, 42),   // [5] exit
+            I::single(O::Ret),           // [6]
+        ];
+        // Reachable: [0][1][2][3][5][6], dead: [4]
+        // New: 0→0, 1→1, 2→2, 3→3, 4→removed, 5→4, 6→5
+        let opt = dead_code_eliminate(&p);
+        assert_eq!(opt.code.len(), 6);
+        // Jmp at new[3]: target old[1]→new[1]: offset = 1-3-1 = -3
+        assert_eq!(opt.code[3].opcode(), O::Jmp);
+        assert_eq!(opt.code[3].imm_signed(), -3);
+    }
+
+    #[test]
+    fn dce_empty_program_unchanged() {
+        let p = QfrProgram::new();
+        let opt = dead_code_eliminate(&p);
+        assert!(opt.code.is_empty());
+    }
+
+    #[test]
+    fn dce_no_entry_points_retains_all() {
+        let p = make_prog(vec![
+            I::rri(O::Ldi, 0, 0, 1),
+            I::single(O::Ret),
+        ]);
+        // No entries → no reachable code → all removed
+        let opt = dead_code_eliminate(&p);
+        assert!(opt.code.is_empty());
+    }
+
+    #[test]
+    fn dce_preserves_const_pool() {
+        let mut p = QfrProgram::new();
+        p.entries.push(crate::ir::EntryPoint { name: "main".into(), code_offset: 0 });
+        let s_idx = p.intern_string("hello");
+        p.code = vec![
+            I::rri(O::Ldc, 0, 0, s_idx),
+            I::single(O::Ret),
+        ];
+        let opt = dead_code_eliminate(&p);
+        assert_eq!(opt.const_pool.len(), 1);
+        assert!(opt.const_map.contains_key("hello"));
+    }
+
+    #[test]
+    fn dce_preserves_entry_points() {
+        let mut p = QfrProgram::new();
+        p.entries.push(crate::ir::EntryPoint { name: "on_trade".into(), code_offset: 0 });
+        p.code = vec![I::single(O::Ret)];
+        let opt = dead_code_eliminate(&p);
+        assert_eq!(opt.entries.len(), 1);
+        assert_eq!(opt.entries[0].name, "on_trade");
+        assert_eq!(opt.entries[0].code_offset, 0);
+    }
+
+    #[test]
+    fn optimize_includes_dce_in_pipeline() {
+        let mut p = QfrProgram::new();
+        p.entries.push(crate::ir::EntryPoint { name: "main".into(), code_offset: 0 });
+        p.code = vec![
+            I::rri(O::Ldi, 0, 0, 1),     // [0]
+            I::ri(O::Jmp, 0, 2),          // [1] jump to [4]
+            I::rri(O::Ldi, 1, 0, 99),    // [2] dead
+            I::rri(O::Ldi, 2, 0, 99),    // [3] dead
+            I::rri(O::Ldi, 3, 0, 42),    // [4] target
+            I::single(O::Ret),            // [5]
+        ];
+        // Reachable: [0], [1], [4], [5]
+        let opt = optimize(&p);
+        assert_eq!(opt.code.len(), 4);
     }
 }
