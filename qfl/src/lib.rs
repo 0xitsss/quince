@@ -12,3 +12,4 @@ pub mod graph;
 pub mod risk;
 pub mod optimize;
 pub mod profiler;
+pub mod tracer;

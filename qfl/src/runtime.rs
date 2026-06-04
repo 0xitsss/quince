@@ -92,6 +92,10 @@ impl QflRuntime {
             Side::Sell => 1,
         };
 
+        if let Some(ref mut t) = self.vm.tracer {
+            t.record_fill(fill.price, fill.qty, &format!("{:?}", fill.side));
+        }
+
         self.vm.call("on_fill");
     }
 
@@ -148,9 +152,15 @@ impl QflRuntime {
         // Risk check before sending
         match self.risk_engine.check_order(&order) {
             crate::risk::RiskVerdict::Allowed => {
+                if let Some(ref mut t) = self.vm.tracer {
+                    t.record_risk("allowed", "");
+                }
                 let _ = tx.try_send(order);
             }
             crate::risk::RiskVerdict::Rejected(reason) => {
+                if let Some(ref mut t) = self.vm.tracer {
+                    t.record_risk("rejected", &reason);
+                }
                 tracing::warn!("QFL risk rejected order: {}", reason);
             }
         }
@@ -1469,6 +1479,119 @@ end
         rt.feed_event(Event::Eval);
         // Second eval should reset order count via new_cycle
         rt.feed_event(Event::Eval);
+        let _ = std::fs::remove_file(&path);
+    }
+
+    // ── Tracer integration ──
+
+    fn make_tracer_rt(name: &str, src: &str) -> (QflRuntime, String) {
+        let path = write_test_strategy(name, src);
+        let mut rt = QflRuntime::load(&path).unwrap();
+        rt.vm.tracer = Some(crate::tracer::Tracer::new(1024));
+        (rt, path)
+    }
+
+    #[test]
+    fn trace_fill_records_fill_event() {
+        let (mut rt, path) = make_tracer_rt("tr_fill_rec", "function on_fill(fill) end");
+        let fill = make_fill(50000.0, 0.1, Side::Buy);
+        rt.feed_fill(fill);
+        let events = rt.vm.tracer.as_mut().unwrap().drain();
+        assert!(!events.is_empty());
+        let has_fill = events.iter().any(|e| matches!(e, crate::tracer::TraceEvent::Fill { .. }));
+        assert!(has_fill, "expected a Fill trace event");
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn trace_fill_has_correct_values() {
+        let (mut rt, path) = make_tracer_rt("tr_fill_vals", "function on_fill(fill) end");
+        let fill = make_fill(50200.0, 0.25, Side::Sell);
+        rt.feed_fill(fill);
+        let events = rt.vm.tracer.as_mut().unwrap().drain();
+        let fill_event = events.iter().find_map(|e| {
+            if let crate::tracer::TraceEvent::Fill { price, qty, side } = e {
+                Some((*price, *qty, side.clone()))
+            } else {
+                None
+            }
+        });
+        assert!(fill_event.is_some());
+        let (price, qty, side) = fill_event.unwrap();
+        assert!((price - 50200.0).abs() < 0.001);
+        assert!((qty - 0.25).abs() < 0.001);
+        assert_eq!(side, "Sell");
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn trace_risk_allowed_on_order_send() {
+        let src = "
+            function on_eval()
+                quince.order(0, 0.1, 100.0)
+            end
+        ";
+        let (mut rt, path) = make_tracer_rt("tr_risk_ok", src);
+        let (tx, _rx) = crossbeam_channel::unbounded();
+        rt.set_order_sender(tx);
+        rt.set_symbol("BTCUSDT");
+        rt.feed_eval();
+        let events = rt.vm.tracer.as_mut().unwrap().drain();
+        let has_risk = events.iter().any(|e| matches!(e, crate::tracer::TraceEvent::RiskAction { .. }));
+        assert!(has_risk, "expected a RiskAction trace event");
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn trace_risk_rejected_when_limit_exceeded() {
+        let src = "
+            function on_eval()
+                quince.order(0, 100.0, 50000.0)
+            end
+        ";
+        let (mut rt, path) = make_tracer_rt("tr_risk_rej", src);
+        rt.risk_engine.limits.max_order_notional = 1000.0;
+        let (tx, _rx) = crossbeam_channel::unbounded();
+        rt.set_order_sender(tx);
+        rt.set_symbol("BTCUSDT");
+        rt.feed_eval();
+        let events = rt.vm.tracer.as_mut().unwrap().drain();
+        let rejected = events.iter().any(|e| {
+            matches!(e, crate::tracer::TraceEvent::RiskAction { verdict, .. } if verdict == "rejected")
+        });
+        assert!(rejected, "expected a rejected RiskAction trace event");
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn trace_multiple_events_in_one_feed() {
+        let src = "
+            function on_eval()
+                quince.order(0, 0.1, 100.0)
+            end
+        ";
+        let (mut rt, path) = make_tracer_rt("tr_multi_ev", src);
+        let (tx, _rx) = crossbeam_channel::unbounded();
+        rt.set_order_sender(tx);
+        rt.set_symbol("BTCUSDT");
+        // feed_fill produces Fill trace, feed_eval may produce signal+risk traces
+        rt.feed_fill(make_fill(50000.0, 0.1, Side::Buy));
+        rt.feed_eval();
+        let events = rt.vm.tracer.as_mut().unwrap().drain();
+        let kinds: Vec<&str> = events.iter().map(|e| e.kind()).collect();
+        assert!(kinds.contains(&"fill"), "expected fill event: {:?}", kinds);
+        assert!(kinds.contains(&"risk"), "expected risk event: {:?}", kinds);
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn trace_no_crash_when_tracer_none() {
+        let src = "function on_eval() end";
+        let path = write_test_strategy("trace_none_rt", src);
+        let mut rt = QflRuntime::load(&path).unwrap();
+        // Tracer is not set
+        rt.feed_fill(make_fill(100.0, 1.0, Side::Buy));
+        rt.feed_eval();
         let _ = std::fs::remove_file(&path);
     }
 }

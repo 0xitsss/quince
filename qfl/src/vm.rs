@@ -67,6 +67,9 @@ pub struct Vm {
 
     // Optional profiler
     pub profiler: Option<crate::profiler::Profiler>,
+
+    // Optional trace event recorder
+    pub tracer: Option<crate::tracer::Tracer>,
 }
 
 /// A complete snapshot of VM state for replay and hot-reload.
@@ -104,6 +107,7 @@ impl Vm {
             depth_asks: Vec::new(),
             windows: (0..64).map(|_| None).collect(),
             profiler: None,
+            tracer: None,
         }
     }
 
@@ -439,6 +443,38 @@ impl Vm {
                 self.running = false;
             }
             Opcode::MaxOpcode => unreachable!(),
+        }
+
+        if self.tracer.is_some() {
+            let event = match op {
+                Opcode::Eq | Opcode::Ne | Opcode::Lt | Opcode::Gt | Opcode::Le | Opcode::Ge
+                | Opcode::FEq | Opcode::FNe | Opcode::FLt | Opcode::FGt | Opcode::FLe | Opcode::FGe => {
+                    let result = if (rd as usize) < INT_REGS { self.int_regs[rd as usize] != 0 } else { false };
+                    Some(crate::tracer::TraceEvent::Signal {
+                        kind: format!("{:?}", op),
+                        result,
+                    })
+                }
+                Opcode::GetInd => {
+                    let name_idx = self.int_regs[rs1 as usize] as usize;
+                    let name = match self.program.const_pool.get(name_idx) {
+                        Some(ConstEntry::String(s)) => s.clone(),
+                        _ => String::new(),
+                    };
+                    let val = if (rd as usize) >= INT_REGS {
+                        self.float_regs[(rd - INT_REGS as u8) as usize]
+                    } else {
+                        self.int_regs[rd as usize] as f64
+                    };
+                    Some(crate::tracer::TraceEvent::Feature { name, value: val })
+                }
+                _ => None,
+            };
+            if let Some(e) = event {
+                if let Some(ref mut t) = self.tracer {
+                    t.record(e);
+                }
+            }
         }
     }
 
@@ -2363,5 +2399,138 @@ mod tests {
         ]));
         vm2.restore(&snap);
         assert!((vm2.indicators.get("ema").unwrap() - 1.5).abs() < 1e-10);
+    }
+
+    // ── Tracer integration ──
+
+    #[test]
+    fn trace_signal_on_comparison_gt_true() {
+        let mut vm = Vm::new(make_prog(vec![
+            Instruction::rri(Opcode::Ldi, 0, 0, 10),
+            Instruction::rri(Opcode::Ldi, 1, 0, 5),
+            Instruction::rrr(Opcode::Gt, 2, 0, 1),
+            Instruction::single(Opcode::Halt),
+        ]));
+        vm.tracer = Some(crate::tracer::Tracer::new(1024));
+        vm.call("main");
+        let events = vm.tracer.as_mut().unwrap().drain();
+        assert_eq!(events.len(), 1);
+        match &events[0] {
+            crate::tracer::TraceEvent::Signal { kind, result } => {
+                assert_eq!(kind, "Gt");
+                assert!(result);
+            }
+            _ => panic!("expected signal event"),
+        }
+    }
+
+    #[test]
+    fn trace_signal_on_comparison_lt_false() {
+        let mut vm = Vm::new(make_prog(vec![
+            Instruction::rri(Opcode::Ldi, 0, 0, 3),
+            Instruction::rri(Opcode::Ldi, 1, 0, 7),
+            Instruction::rrr(Opcode::Gt, 2, 0, 1), // 3 > 7 = 0
+            Instruction::single(Opcode::Halt),
+        ]));
+        vm.tracer = Some(crate::tracer::Tracer::new(1024));
+        vm.call("main");
+        let events = vm.tracer.as_mut().unwrap().drain();
+        assert_eq!(events.len(), 1);
+        match &events[0] {
+            crate::tracer::TraceEvent::Signal { kind, result } => {
+                assert_eq!(kind, "Gt");
+                assert!(!result);
+            }
+            _ => panic!("expected signal event"),
+        }
+    }
+
+    #[test]
+    fn trace_feature_on_getind() {
+        let mut prog = QfrProgram::new();
+        let name_idx = prog.intern_string("ema");
+        prog.entries.push(EntryPoint { name: "main".into(), code_offset: 0 });
+        prog.code = vec![
+            Instruction::rri(Opcode::Ldc, 0, 0, name_idx),
+            Instruction::rr(Opcode::GetInd, 192, 0),
+            Instruction::single(Opcode::Halt),
+        ];
+        let mut vm = Vm::new(prog);
+        vm.set_indicator("ema", 50000.0);
+        vm.tracer = Some(crate::tracer::Tracer::new(1024));
+        vm.call("main");
+        let events = vm.tracer.as_mut().unwrap().drain();
+        assert_eq!(events.len(), 1);
+        match &events[0] {
+            crate::tracer::TraceEvent::Feature { name, value } => {
+                assert_eq!(name, "ema");
+                assert!((*value - 50000.0).abs() < 0.001);
+            }
+            _ => panic!("expected feature event"),
+        }
+    }
+
+    #[test]
+    fn trace_multiple_signals_and_features() {
+        let mut prog = QfrProgram::new();
+        let ema_idx = prog.intern_string("ema");
+        let sma_idx = prog.intern_string("sma");
+        prog.entries.push(EntryPoint { name: "main".into(), code_offset: 0 });
+        prog.code = vec![
+            Instruction::rri(Opcode::Ldi, 0, 0, 10),
+            Instruction::rri(Opcode::Ldi, 1, 0, 5),
+            Instruction::rrr(Opcode::Gt, 2, 0, 1),    // signal: Gt=true
+            Instruction::rri(Opcode::Ldc, 0, 0, ema_idx),
+            Instruction::rr(Opcode::GetInd, 192, 0),   // feature: ema
+            Instruction::rri(Opcode::Ldc, 0, 0, sma_idx),
+            Instruction::rr(Opcode::GetInd, 193, 0),   // feature: sma
+            Instruction::rrr(Opcode::Eq, 3, 0, 1),      // signal: Eq=true
+            Instruction::single(Opcode::Halt),
+        ];
+        let mut vm = Vm::new(prog);
+        vm.set_indicator("ema", 100.0);
+        vm.set_indicator("sma", 100.0);
+        vm.tracer = Some(crate::tracer::Tracer::new(1024));
+        vm.call("main");
+        let events = vm.tracer.as_mut().unwrap().drain();
+        assert_eq!(events.len(), 4);
+        assert_eq!(events[0].kind(), "signal");
+        assert_eq!(events[1].kind(), "feature");
+        assert_eq!(events[2].kind(), "feature");
+        assert_eq!(events[3].kind(), "signal");
+    }
+
+    #[test]
+    fn trace_no_events_when_tracer_none() {
+        let mut vm = Vm::new(make_prog(vec![
+            Instruction::rri(Opcode::Ldi, 0, 0, 10),
+            Instruction::rri(Opcode::Ldi, 1, 0, 5),
+            Instruction::rrr(Opcode::Gt, 2, 0, 1),
+            Instruction::single(Opcode::Halt),
+        ]));
+        // tracer is None by default
+        vm.call("main");
+        // No crash — tracer is not set
+    }
+
+    #[test]
+    fn trace_getind_missing_name_no_panic() {
+        let mut vm = Vm::new(make_prog(vec![
+            Instruction::rri(Opcode::Ldi, 0, 0, 999), // invalid const pool index
+            Instruction::rr(Opcode::GetInd, 192, 0),
+            Instruction::single(Opcode::Halt),
+        ]));
+        vm.tracer = Some(crate::tracer::Tracer::new(1024));
+        vm.call("main");
+        let events = vm.tracer.as_mut().unwrap().drain();
+        // Feature recorded with empty name (const pool index out of range)
+        assert_eq!(events.len(), 1);
+        match &events[0] {
+            crate::tracer::TraceEvent::Feature { name, value } => {
+                assert!(name.is_empty());
+                assert!((*value - 0.0).abs() < 0.001);
+            }
+            _ => panic!("expected feature event"),
+        }
     }
 }

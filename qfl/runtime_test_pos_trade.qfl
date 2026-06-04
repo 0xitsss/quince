@@ -1,0 +1,5 @@
+
+@persist local pos = 0
+function on_trade(trade)
+    pos = quince.position()
+end
