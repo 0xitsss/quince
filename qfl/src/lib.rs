@@ -10,3 +10,4 @@ pub mod types;
 pub mod window;
 pub mod graph;
 pub mod risk;
+pub mod optimize;
