@@ -1,0 +1,29 @@
+-- --USING atr 14
+
+@persist local position_size = 0
+@persist local entry_price = 0
+
+function on_trade(trade)
+    local price = trade.price
+    local atr = quince.get("atr")
+
+    if position_size > 0 then
+        local stop = entry_price - atr * 2
+        if price < stop then
+            quince.order(1, 1.0, 0)
+            position_size = 0
+            quince.log("atr trailing stop hit")
+        end
+    end
+
+    if position_size <= 0 and atr > 0 then
+        quince.order(0, 1.0, 0)
+        position_size = 1
+        entry_price = price
+        quince.log("atr trail entry")
+    end
+end
+
+function on_eval()
+    quince.log("atr_trail eval")
+end

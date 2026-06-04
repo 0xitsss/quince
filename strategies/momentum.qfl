@@ -1,0 +1,36 @@
+-- --USING roc 10
+
+@persist local position_size = 0
+
+function on_trade(trade)
+    local roc = quince.get("roc")
+    local price = trade.price
+
+    if roc > 2 and position_size <= 0 then
+        quince.order(0, 1.0, 0)
+        position_size = 1
+        quince.log("momentum long")
+    end
+
+    if roc < -2 and position_size > 0 then
+        quince.order(1, 1.0, 0)
+        position_size = 0
+        quince.log("momentum exit")
+    end
+
+    if roc < -2 and position_size >= 0 then
+        quince.order(1, 1.0, 0)
+        position_size = -1
+        quince.log("momentum short")
+    end
+
+    if roc > 2 and position_size < 0 then
+        quince.order(0, 1.0, 0)
+        position_size = 0
+        quince.log("momentum cover")
+    end
+end
+
+function on_eval()
+    quince.log("momentum eval")
+end

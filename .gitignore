@@ -20,3 +20,6 @@ Thumbs.db
 *.log
 *.tmp
 *.bak
+
+# Internal plans/docs (not for public)
+qfl/docs/

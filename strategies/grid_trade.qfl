@@ -1,0 +1,37 @@
+-- --USING ema 20
+
+@persist local grid_level = 0
+@persist local position_size = 0
+@persist local last_price = 0
+
+function on_trade(trade)
+    local price = trade.price
+    local ema = quince.get("ema")
+
+    if last_price == 0 then
+        last_price = price
+    end
+
+    local grid_step = ema * 1.2
+    local distance = price - last_price
+
+    if distance > grid_step and position_size >= 0 then
+        quince.order(1, 0.2, 0)
+        position_size = position_size - 1
+        grid_level = grid_level - 1
+        last_price = price
+        quince.log("grid sell")
+    end
+
+    if distance < -grid_step and position_size <= 0 then
+        quince.order(0, 0.2, 0)
+        position_size = position_size + 1
+        grid_level = grid_level + 1
+        last_price = price
+        quince.log("grid buy")
+    end
+end
+
+function on_eval()
+    quince.log("grid_trade eval")
+end

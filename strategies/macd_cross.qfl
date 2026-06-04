@@ -1,0 +1,24 @@
+-- --USING macd 12 26 9
+
+@persist local position_size = 0
+
+function on_trade(trade)
+    local macd = quince.get("macd.macd")
+    local signal = quince.get("macd.signal")
+
+    if macd > signal and position_size <= 0 then
+        quince.order(0, 1.0, 0)
+        position_size = 1
+        quince.log("macd cross up")
+    end
+
+    if macd < signal and position_size > 0 then
+        quince.order(1, 1.0, 0)
+        position_size = 0
+        quince.log("macd cross down")
+    end
+end
+
+function on_eval()
+    quince.log("macd_cross eval")
+end

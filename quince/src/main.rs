@@ -26,7 +26,7 @@ async fn main() -> Result<(), EngineError> {
     let is_public = std::env::var("QUINCE_PUBLIC").is_ok();
     let symbol = std::env::var("QUINCE_SYMBOL").unwrap_or_else(|_| "btcusdt".into());
     let strategy = std::env::var("QUINCE_STRATEGY")
-        .unwrap_or_else(|_| "strategies/test_all.lua".into());
+        .unwrap_or_else(|_| "strategies/test_all.qfl".into());
     let log_path = std::env::var("QUINCE_LOG").unwrap_or_else(|_| "trades.log".into());
 
     let max_pos: f64 = std::env::var("QUINCE_MAX_POSITION")

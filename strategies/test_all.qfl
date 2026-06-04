@@ -1,0 +1,40 @@
+-- --USING ema 5
+-- --USING bb 20 2.0
+
+@persist local call_count = 0
+
+function on_trade(trade)
+    call_count = call_count + 1
+    local price = trade.price
+    local side = trade.side
+    local qty = trade.qty
+    local id = trade.trade_id
+    local t = trade.time
+
+    local px = quince.price()
+    local pos = quince.position()
+    local ema = quince.get("ema")
+
+    if ema > 0 and call_count > 5 then
+        quince.order(0, 0.5, 0)
+        quince.log("test_all: buy signal")
+    end
+end
+
+function on_depth()
+    quince.log("test_all: depth update")
+end
+
+function on_fill(fill)
+    local fill_price = fill.price
+    local fill_qty = fill.qty
+    quince.log("test_all: fill received")
+end
+
+function on_eval()
+    local bal = quince.balance("USDT")
+    local pos = quince.position()
+    local cnt = call_count
+    local price = quince.price()
+    quince.log("test_all: eval")
+end

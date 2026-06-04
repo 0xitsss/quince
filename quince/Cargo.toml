@@ -11,7 +11,6 @@ profiling = ["puffin", "puffin_http", "quince-engine/profiling"]
 [dependencies]
 quince-core = { path = "../core" }
 quince-exchange = { path = "../exchange" }
-quince-strategy = { path = "../strategy" }
 quince-engine = { path = "../engine" }
 quince-risk = { path = "../risk" }
 quince-logger = { path = "../logger" }

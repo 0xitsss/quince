@@ -1,0 +1,9 @@
+pub mod opcodes;
+pub mod ir;
+pub mod lexer;
+pub mod ast;
+pub mod parser;
+pub mod compiler;
+pub mod vm;
+pub mod runtime;
+pub mod types;

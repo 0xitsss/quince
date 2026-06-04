@@ -1,0 +1,35 @@
+-- --USING rsi 14
+
+@persist local position_size = 0
+
+function on_trade(trade)
+    local rsi = quince.get("rsi")
+
+    if rsi < 30 and position_size <= 0 then
+        quince.order(0, 1.0, 0)
+        position_size = 1
+        quince.log("rsi oversold")
+    end
+
+    if rsi > 70 and position_size > 0 then
+        quince.order(1, 1.0, 0)
+        position_size = 0
+        quince.log("rsi overbought exit")
+    end
+
+    if rsi > 70 and position_size <= 0 then
+        quince.order(1, 1.0, 0)
+        position_size = -1
+        quince.log("rsi overbought short")
+    end
+
+    if rsi < 30 and position_size < 0 then
+        quince.order(0, 1.0, 0)
+        position_size = 0
+        quince.log("rsi oversold cover")
+    end
+end
+
+function on_eval()
+    quince.log("rsi_reversion eval")
+end

@@ -2,12 +2,12 @@
 members = [
     "core",
     "exchange",
-    "strategy",
     "engine",
     "risk",
     "logger",
     "quince",
     "indicators",
+    "qfl",
 ]
 resolver = "2"
 
@@ -28,7 +28,6 @@ thiserror = "2"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 async-trait = "0.1"
-mlua = { version = "0.10", features = ["lua54", "vendored", "send"] }
 puffin = "0.20"
 puffin_http = "0.17"
 simd-json = "0.14"

@@ -1,0 +1,41 @@
+-- --USING bb 20 2.0
+
+@persist local position_size = 0
+@persist local last_trade_price = 0
+
+function on_trade(trade)
+    local price = trade.price
+    local mid = quince.get("bb.middle")
+    local upper = quince.get("bb.upper")
+    local lower = quince.get("bb.lower")
+
+    if price < lower and position_size <= 0 then
+        quince.order(0, 0.5, 0)
+        position_size = 1
+        last_trade_price = price
+        quince.log("bb bounce long")
+    end
+
+    if price > mid and position_size > 0 then
+        quince.order(1, 0.5, 0)
+        position_size = 0
+        quince.log("bb bounce exit long")
+    end
+
+    if price > upper and position_size >= 0 then
+        quince.order(1, 0.5, 0)
+        position_size = -1
+        last_trade_price = price
+        quince.log("bb bounce short")
+    end
+
+    if price < mid and position_size < 0 then
+        quince.order(0, 0.5, 0)
+        position_size = 0
+        quince.log("bb bounce exit short")
+    end
+end
+
+function on_eval()
+    quince.log("bb_bounce eval")
+end
