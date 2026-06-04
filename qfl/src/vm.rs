@@ -64,6 +64,9 @@ pub struct Vm {
 
     // Rolling windows (lazily initialized, max 64)
     pub windows: Vec<Option<crate::window::RollingWindow>>,
+
+    // Optional profiler
+    pub profiler: Option<crate::profiler::Profiler>,
 }
 
 /// A complete snapshot of VM state for replay and hot-reload.
@@ -100,6 +103,7 @@ impl Vm {
             depth_bids: Vec::new(),
             depth_asks: Vec::new(),
             windows: (0..64).map(|_| None).collect(),
+            profiler: None,
         }
     }
 
@@ -133,10 +137,16 @@ impl Vm {
             Some(o) => o as usize,
             None => return, // entry point not defined
         };
+        if let Some(ref mut p) = self.profiler {
+            p.start_handler(entry_name);
+        }
         self.pc = offset;
         self.running = true;
         self.call_stack.clear();
         self.execute();
+        if let Some(ref mut p) = self.profiler {
+            p.end_handler();
+        }
     }
 
     fn execute(&mut self) {
@@ -149,6 +159,9 @@ impl Vm {
 
     fn dispatch(&mut self, instr: Instruction) {
         let op = instr.opcode();
+        if let Some(ref mut p) = self.profiler {
+            p.record_opcode(op);
+        }
         let rd = instr.rd();
         let rs1 = instr.rs1();
         let rs2 = instr.rs2();
