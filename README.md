@@ -6,7 +6,7 @@
 [![License](https://img.shields.io/badge/license-AGPL--3.0-blue?style=for-the-badge)](https://www.gnu.org/licenses/agpl-3.0)
 [![Rust](https://img.shields.io/badge/rust-1.80+-orange?style=for-the-badge&logo=rust)](https://www.rust-lang.org)
 [![Version](https://img.shields.io/badge/version-0.4.4-purple?style=for-the-badge)](https://github.com/0xitsss/quince/releases)
-[![Performance](https://img.shields.io/badge/ULL-<100µs-red?style=for-the-badge)](https://github.com/0xitsss/quince)
+[![Performance](https://img.shields.io/badge/ULL-%3C100%C2%B5s-red?style=for-the-badge)](https://github.com/0xitsss/quince)
 
 **Q**uantitative **U**ltra-low-latency **I**nterpreter for **N**etwork-centric **C**ompetitive **E**xecution
 
@@ -18,7 +18,7 @@ Low-latency trading engine using crossbeam channels throughout. No `tokio::sync:
 
 ```mermaid
 graph TB
-    subgraph Exchange["🔌 Exchange Layer"]
+    subgraph Exchange["Exchange Layer"]
         T[Exchange Trait]
         B[Binance WS/REST]
         M[Mock Exchange]
@@ -28,13 +28,13 @@ graph TB
         T --> P
     end
 
-    subgraph Engine["⚙️ Engine Core"]
-        EL[ULL Priority Loop<br/>try_recv stream<br/>Priority: Eval > Stream > Orders]
-        OM[Order Manager<br/>O(1) exchange_to_client<br/>SL/TP tracking]
-        IB[Indicator Bank<br/>20+ RingVec indicators<br/>Slot-based writes]
-        RC[Risk Controls<br/>pos/drawdown/freq/loss]
-        PR[Profiler<br/>opcode counts + timing]
-        TR[Tracer<br/>signal/feature/fill/risk]
+    subgraph Engine["Engine Core"]
+        EL[ULL Priority Loop\ntry_recv stream\nPriority: Eval > Stream > Orders]
+        OM[Order Manager\nO(1) exchange_to_client\nSL/TP tracking]
+        IB[Indicator Bank\n20+ RingVec indicators\nSlot-based writes]
+        RC[Risk Controls\npos/drawdown/freq/loss]
+        PR[Profiler\nopcode counts + timing]
+        TR[Tracer\nsignal/feature/fill/risk]
         EL --> OM
         EL --> IB
         EL --> RC
@@ -42,28 +42,28 @@ graph TB
         EL --> TR
     end
 
-    subgraph Strategy["📈 Strategy Layer"]
-        Q[QFL Register VM<br/>192 int + 64 float regs<br/>64 persist + 256 EMA slots]
+    subgraph Strategy["Strategy Layer"]
+        Q[QFL Register VM\n192 int + 64 float regs\n64 persist + 256 EMA slots]
         S[Handlers: on_trade/on_depth/on_fill/on_eval]
         Q --> S
     end
 
-    subgraph Channels["📡 Crossbeam Channels"]
-        MD[Market Data<br/>Trade/Depth/MarkPrice]
-        QE[QFL Events<br/>Trade/Fill/Depth/Eval]
-        OC[Orders<br/>Buy/Sell/Market/Limit]
+    subgraph Channels["Crossbeam Channels"]
+        MD[Market Data\nTrade/Depth/MarkPrice]
+        QE[QFL Events\nTrade/Fill/Depth/Eval]
+        OC[Orders\nBuy/Sell/Market/Limit]
     end
 
-    subgraph Data["💾 State & Storage"]
-        VL[VM Snapshot<br/>Full state capture]
-        SG[Strategy Graph<br/>Window/Signal detection]
-        RW[Rolling Windows<br/>Mean/StdDev/Min/Max/Sum]
+    subgraph Data["State & Storage"]
+        VL[VM Snapshot\nFull state capture]
+        SG[Strategy Graph\nWindow/Signal detection]
+        RW[Rolling Windows\nMean/StdDev/Min/Max/Sum]
     end
 
-    subgraph Output["📤 Output"]
-        TL[Trade Log<br/>JSON Lines]
-        CO[Console<br/>Structured logs]
-        PF[Puffin Profiler<br/>http://127.0.0.1:29012]
+    subgraph Output["Output"]
+        TL[Trade Log\nJSON Lines]
+        CO[Console\nStructured logs]
+        PF[Puffin Profiler\nhttp://127.0.0.1:29012]
     end
 
     Exchange -- "try_send" --> MD
@@ -84,17 +84,17 @@ graph TB
 ```mermaid
 sequenceDiagram
     autonumber
-    participant E as Exchange<br/>std::thread
-    participant C as crossbeam<br/>Channel
-    participant EL as Engine Loop<br/>ULL Priority
-    participant Q as QFL VM<br/>Register VM
+    participant E as Exchange (std::thread)
+    participant C as crossbeam Channel
+    participant EL as Engine Loop (ULL Priority)
+    participant Q as QFL VM (Register VM)
     participant R as Risk
     participant OM as Order Manager
     participant PR as Profiler
     participant TR as Tracer
 
     E->>C: try_send(Trade)
-    C->>EL: try_recv → Trade (P0)
+    C->>EL: try_recv -> Trade (P0)
     EL->>IB: Update indicators (RingVec)
     EL->>PR: record opcode counts
     EL->>TR: trace signal/feature
@@ -103,7 +103,7 @@ sequenceDiagram
     Q->>PR: record opcode/handler
     Q->>TR: trace signal/feature
     Q->>C: try_send(Order)
-    C->>EL: try_recv → Order (P1)
+    C->>EL: try_recv -> Order (P1)
 
     EL->>R: check_order()
     EL->>TR: trace risk action
@@ -112,7 +112,7 @@ sequenceDiagram
         EL->>OM: register(order)
         EL->>E: place_order(order)
         E-->>C: try_send(OrderUpdate)
-        C-->>EL: try_recv → fill
+        C-->>EL: try_recv -> fill
         EL->>TR: trace fill
     else Risk Denied
         R-->>EL: deny
@@ -120,11 +120,11 @@ sequenceDiagram
     end
 
     E->>C: try_send(Depth)
-    C->>EL: try_recv → Depth (P0)
+    C->>EL: try_recv -> Depth (P0)
     EL->>Q: call("on_depth")
     Q->>Q: execute bytecode
 
-    Note right of EL: Periodic on_eval()<br/>every 1s timer (P2)
+    Note right of EL: Periodic on_eval()\nevery 1s timer (P2)
     EL->>EL: periodic on_eval()
     EL->>PR: start_handler("on_eval")
     EL->>Q: call("on_eval")
@@ -139,7 +139,7 @@ sequenceDiagram
 ```mermaid
 classDiagram
     class core {
-        +RingBuffer<T,N>
+        +RingBuffer(T,N)
         +RingVec
         +Trade, Depth, Order, Position
         +OrderFill, DepthLevel
@@ -236,25 +236,25 @@ classDiagram
 ```mermaid
 graph LR
     subgraph VM["QFL Register VM"]
-        IR[Int Registers<br/>r0-r191: i64]
-        FR[Float Registers<br/>r192-r255: f64]
+        IR[Int Registers\nr0-r191: i64]
+        FR[Float Registers\nr192-r255: f64]
         PC[Program Counter]
-        CS[Call Stack<br/>depth=8]
+        CS[Call Stack\ndepth=8]
     end
 
     subgraph State["Engine State"]
-        IND[Indicators<br/>f64[256]]
-        BAL[Balances<br/>f64[64]]
+        IND[Indicators\nf64[256]]
+        BAL[Balances\nf64[64]]
         POS[Position Size]
         PRC[Last Price]
-        DPB[Depth Bids/Asks<br/>[f64; 32]]
-        RW[Rolling Windows<br/>Arena + Meta]
-        PS[Persist Slots<br/>64 tagged]
-        EM[EMA States<br/>256 slots]
+        DPB[Depth Bids/Asks\nf64[32]]
+        RW[Rolling Windows\nArena + Meta]
+        PS[Persist Slots\n64 tagged]
+        EM[EMA States\n256 slots]
     end
 
     subgraph Dispatch["Jump Table Dispatch"]
-        JT[JUMP_TABLE: [fn; 256]]
+        JT[JUMP_TABLE: fn[256]]
         OP[Opcode in bits 0-7]
         JT --> OP
     end
@@ -270,14 +270,14 @@ graph LR
 
 ```mermaid
 graph TB
-    subgraph HotPath["🔥 Hot Path (per tick)"]
+    subgraph HotPath["Hot Path (per tick)"]
         TRY[try_recv Stream]
-        IND_UPD[Indicator Update<br/>RingVec O(1)]
-        VM_RUN[VM Execute<br/>bytecode]
-        ORD[Order Send<br/>crossbeam try_send]
+        IND_UPD[Indicator Update\nRingVec O(1)]
+        VM_RUN[VM Execute\nbytecode]
+        ORD[Order Send\ncrossbeam try_send]
     end
 
-    subgraph ColdPath["❄️ Cold Path (setup)"]
+    subgraph ColdPath["Cold Path (setup)"]
         PARSE[Parse .qfl source]
         COMPILE[Compile to bytecode]
         OPTIMIZE[Optimize: fold/CSE/DCE]
