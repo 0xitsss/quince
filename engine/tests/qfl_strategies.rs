@@ -405,6 +405,76 @@ end
 function on_eval() end
 ");
 
+integration_test!(intg_data_passing, "
+@using sma:10:50
+@using ema:20:50
+
+state position_size : i64 = 0
+state entry_price : f64 = 0.0
+state test_counter : i64 = 0
+
+on trade(t) {
+    feature sma_fast = quince.get(\"sma10\")
+    feature ema_slow = quince.get(\"ema20\")
+    
+    let price_val = quince.price()
+    let pos_val = quince.position()
+    let bal_val = quince.balance(\"USDT\")
+    
+    quince.log(\"trade_price\")
+    quince.log2(\"price\", price_val)
+    quince.log2(\"pos\", pos_val)
+    quince.log2(\"bal\", bal_val)
+    quince.log2(\"sma10\", sma_fast)
+    quince.log2(\"ema20\", ema_slow)
+    
+    state test_counter = test_counter + 1
+}
+
+on depth(d) {
+    let bid0 = quince.depth_bid(0)
+    let ask0 = quince.depth_ask(0)
+    quince.log(\"depth\")
+    quince.log2(\"bid0\", bid0)
+    quince.log2(\"ask0\", ask0)
+}
+
+on eval() {
+    let price_val = quince.price()
+    let pos_val = quince.position()
+    let bal_val = quince.balance(\"USDT\")
+    let sma_fast = quince.get(\"sma10\")
+    let ema_slow = quince.get(\"ema20\")
+    
+    quince.log(\"eval\")
+    quince.log2(\"price\", price_val)
+    quince.log2(\"pos\", pos_val)
+    quince.log2(\"bal\", bal_val)
+    quince.log2(\"sma10\", sma_fast)
+    quince.log2(\"ema20\", ema_slow)
+    quince.log2(\"counter\", test_counter)
+    
+    if sma_fast > ema_slow and position_size <= 0 {
+        quince.order(0, 1.0, 0)
+        state position_size = 1
+        state entry_price = quince.price()
+        quince.log(\"BUY\")
+    }
+    
+    if sma_fast < ema_slow and position_size > 0 {
+        quince.order(1, 1.0, 0)
+        state position_size = 0
+        quince.log(\"SELL\")
+    }
+}
+
+on fill(f) {
+    quince.log(\"fill\")
+    quince.log2(\"qty\", f.qty)
+    quince.log2(\"price\", f.price)
+}
+");
+
 // ── Risk / edge integration tests ──
 
 #[tokio::test]

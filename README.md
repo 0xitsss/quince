@@ -1,9 +1,12 @@
 # Quince 🚧
 
-[![Work In Progress](https://img.shields.io/badge/status-WIP-yellow)](https://github.com/0xitsss/quince)
-[![Build](https://img.shields.io/badge/build-passing-brightgreen)](https://github.com/0xitsss/quince)
-[![Tests](https://img.shields.io/badge/tests-695%20passing-brightgreen)](https://github.com/0xitsss/quince)
-[![License](https://img.shields.io/badge/license-AGPL--3.0-blue)](https://www.gnu.org/licenses/agpl-3.0)
+[![Work In Progress](https://img.shields.io/badge/status-WIP-yellow?style=for-the-badge)](https://github.com/0xitsss/quince)
+[![Build](https://img.shields.io/badge/build-passing-brightgreen?style=for-the-badge)](https://github.com/0xitsss/quince)
+[![Tests](https://img.shields.io/badge/tests-800%20passing-brightgreen?style=for-the-badge)](https://github.com/0xitsss/quince)
+[![License](https://img.shields.io/badge/license-AGPL--3.0-blue?style=for-the-badge)](https://www.gnu.org/licenses/agpl-3.0)
+[![Rust](https://img.shields.io/badge/rust-1.80+-orange?style=for-the-badge&logo=rust)](https://www.rust-lang.org)
+[![Version](https://img.shields.io/badge/version-0.4.4-purple?style=for-the-badge)](https://github.com/0xitsss/quince/releases)
+[![Performance](https://img.shields.io/badge/ULL-<100µs-red?style=for-the-badge)](https://github.com/0xitsss/quince)
 
 **Q**uantitative **U**ltra-low-latency **I**nterpreter for **N**etwork-centric **C**ompetitive **E**xecution
 
@@ -15,56 +18,72 @@ Low-latency trading engine using crossbeam channels throughout. No `tokio::sync:
 
 ```mermaid
 graph TB
-    subgraph Exchange["Exchange Layer"]
+    subgraph Exchange["🔌 Exchange Layer"]
         T[Exchange Trait]
-        B[Binance Connector]
+        B[Binance WS/REST]
         M[Mock Exchange]
-        P[BinancePublic]
+        P[BinancePublic WS]
         T --> B
         T --> M
         T --> P
     end
 
-    subgraph Engine["Engine Core"]
-        EL[ULL Priority Loop<br/>try_recv stream]
-        OM[Order Manager<br/>exchange_to_client map]
-        IB[Indicator Bank<br/>20+ RingVec indicators]
-        RC[Risk Controls]
-        PR[Profiler<br/>opcode counts + handler timing]
-        TR[Tracer<br/>signal/feature/fill/risk events]
+    subgraph Engine["⚙️ Engine Core"]
+        EL[ULL Priority Loop<br/>try_recv stream<br/>Priority: Eval > Stream > Orders]
+        OM[Order Manager<br/>O(1) exchange_to_client<br/>SL/TP tracking]
+        IB[Indicator Bank<br/>20+ RingVec indicators<br/>Slot-based writes]
+        RC[Risk Controls<br/>pos/drawdown/freq/loss]
+        PR[Profiler<br/>opcode counts + timing]
+        TR[Tracer<br/>signal/feature/fill/risk]
+        EL --> OM
+        EL --> IB
+        EL --> RC
+        EL --> PR
+        EL --> TR
     end
 
-    subgraph Strategy["Strategy Layer"]
-        Q[QFL VM / Register VM]
-        S[on_trade / on_depth / on_fill / on_eval]
+    subgraph Strategy["📈 Strategy Layer"]
+        Q[QFL Register VM<br/>192 int + 64 float regs<br/>64 persist + 256 EMA slots]
+        S[Handlers: on_trade/on_depth/on_fill/on_eval]
         Q --> S
     end
 
-    subgraph Channels["Crossbeam Channels"]
-        MD[Market Data]
-        QE[QFL Events]
-        OC[Orders]
+    subgraph Channels["📡 Crossbeam Channels"]
+        MD[Market Data<br/>Trade/Depth/MarkPrice]
+        QE[QFL Events<br/>Trade/Fill/Depth/Eval]
+        OC[Orders<br/>Buy/Sell/Market/Limit]
     end
 
-    subgraph Output["Output"]
-        TL[Trade Log]
-        CO[Console]
+    subgraph Data["💾 State & Storage"]
+        VL[VM Snapshot<br/>Full state capture]
+        SG[Strategy Graph<br/>Window/Signal detection]
+        RW[Rolling Windows<br/>Mean/StdDev/Min/Max/Sum]
     end
 
-    Exchange -- try_send --> MD
-    MD -- try_recv --> EL
-    EL -- try_send --> QE
-    QE -- recv --> Strategy
-    Strategy -- try_send --> OC
-    OC -- try_recv --> EL
-    EL -- Log --> Output
+    subgraph Output["📤 Output"]
+        TL[Trade Log<br/>JSON Lines]
+        CO[Console<br/>Structured logs]
+        PF[Puffin Profiler<br/>http://127.0.0.1:29012]
+    end
+
+    Exchange -- "try_send" --> MD
+    MD -- "try_recv (P0)" --> EL
+    EL -- "try_send" --> QE
+    QE -- "recv" --> Strategy
+    Strategy -- "try_send" --> OC
+    OC -- "try_recv (P1)" --> EL
+    EL -- "Log" --> Output
     EL <--> RC
     EL --> PR
     EL --> TR
+    EL --> VL
+    EL --> SG
+    IB --> RW
 ```
 
 ```mermaid
 sequenceDiagram
+    autonumber
     participant E as Exchange<br/>std::thread
     participant C as crossbeam<br/>Channel
     participant EL as Engine Loop<br/>ULL Priority
@@ -75,32 +94,38 @@ sequenceDiagram
     participant TR as Tracer
 
     E->>C: try_send(Trade)
-    C->>EL: try_recv → Trade
-    EL->>EL: Update indicators<br/>(RingVec)
-    EL->>PR: record opcode
+    C->>EL: try_recv → Trade (P0)
+    EL->>IB: Update indicators (RingVec)
+    EL->>PR: record opcode counts
     EL->>TR: trace signal/feature
     EL->>Q: call("on_trade")
     Q->>Q: execute bytecode
     Q->>PR: record opcode/handler
     Q->>TR: trace signal/feature
     Q->>C: try_send(Order)
-    C->>EL: try_recv → Order
+    C->>EL: try_recv → Order (P1)
 
     EL->>R: check_order()
     EL->>TR: trace risk action
-    R-->>EL: ok / deny
-    EL->>OM: register(order)
-    EL->>E: place_order(order)
-    E-->>C: try_send(OrderUpdate)
-    C-->>EL: try_recv → fill
-    EL->>TR: trace fill
+    alt Risk OK
+        R-->>EL: ok
+        EL->>OM: register(order)
+        EL->>E: place_order(order)
+        E-->>C: try_send(OrderUpdate)
+        C-->>EL: try_recv → fill
+        EL->>TR: trace fill
+    else Risk Denied
+        R-->>EL: deny
+        EL->>TR: trace rejection
+    end
 
     E->>C: try_send(Depth)
-    C->>EL: try_recv → Depth
+    C->>EL: try_recv → Depth (P0)
     EL->>Q: call("on_depth")
     Q->>Q: execute bytecode
 
-    EL->>EL: periodic on_eval()<br/>(every 1s timer)
+    Note right of EL: Periodic on_eval()<br/>every 1s timer (P2)
+    EL->>EL: periodic on_eval()
     EL->>PR: start_handler("on_eval")
     EL->>Q: call("on_eval")
     Q->>Q: execute bytecode
@@ -114,53 +139,84 @@ sequenceDiagram
 ```mermaid
 classDiagram
     class core {
-        RingBuffer
-        RingVec
-        Trade, Depth, Order
+        +RingBuffer<T,N>
+        +RingVec
+        +Trade, Depth, Order, Position
+        +OrderFill, DepthLevel
+        +Side, OrderType
     }
     class exchange {
         <<interface>> Exchange
-        subscribe() → crossbeam::Receiver
-        place_order()
-        cancel_order()
-        account_info()
-        current_price()
+        +subscribe() Result<Stream>
+        +place_order() Result<String>
+        +cancel_order() Result<()>
+        +account_info() Result<AccountInfo>
+        +current_price() Result<f64>
+    }
+    class Binance {
+        +api_key, secret_key
+        +testnet: bool
+        +signed_request()
+        +ws_stream()
+    }
+    class BinancePublic {
+        +ws_stream()
+        +no_auth()
+    }
+    class MockExchange {
+        +simulated_data()
+        +position_tracking()
+        +balance_management()
     }
     class strategy {
-        QFL VM in std::thread
-        crossbeam channels
-        on_trade() on_depth() on_fill() on_eval()
+        +QFL VM in std::thread
+        +crossbeam channels
+        +on_trade/on_depth/on_fill/on_eval
     }
     class engine {
-        ULL Priority Loop
-        Order Manager
-        Indicator Bank
+        +ULL Priority Loop
+        +Order Manager
+        +Indicator Bank
+        +Risk Controls
+        +Profiler + Tracer
     }
     class risk {
-        max_position_size
-        max_drawdown
-        max_order_freq
-        max_daily_loss
+        +max_position_size
+        +max_drawdown
+        +max_order_freq
+        +max_daily_loss
+        +cooldown_after_loss
+        +check_order() Result<()>
     }
     class logger {
-        TradeLog JSON
+        +TradeLog JSON Lines
+        +log_fill()
+        +log_trade()
     }
     class indicators {
-        SMA, EMA, WMA, VWMA, LSMA
-        RSI, MACD, CCI, ROC, Stoch
-        BB, KC, ATR, MFI, ADX
-        CVD, PMDI, NMDI, Z-score
+        +SMA, EMA, WMA, VWMA, LSMA
+        +RSI, MACD, CCI, ROC, Stoch
+        +BB, KC, ATR, MFI, ADX
+        +CVD, PMDI, NMDI, OBV, Z-score
+        +RingVec backend
     }
     class qfl {
-        Register VM (192 int + 64 float)
-        Typed IR + type checker
-        Optimizer: constant fold, CSE, DCE
-        Profiler: opcode counts + handler timing
-        Tracer: signal/feature/fill/risk ring buffer
-        Rolling windows + StrategyGraph + Snapshots
-        RiskEngine integration
+        +Register VM: 192 int + 64 float
+        +Typed IR + Type Checker
+        +Optimizer: fold + CSE + DCE
+        +Profiler: counts + timing
+        +Tracer: ring buffer events
+        +Rolling Windows + StrategyGraph
+        +VmSnapshot + Hot Reload
+        +RiskEngine integration
+        +Ema fused opcode (64)
+        +Phase 4g: @using/@window/feature/signal
+        +Phase 4h: state/fn/on event
     }
 
+    exchange <|-- Binance
+    exchange <|-- BinancePublic
+    exchange <|-- MockExchange
     engine --> exchange : uses
     engine --> strategy : crossbeam
     engine --> risk : checks
@@ -170,6 +226,73 @@ classDiagram
     strategy --> core : reads types
     exchange --> core : reads types
     qfl --> core : reads types
+    qfl --> indicators : uses slots
+```
+
+---
+
+## VM Internals
+
+```mermaid
+graph LR
+    subgraph VM["QFL Register VM"]
+        IR[Int Registers<br/>r0-r191: i64]
+        FR[Float Registers<br/>r192-r255: f64]
+        PC[Program Counter]
+        CS[Call Stack<br/>depth=8]
+    end
+
+    subgraph State["Engine State"]
+        IND[Indicators<br/>f64[256]]
+        BAL[Balances<br/>f64[64]]
+        POS[Position Size]
+        PRC[Last Price]
+        DPB[Depth Bids/Asks<br/>[f64; 32]]
+        RW[Rolling Windows<br/>Arena + Meta]
+        PS[Persist Slots<br/>64 tagged]
+        EM[EMA States<br/>256 slots]
+    end
+
+    subgraph Dispatch["Jump Table Dispatch"]
+        JT[JUMP_TABLE: [fn; 256]]
+        OP[Opcode in bits 0-7]
+        JT --> OP
+    end
+
+    IR --> JT
+    FR --> JT
+    IND --> JT
+    BAL --> JT
+    RW --> JT
+    PS --> JT
+    EM --> JT
+```
+
+```mermaid
+graph TB
+    subgraph HotPath["🔥 Hot Path (per tick)"]
+        TRY[try_recv Stream]
+        IND_UPD[Indicator Update<br/>RingVec O(1)]
+        VM_RUN[VM Execute<br/>bytecode]
+        ORD[Order Send<br/>crossbeam try_send]
+    end
+
+    subgraph ColdPath["❄️ Cold Path (setup)"]
+        PARSE[Parse .qfl source]
+        COMPILE[Compile to bytecode]
+        OPTIMIZE[Optimize: fold/CSE/DCE]
+        SLOTS[Assign indicator slots]
+        LOOKUP[finalize_const_lookups]
+    end
+
+    TRY --> IND_UPD
+    IND_UPD --> VM_RUN
+    VM_RUN --> ORD
+    PARSE --> COMPILE
+    COMPILE --> OPTIMIZE
+    OPTIMIZE --> SLOTS
+    SLOTS --> LOOKUP
+    LOOKUP -.->|once at init| VM_RUN
 ```
 
 ---
