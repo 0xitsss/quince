@@ -72,6 +72,12 @@ impl<T, const N: usize> RingBuffer<T, N> {
     }
 }
 
+impl<T, const N: usize> Default for RingBuffer<T, N> {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl<T, const N: usize> Drop for RingBuffer<T, N> {
     fn drop(&mut self) {
         for i in 0..self.len {

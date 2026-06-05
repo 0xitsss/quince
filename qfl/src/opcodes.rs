@@ -224,7 +224,7 @@ pub const SENTINEL_OPCODE: u8 = 0xFF;
 use crate::vm::Vm;
 
 /// Handler signature: process one instruction in the VM.
-type OpcodeHandler = unsafe extern "C" fn(vm: &mut Vm, instr: u64);
+type OpcodeHandler = unsafe fn(vm: &mut Vm, instr: u64);
 
 // Import all handler functions from vm module
 use crate::vm::handlers::*;

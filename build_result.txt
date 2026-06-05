@@ -1,0 +1,15 @@
+﻿cargo :    Compiling quince-core v0.1.1 (D:\kokosmain\quince\core)
+At line:1 char:1
++ cargo build --workspace 2>&1 | Out-File -Encoding utf8 build_result.t ...
++ ~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    + CategoryInfo          : NotSpecified: (   Compiling qu...in\quince\core):String) [], RemoteException
+    + FullyQualifiedErrorId : NativeCommandError
+ 
+   Compiling quince-risk v0.1.1 (D:\kokosmain\quince\risk)
+   Compiling quince-qfl v0.1.1 (D:\kokosmain\quince\qfl)
+   Compiling quince-logger v0.1.1 (D:\kokosmain\quince\logger)
+   Compiling quince-exchange v0.1.1 (D:\kokosmain\quince\exchange)
+   Compiling quince-indicators v0.1.1 (D:\kokosmain\quince\indicators)
+   Compiling quince-engine v0.1.1 (D:\kokosmain\quince\engine)
+   Compiling quince v0.1.1 (D:\kokosmain\quince\quince)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 17.21s

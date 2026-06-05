@@ -9,6 +9,7 @@ use std::collections::HashMap;
 use std::time::{Duration, Instant};
 
 const IDLE_SLEEP_MS: u64 = 1;
+const MAX_STREAM_MSGS_PER_ITER: usize = 100;
 
 #[derive(Debug, thiserror::Error)]
 pub enum EngineError {
@@ -51,6 +52,10 @@ pub struct Engine<E: Exchange> {
 
     next_eval: Instant,
     next_account: Instant,
+
+    // Cached indicator slots (avoid HashMap lookup on every eval)
+    entry_price_slot: u16,
+    unrealized_pnl_slot: u16,
 
     #[cfg(feature = "profiling")]
     profiling_frame: u64,
@@ -99,6 +104,14 @@ impl<E: Exchange> Engine<E> {
             let slot = qfl.ensure_indicator_slot(name);
             indicators.set_name_to_slot(name, slot);
         }
+
+        // Cache frequently-used indicator slots (no HashMap lookup in hot path)
+        let entry_price_slot = qfl.ensure_indicator_slot("entry_price");
+        let unrealized_pnl_slot = qfl.ensure_indicator_slot("unrealized_pnl");
+
+        // Finalize VM const→slot lookups (replaces HashMap+String in vm_getind/vm_getbal)
+        qfl.finalize_vm_init();
+
         tracing::info!("indicator bank ready: {} indicators", ind_cfg.len());
         drop(src);
 
@@ -134,6 +147,8 @@ impl<E: Exchange> Engine<E> {
             position: None,
             next_eval: Instant::now() + EVAL_INTERVAL,
             next_account: Instant::now() + ACCOUNT_SYNC_INTERVAL,
+            entry_price_slot,
+            unrealized_pnl_slot,
             #[cfg(feature = "profiling")]
             profiling_frame: 0,
         })
@@ -157,13 +172,29 @@ impl<E: Exchange> Engine<E> {
             }
 
             let mut did_work = false;
+            let now = Instant::now();
+
+            // Priority 2: Periodic eval — check FIRST to prevent starvation
+            if now >= self.next_eval {
+                #[cfg(feature = "profiling")]
+                puffin::profile_scope!("Eval");
+                did_work = true;
+                self.on_eval().await;
+                self.next_eval = now + EVAL_INTERVAL;
+            }
 
             // Priority 0: Stream messages (market data — most latency-sensitive)
+            // Limit to MAX_STREAM_MSGS_PER_ITER to prevent starvation of lower priorities
+            let mut stream_count = 0;
             while let Ok(msg) = rx.try_recv() {
                 #[cfg(feature = "profiling")]
                 puffin::profile_scope!("StreamMsg");
                 did_work = true;
                 self.on_stream_msg(msg).await;
+                stream_count += 1;
+                if stream_count >= MAX_STREAM_MSGS_PER_ITER {
+                    break;
+                }
             }
 
             // Priority 1: Strategy orders (from QFL VM / flush_pending_order)
@@ -172,16 +203,6 @@ impl<E: Exchange> Engine<E> {
                 puffin::profile_scope!("StrategyOrder");
                 did_work = true;
                 self.on_strategy_order(order).await;
-            }
-
-            // Priority 2: Periodic eval
-            let now = Instant::now();
-            if now >= self.next_eval {
-                #[cfg(feature = "profiling")]
-                puffin::profile_scope!("Eval");
-                did_work = true;
-                self.on_eval().await;
-                self.next_eval = now + EVAL_INTERVAL;
             }
 
             // Priority 3: Periodic account sync
@@ -287,10 +308,8 @@ impl<E: Exchange> Engine<E> {
         }
         if let Some(pos) = &self.position {
             self.qfl.set_position_size(pos.size);
-            let ep_slot = self.qfl.ensure_indicator_slot("entry_price");
-            let up_slot = self.qfl.ensure_indicator_slot("unrealized_pnl");
-            self.qfl.set_indicator_by_slot(ep_slot, pos.entry_price);
-            self.qfl.set_indicator_by_slot(up_slot, pos.unrealized_pnl);
+            self.qfl.set_indicator_by_slot(self.entry_price_slot, pos.entry_price);
+            self.qfl.set_indicator_by_slot(self.unrealized_pnl_slot, pos.unrealized_pnl);
         }
         self.qfl.feed_eval();
         self.equity_check();

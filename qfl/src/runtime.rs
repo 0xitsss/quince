@@ -172,6 +172,12 @@ impl QflRuntime {
         self.current_symbol = symbol.to_string();
     }
 
+    /// Finalize VM const lookups after all indicator/balance registrations.
+    /// Call this once before the engine loop starts.
+    pub fn finalize_vm_init(&mut self) {
+        self.vm.finalize_const_lookups();
+    }
+
     fn flush_pending_order(&mut self) {
         let side_val = self.vm.int(250);
         if side_val != 0 && side_val != 1 {

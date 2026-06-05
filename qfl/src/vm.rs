@@ -125,8 +125,14 @@ pub struct Vm {
     // ── Engine state (flat arrays in hot path) ──
     pub indicators: [f64; MAX_INDICATORS],
     pub indicator_map: HashMap<String, u16>,
+    /// Pre-computed: const_strings index → indicator slot (u16::MAX = not found).
+    /// Built by finalize_const_lookups() after all indicator registrations.
+    /// Hot path uses this instead of HashMap + String clone.
+    pub indicator_by_str: Vec<u16>,
     pub balances: [f64; MAX_BALANCES],
     pub balance_map: HashMap<String, u16>,
+    /// Pre-computed: const_strings index → balance slot (u16::MAX = not found).
+    pub balance_by_str: Vec<u16>,
     pub last_price: f64,
     pub position_size: f64,
 
@@ -183,6 +189,9 @@ impl Vm {
         let indicator_map = HashMap::new();
         let balance_map = HashMap::new();
 
+        let indicator_by_str = vec![u16::MAX; const_strings.len()];
+        let balance_by_str = vec![u16::MAX; const_strings.len()];
+
         let mut vm = Vm {
             regs: [Register::default(); NUM_REGS],
             pc: 0,
@@ -204,8 +213,10 @@ impl Vm {
             persist: [PersistSlot::default(); PERSIST_SLOTS],
             indicators: [0.0; MAX_INDICATORS],
             indicator_map,
+            indicator_by_str,
             balances: [0.0; MAX_BALANCES],
             balance_map,
+            balance_by_str,
             last_price: 0.0,
             position_size: 0.0,
             depth_bids_price: [0.0; MAX_DEPTH_LEVELS],
@@ -288,8 +299,11 @@ impl Vm {
         None
     }
 
-    #[inline(never)]
+    #[inline(always)]
     fn run(&mut self) {
+        let has_profiler = self.profiler.is_some();
+        let has_tracer = self.tracer.is_some();
+
         while self.running {
             if self.pc >= self.code_len {
                 self.running = false;
@@ -303,8 +317,10 @@ impl Vm {
                 break;
             }
 
-            if let Some(ref mut p) = self.profiler {
-                p.record_opcode(crate::opcodes::Opcode::from_u8(opcode));
+            if has_profiler {
+                if let Some(ref mut p) = self.profiler {
+                    p.record_opcode(crate::opcodes::Opcode::from_u8(opcode));
+                }
             }
 
             unsafe {
@@ -312,7 +328,7 @@ impl Vm {
                 handler(self, instr);
             }
 
-            if self.tracer.is_some() {
+            if has_tracer {
                 self.trace_op(opcode, instr);
             }
         }
@@ -384,6 +400,29 @@ impl Vm {
         }
     }
 
+    /// Rebuild indicator_by_str / balance_by_str from the current HashMap state.
+    /// Must be called after all indicator/balance registrations (e.g. from Engine).
+    pub fn finalize_const_lookups(&mut self) {
+        self.indicator_by_str.clear();
+        self.indicator_by_str.resize(self.const_strings.len(), u16::MAX);
+        for (str_idx, s) in self.const_strings.iter().enumerate() {
+            if let Some(&slot) = self.indicator_map.get(s) {
+                if str_idx < self.indicator_by_str.len() {
+                    self.indicator_by_str[str_idx] = slot;
+                }
+            }
+        }
+        self.balance_by_str.clear();
+        self.balance_by_str.resize(self.const_strings.len(), u16::MAX);
+        for (str_idx, s) in self.const_strings.iter().enumerate() {
+            if let Some(&slot) = self.balance_map.get(s) {
+                if str_idx < self.balance_by_str.len() {
+                    self.balance_by_str[str_idx] = slot;
+                }
+            }
+        }
+    }
+
     // ── Snapshot for hot-reload ──
 
     pub fn snapshot(&self) -> VmSnapshot {
@@ -447,64 +486,74 @@ pub mod handlers {
 
     // ── Int arithmetic ──
 
-    pub unsafe extern "C" fn vm_add(vm: &mut Vm, instr: u64) {
+    #[inline(always)]
+    pub unsafe fn vm_add(vm: &mut Vm, instr: u64) {
         let r = rd(instr) as usize;
         let a = vm.regs.get_unchecked(rs1(instr) as usize).i;
         let b = vm.regs.get_unchecked(rs2(instr) as usize).i;
         vm.regs.get_unchecked_mut(r).i = a.wrapping_add(b);
     }
 
-    pub unsafe extern "C" fn vm_sub(vm: &mut Vm, instr: u64) {
+    #[inline(always)]
+pub unsafe fn vm_sub(vm: &mut Vm, instr: u64) {
         let r = rd(instr) as usize;
         vm.regs.get_unchecked_mut(r).i = vm.regs.get_unchecked(rs1(instr) as usize).i
             .wrapping_sub(vm.regs.get_unchecked(rs2(instr) as usize).i);
     }
 
-    pub unsafe extern "C" fn vm_mul(vm: &mut Vm, instr: u64) {
+    #[inline(always)]
+pub unsafe fn vm_mul(vm: &mut Vm, instr: u64) {
         let r = rd(instr) as usize;
         vm.regs.get_unchecked_mut(r).i = vm.regs.get_unchecked(rs1(instr) as usize).i
             .wrapping_mul(vm.regs.get_unchecked(rs2(instr) as usize).i);
     }
 
-    pub unsafe extern "C" fn vm_div(vm: &mut Vm, instr: u64) {
+    #[inline(always)]
+pub unsafe fn vm_div(vm: &mut Vm, instr: u64) {
         let r = rd(instr) as usize;
         let divisor = vm.regs.get_unchecked(rs2(instr) as usize).i;
         vm.regs.get_unchecked_mut(r).i = if divisor == 0 { 0 }
             else { vm.regs.get_unchecked(rs1(instr) as usize).i / divisor };
     }
 
-    pub unsafe extern "C" fn vm_mod(vm: &mut Vm, instr: u64) {
+    #[inline(always)]
+pub unsafe fn vm_mod(vm: &mut Vm, instr: u64) {
         let r = rd(instr) as usize;
         let divisor = vm.regs.get_unchecked(rs2(instr) as usize).i;
         vm.regs.get_unchecked_mut(r).i = if divisor == 0 { 0 }
             else { vm.regs.get_unchecked(rs1(instr) as usize).i % divisor };
     }
 
-    pub unsafe extern "C" fn vm_neg(vm: &mut Vm, instr: u64) {
+    #[inline(always)]
+pub unsafe fn vm_neg(vm: &mut Vm, instr: u64) {
         let r = rd(instr) as usize;
         vm.regs.get_unchecked_mut(r).i =
             vm.regs.get_unchecked(rs1(instr) as usize).i.wrapping_neg();
     }
 
-    pub unsafe extern "C" fn vm_addi(vm: &mut Vm, instr: u64) {
+    #[inline(always)]
+pub unsafe fn vm_addi(vm: &mut Vm, instr: u64) {
         let r = rd(instr) as usize;
         vm.regs.get_unchecked_mut(r).i =
             vm.regs.get_unchecked(rs1(instr) as usize).i.wrapping_add(imm(instr) as i64);
     }
 
-    pub unsafe extern "C" fn vm_subi(vm: &mut Vm, instr: u64) {
+    #[inline(always)]
+pub unsafe fn vm_subi(vm: &mut Vm, instr: u64) {
         let r = rd(instr) as usize;
         vm.regs.get_unchecked_mut(r).i =
             vm.regs.get_unchecked(rs1(instr) as usize).i.wrapping_sub(imm(instr) as i64);
     }
 
-    pub unsafe extern "C" fn vm_muli(vm: &mut Vm, instr: u64) {
+    #[inline(always)]
+pub unsafe fn vm_muli(vm: &mut Vm, instr: u64) {
         let r = rd(instr) as usize;
         vm.regs.get_unchecked_mut(r).i =
             vm.regs.get_unchecked(rs1(instr) as usize).i.wrapping_mul(imm(instr) as i64);
     }
 
-    pub unsafe extern "C" fn vm_divi(vm: &mut Vm, instr: u64) {
+    #[inline(always)]
+pub unsafe fn vm_divi(vm: &mut Vm, instr: u64) {
         let r = rd(instr) as usize;
         let divisor = imm(instr) as i64;
         vm.regs.get_unchecked_mut(r).i = if divisor == 0 { 0 }
@@ -515,7 +564,8 @@ pub mod handlers {
 
     macro_rules! float_binop {
         ($name:ident, $op:tt) => {
-            pub unsafe extern "C" fn $name(vm: &mut Vm, instr: u64) {
+            #[inline(always)]
+pub unsafe fn $name(vm: &mut Vm, instr: u64) {
                 let r = rd(instr) as usize;
                 let a = vm.regs.get_unchecked(rs1(instr) as usize).f;
                 let b = vm.regs.get_unchecked(rs2(instr) as usize).f;
@@ -528,14 +578,16 @@ pub mod handlers {
     float_binop!(vm_fsub, -);
     float_binop!(vm_fmul, *);
 
-    pub unsafe extern "C" fn vm_fdiv(vm: &mut Vm, instr: u64) {
+    #[inline(always)]
+pub unsafe fn vm_fdiv(vm: &mut Vm, instr: u64) {
         let r = rd(instr) as usize;
         let divisor = vm.regs.get_unchecked(rs2(instr) as usize).f;
         vm.regs.get_unchecked_mut(r).f = if divisor == 0.0 { 0.0 }
             else { sanitize_f(vm.regs.get_unchecked(rs1(instr) as usize).f / divisor) };
     }
 
-    pub unsafe extern "C" fn vm_fneg(vm: &mut Vm, instr: u64) {
+    #[inline(always)]
+pub unsafe fn vm_fneg(vm: &mut Vm, instr: u64) {
         let r = rd(instr) as usize;
         vm.regs.get_unchecked_mut(r).f =
             sanitize_f(-vm.regs.get_unchecked(rs1(instr) as usize).f);
@@ -545,7 +597,8 @@ pub mod handlers {
 
     macro_rules! int_cmp {
         ($name:ident, $cmp:tt) => {
-            pub unsafe extern "C" fn $name(vm: &mut Vm, instr: u64) {
+            #[inline(always)]
+pub unsafe fn $name(vm: &mut Vm, instr: u64) {
                 let r = rd(instr) as usize;
                 let a = vm.regs.get_unchecked(rs1(instr) as usize).i;
                 let b = vm.regs.get_unchecked(rs2(instr) as usize).i;
@@ -565,7 +618,8 @@ pub mod handlers {
 
     macro_rules! float_cmp {
         ($name:ident, $cmp:tt) => {
-            pub unsafe extern "C" fn $name(vm: &mut Vm, instr: u64) {
+            #[inline(always)]
+pub unsafe fn $name(vm: &mut Vm, instr: u64) {
                 let r = rd(instr) as usize;
                 let a = vm.regs.get_unchecked(rs1(instr) as usize).f;
                 let b = vm.regs.get_unchecked(rs2(instr) as usize).f;
@@ -583,19 +637,22 @@ pub mod handlers {
 
     // ── Immediate comparison ──
 
-    pub unsafe extern "C" fn vm_eqi(vm: &mut Vm, instr: u64) {
+    #[inline(always)]
+pub unsafe fn vm_eqi(vm: &mut Vm, instr: u64) {
         let r = rd(instr) as usize;
         let a = vm.regs.get_unchecked(rs1(instr) as usize).i;
         vm.regs.get_unchecked_mut(r).i = if a == imm(instr) as i64 { 1 } else { 0 };
     }
 
-    pub unsafe extern "C" fn vm_lti(vm: &mut Vm, instr: u64) {
+    #[inline(always)]
+pub unsafe fn vm_lti(vm: &mut Vm, instr: u64) {
         let r = rd(instr) as usize;
         let a = vm.regs.get_unchecked(rs1(instr) as usize).i;
         vm.regs.get_unchecked_mut(r).i = if a < imm(instr) as i64 { 1 } else { 0 };
     }
 
-    pub unsafe extern "C" fn vm_gti(vm: &mut Vm, instr: u64) {
+    #[inline(always)]
+pub unsafe fn vm_gti(vm: &mut Vm, instr: u64) {
         let r = rd(instr) as usize;
         let a = vm.regs.get_unchecked(rs1(instr) as usize).i;
         vm.regs.get_unchecked_mut(r).i = if a > imm(instr) as i64 { 1 } else { 0 };
@@ -605,7 +662,8 @@ pub mod handlers {
 
     macro_rules! bitwise_binop {
         ($name:ident, $op:tt) => {
-            pub unsafe extern "C" fn $name(vm: &mut Vm, instr: u64) {
+            #[inline(always)]
+pub unsafe fn $name(vm: &mut Vm, instr: u64) {
                 let r = rd(instr) as usize;
                 let a = vm.regs.get_unchecked(rs1(instr) as usize).i;
                 let b = vm.regs.get_unchecked(rs2(instr) as usize).i;
@@ -618,19 +676,22 @@ pub mod handlers {
     bitwise_binop!(vm_bitor, |);
     bitwise_binop!(vm_bitxor, ^);
 
-    pub unsafe extern "C" fn vm_bitnot(vm: &mut Vm, instr: u64) {
+    #[inline(always)]
+pub unsafe fn vm_bitnot(vm: &mut Vm, instr: u64) {
         let r = rd(instr) as usize;
         vm.regs.get_unchecked_mut(r).i = !vm.regs.get_unchecked(rs1(instr) as usize).i;
     }
 
-    pub unsafe extern "C" fn vm_shl(vm: &mut Vm, instr: u64) {
+    #[inline(always)]
+pub unsafe fn vm_shl(vm: &mut Vm, instr: u64) {
         let r = rd(instr) as usize;
         let a = vm.regs.get_unchecked(rs1(instr) as usize).i;
         let b = vm.regs.get_unchecked(rs2(instr) as usize).i;
         vm.regs.get_unchecked_mut(r).i = a.wrapping_shl(b as u32);
     }
 
-    pub unsafe extern "C" fn vm_shr(vm: &mut Vm, instr: u64) {
+    #[inline(always)]
+pub unsafe fn vm_shr(vm: &mut Vm, instr: u64) {
         let r = rd(instr) as usize;
         let a = vm.regs.get_unchecked(rs1(instr) as usize).i as u64;
         let b = vm.regs.get_unchecked(rs2(instr) as usize).i;
@@ -639,24 +700,28 @@ pub mod handlers {
 
     // ── Control flow ──
 
-    pub unsafe extern "C" fn vm_jmp(vm: &mut Vm, instr: u64) {
+    #[inline(always)]
+pub unsafe fn vm_jmp(vm: &mut Vm, instr: u64) {
         let target = (vm.pc as i64).wrapping_add(imm(instr) as i64) as usize;
         vm.pc = target;
     }
 
-    pub unsafe extern "C" fn vm_jz(vm: &mut Vm, instr: u64) {
+    #[inline(always)]
+pub unsafe fn vm_jz(vm: &mut Vm, instr: u64) {
         if vm.regs.get_unchecked(rs1(instr) as usize).i == 0 {
             vm.pc = (vm.pc as i64).wrapping_add(imm(instr) as i64) as usize;
         }
     }
 
-    pub unsafe extern "C" fn vm_jnz(vm: &mut Vm, instr: u64) {
+    #[inline(always)]
+pub unsafe fn vm_jnz(vm: &mut Vm, instr: u64) {
         if vm.regs.get_unchecked(rs1(instr) as usize).i != 0 {
             vm.pc = (vm.pc as i64).wrapping_add(imm(instr) as i64) as usize;
         }
     }
 
-    pub unsafe extern "C" fn vm_call(vm: &mut Vm, instr: u64) {
+    #[inline(always)]
+pub unsafe fn vm_call(vm: &mut Vm, instr: u64) {
         let depth = vm.call_depth as usize;
         if depth < MAX_CALL_DEPTH {
             *vm.call_stack.get_unchecked_mut(depth) = vm.pc;
@@ -665,7 +730,8 @@ pub mod handlers {
         vm.pc = (vm.pc as i64).wrapping_add(imm(instr) as i64) as usize;
     }
 
-    pub unsafe extern "C" fn vm_ret(vm: &mut Vm, instr: u64) {
+    #[inline(always)]
+pub unsafe fn vm_ret(vm: &mut Vm, instr: u64) {
         let _ = instr;
         if vm.call_depth > 0 {
             vm.call_depth -= 1;
@@ -677,18 +743,21 @@ pub mod handlers {
 
     // ── Data movement ──
 
-    pub unsafe extern "C" fn vm_mov(vm: &mut Vm, instr: u64) {
+    #[inline(always)]
+pub unsafe fn vm_mov(vm: &mut Vm, instr: u64) {
         let r = rd(instr) as usize;
         let s = rs1(instr) as usize;
         *vm.regs.get_unchecked_mut(r) = *vm.regs.get_unchecked(s);
     }
 
-    pub unsafe extern "C" fn vm_ldi(vm: &mut Vm, instr: u64) {
+    #[inline(always)]
+pub unsafe fn vm_ldi(vm: &mut Vm, instr: u64) {
         let r = rd(instr) as usize;
         vm.regs.get_unchecked_mut(r).i = imm(instr) as i64;
     }
 
-    pub unsafe extern "C" fn vm_ldi64(vm: &mut Vm, instr: u64) {
+    #[inline(always)]
+pub unsafe fn vm_ldi64(vm: &mut Vm, instr: u64) {
         let r = rd(instr) as usize;
         let low = (instr >> 32) as u64;           // imm = bits 32-63 = low 32 of 40-bit val
         let high = ((instr >> 24) & 0xFF) as u64;  // rs2 = bits 24-31 = high 8 of 40-bit val
@@ -701,7 +770,8 @@ pub mod handlers {
         };
     }
 
-    pub unsafe extern "C" fn vm_ldc(vm: &mut Vm, instr: u64) {
+    #[inline(always)]
+pub unsafe fn vm_ldc(vm: &mut Vm, instr: u64) {
         let r = rd(instr) as usize;
         let idx = immu(instr) as usize;
         // Try f64 constants first
@@ -718,13 +788,15 @@ pub mod handlers {
 
     // ── Type conversion ──
 
-    pub unsafe extern "C" fn vm_i2f(vm: &mut Vm, instr: u64) {
+    #[inline(always)]
+pub unsafe fn vm_i2f(vm: &mut Vm, instr: u64) {
         let r = rd(instr) as usize;
         let val = vm.regs.get_unchecked(rs1(instr) as usize).i;
         vm.regs.get_unchecked_mut(r).f = val as f64;
     }
 
-    pub unsafe extern "C" fn vm_f2i(vm: &mut Vm, instr: u64) {
+    #[inline(always)]
+pub unsafe fn vm_f2i(vm: &mut Vm, instr: u64) {
         let r = rd(instr) as usize;
         let val = vm.regs.get_unchecked(rs1(instr) as usize).f;
         vm.regs.get_unchecked_mut(r).i = val as i64;
@@ -732,59 +804,72 @@ pub mod handlers {
 
     // ── Engine builtins ──
 
-    pub unsafe extern "C" fn vm_getind(vm: &mut Vm, instr: u64) {
+    #[inline(always)]
+pub unsafe fn vm_getind(vm: &mut Vm, instr: u64) {
         let r = rd(instr) as usize;
-        let name_idx = vm.regs.get_unchecked(rs1(instr) as usize).i as usize;
-        let name = match vm.const_pool.get(name_idx) {
-            Some(ConstEntry::String(s)) => s.clone(),
-            _ => String::new(),
+        let str_idx = vm.regs.get_unchecked(rs1(instr) as usize).i as usize;
+        let val = if str_idx < vm.indicator_by_str.len() {
+            let slot = *vm.indicator_by_str.get_unchecked(str_idx);
+            if slot != u16::MAX {
+                *vm.indicators.get_unchecked(slot as usize)
+            } else {
+                0.0
+            }
+        } else {
+            0.0
         };
-        let val = *vm.indicator_map.get(&name)
-            .and_then(|idx| vm.indicators.get(*idx as usize))
-            .unwrap_or(&0.0);
         vm.regs.get_unchecked_mut(r).f = val;
     }
 
-    pub unsafe extern "C" fn vm_getprice(vm: &mut Vm, instr: u64) {
+    #[inline(always)]
+pub unsafe fn vm_getprice(vm: &mut Vm, instr: u64) {
         let _ = instr;
         let r = rd(instr) as usize;
         vm.regs.get_unchecked_mut(r).f = vm.last_price;
     }
 
-    pub unsafe extern "C" fn vm_getpos(vm: &mut Vm, instr: u64) {
+    #[inline(always)]
+pub unsafe fn vm_getpos(vm: &mut Vm, instr: u64) {
         let _ = instr;
         let r = rd(instr) as usize;
         vm.regs.get_unchecked_mut(r).f = vm.position_size;
     }
 
-    pub unsafe extern "C" fn vm_getbal(vm: &mut Vm, instr: u64) {
+    #[inline(always)]
+pub unsafe fn vm_getbal(vm: &mut Vm, instr: u64) {
         let r = rd(instr) as usize;
-        let name_idx = vm.regs.get_unchecked(rs1(instr) as usize).i as usize;
-        let name = match vm.const_pool.get(name_idx) {
-            Some(ConstEntry::String(s)) => s.clone(),
-            _ => String::new(),
+        let str_idx = vm.regs.get_unchecked(rs1(instr) as usize).i as usize;
+        let val = if str_idx < vm.balance_by_str.len() {
+            let slot = *vm.balance_by_str.get_unchecked(str_idx);
+            if slot != u16::MAX {
+                *vm.balances.get_unchecked(slot as usize)
+            } else {
+                0.0
+            }
+        } else {
+            0.0
         };
-        let val = *vm.balance_map.get(&name)
-            .and_then(|idx| vm.balances.get(*idx as usize))
-            .unwrap_or(&0.0);
         vm.regs.get_unchecked_mut(r).f = val;
     }
 
-    pub unsafe extern "C" fn vm_getdepthbid(vm: &mut Vm, instr: u64) {
+    #[inline(always)]
+pub unsafe fn vm_getdepthbid(vm: &mut Vm, instr: u64) {
         let r = rd(instr) as usize;
         let level = vm.regs.get_unchecked(rs1(instr) as usize).i as usize;
         let val = if level < vm.depth_bids_len as usize { vm.depth_bids_qty[level] } else { 0.0 };
         vm.regs.get_unchecked_mut(r).f = val;
     }
 
-    pub unsafe extern "C" fn vm_getdepthask(vm: &mut Vm, instr: u64) {
+    #[inline(always)]
+pub unsafe fn vm_getdepthask(vm: &mut Vm, instr: u64) {
         let r = rd(instr) as usize;
         let level = vm.regs.get_unchecked(rs1(instr) as usize).i as usize;
         let val = if level < vm.depth_asks_len as usize { vm.depth_asks_qty[level] } else { 0.0 };
         vm.regs.get_unchecked_mut(r).f = val;
     }
 
-    pub unsafe extern "C" fn vm_sendorder(vm: &mut Vm, instr: u64) {
+    #[inline(always)]
+pub unsafe fn vm_sendorder(vm: &mut Vm, instr: u64) {
         let _ = instr;
         let _side = vm.regs.get_unchecked(250).i;
         let _qty = vm.regs.get_unchecked(192).f;
@@ -796,7 +881,8 @@ pub mod handlers {
         );
     }
 
-    pub unsafe extern "C" fn vm_persistget(vm: &mut Vm, instr: u64) {
+    #[inline(always)]
+pub unsafe fn vm_persistget(vm: &mut Vm, instr: u64) {
         let r = rd(instr) as usize;
         let slot = immu(instr) as usize;
         if slot < PERSIST_SLOTS {
@@ -809,7 +895,8 @@ pub mod handlers {
         }
     }
 
-    pub unsafe extern "C" fn vm_persistset(vm: &mut Vm, instr: u64) {
+    #[inline(always)]
+pub unsafe fn vm_persistset(vm: &mut Vm, instr: u64) {
         let slot = immu(instr) as usize;
         let r = rd(instr) as usize;
         if slot < PERSIST_SLOTS {
@@ -824,33 +911,39 @@ pub mod handlers {
         }
     }
 
-    pub unsafe extern "C" fn vm_log(vm: &mut Vm, instr: u64) {
-        let idx = vm.regs.get_unchecked(rs1(instr) as usize).i as usize;
-        let msg = match vm.const_pool.get(idx) {
-            Some(ConstEntry::String(s)) => s.as_str(),
-            _ => "",
+    #[inline(always)]
+pub unsafe fn vm_log(vm: &mut Vm, instr: u64) {
+        let str_idx = vm.regs.get_unchecked(rs1(instr) as usize).i as usize;
+        let msg = if str_idx < vm.const_strings.len() {
+            vm.const_strings.get_unchecked(str_idx).as_str()
+        } else {
+            ""
         };
         tracing::info!("QFL: {}", msg);
     }
 
-    pub unsafe extern "C" fn vm_log2(vm: &mut Vm, instr: u64) {
-        let idx = vm.regs.get_unchecked(rs1(instr) as usize).i as usize;
+    #[inline(always)]
+pub unsafe fn vm_log2(vm: &mut Vm, instr: u64) {
+        let str_idx = vm.regs.get_unchecked(rs1(instr) as usize).i as usize;
         let val = vm.regs.get_unchecked(rs2(instr) as usize).f;
-        let msg = match vm.const_pool.get(idx) {
-            Some(ConstEntry::String(s)) => format!("{}: {}", s, val),
-            _ => format!("{}", val),
-        };
-        tracing::info!("QFL: {}", msg);
+        if str_idx < vm.const_strings.len() {
+            let msg = format!("{}: {}", vm.const_strings.get_unchecked(str_idx), val);
+            tracing::info!("QFL: {}", msg);
+        } else {
+            tracing::info!("QFL: {}", val);
+        }
     }
 
-    pub unsafe extern "C" fn vm_halt(vm: &mut Vm, instr: u64) {
+    #[inline(always)]
+pub unsafe fn vm_halt(vm: &mut Vm, instr: u64) {
         let _ = instr;
         vm.running = false;
     }
 
     // ── Window opcodes ──
 
-    pub unsafe extern "C" fn vm_windowpush(vm: &mut Vm, instr: u64) {
+    #[inline(always)]
+pub unsafe fn vm_windowpush(vm: &mut Vm, instr: u64) {
         let wid = immu(instr) as usize;
         let val = vm.regs.get_unchecked(rs1(instr) as usize).f;
         let r = rd(instr) as usize;
@@ -907,7 +1000,8 @@ pub mod handlers {
 
     macro_rules! window_unary {
         ($name:ident, $method:ident) => {
-            pub unsafe extern "C" fn $name(vm: &mut Vm, instr: u64) {
+            #[inline(always)]
+pub unsafe fn $name(vm: &mut Vm, instr: u64) {
                 let wid = immu(instr) as usize;
                 let r = rd(instr) as usize;
                 if wid < MAX_WINDOWS {
@@ -928,7 +1022,8 @@ pub mod handlers {
 
     // ── Phase 4g: fused feature opcodes ──
 
-    pub unsafe extern "C" fn vm_ema(vm: &mut Vm, instr: u64) {
+    #[inline(always)]
+pub unsafe fn vm_ema(vm: &mut Vm, instr: u64) {
         let r = rd(instr) as usize;
         let val = vm.regs.get_unchecked(rs1(instr) as usize).f;
         let sid = rs2(instr) as usize;
@@ -1501,6 +1596,7 @@ mod tests {
         ];
         let mut vm = Vm::new(prog);
         vm.set_indicator("ema", 123.456);
+        vm.finalize_const_lookups();
         vm.call("main");
         assert!((vm.reg_f(192) - 123.456).abs() < 0.001);
     }
@@ -1554,6 +1650,7 @@ mod tests {
         ];
         let mut vm = Vm::new(prog);
         vm.set_balance("USDT", 10000.0);
+        vm.finalize_const_lookups();
         vm.call("main");
         assert!((vm.reg_f(192) - 10000.0).abs() < 0.001);
     }
