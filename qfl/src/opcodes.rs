@@ -140,6 +140,8 @@ pub enum Opcode {
     WindowMin = 61, WindowMax = 62, WindowSum = 63,
     // Phase 4g: fused feature opcodes
     Ema = 64,
+    // Phase 4i: log with value
+    Log2 = 65,
     // Sentinel — must be last, triggers exit from dispatch loop
     Sentinel = 0xFF,
 }
@@ -170,6 +172,7 @@ impl Opcode {
             58 => Opcode::WindowPush, 59 => Opcode::WindowMean, 60 => Opcode::WindowStddev,
             61 => Opcode::WindowMin, 62 => Opcode::WindowMax, 63 => Opcode::WindowSum,
             64 => Opcode::Ema,
+            65 => Opcode::Log2,
             _ => Opcode::Halt,
         }
     }
@@ -196,7 +199,7 @@ impl Opcode {
             Jmp | GetPrice | GetPos | Log
             | WindowMean | WindowStddev | WindowMin | WindowMax | WindowSum => InstrEncoding::RI,
 
-            Ema => InstrEncoding::RRR,
+            Ema | Log2 => InstrEncoding::RRR,
 
             Ldi64 => InstrEncoding::RI40,
 
@@ -294,6 +297,7 @@ pub const JUMP_TABLE: [OpcodeHandler; 256] = {
     table[62] = vm_windowmax;
     table[63] = vm_windowsum;
     table[64] = vm_ema;
+    table[65] = vm_log2;
     table
 };
 

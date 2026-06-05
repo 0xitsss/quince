@@ -1,0 +1,20 @@
+@using sma:10:50
+
+state tick_count : i64 = 0
+state last_price : f64 = 0.0
+
+on trade(t) {
+
+    tick_count = tick_count + 1
+    
+
+    last_price = t.price
+    
+
+    feature fast = quince.get("sma")
+}
+
+on eval() {
+    quince.log("--- QFL TEST --- Ticks", tick_count)
+    quince.log("--- QFL TEST --- Last Price", last_price)
+}

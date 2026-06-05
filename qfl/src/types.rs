@@ -518,6 +518,11 @@ impl TypeChecker {
                 QflType::I64
             }
             "quince.log" | "log" => {
+                if let Some(arg_type) = arg_types.first() {
+                    if *arg_type != QflType::Symbol {
+                        self.error(format!("quince.log() first arg must be symbol, got {}", arg_type));
+                    }
+                }
                 QflType::I64
             }
             _ => QflType::I64,
@@ -543,7 +548,14 @@ impl TypeChecker {
                     }
                     QflType::F64
                 }
-                "log" => QflType::I64,
+                "log" => {
+                    if let Some(arg_type) = arg_types.first() {
+                        if *arg_type != QflType::Symbol {
+                            self.error(format!("quince:log() first arg must be symbol, got {}", arg_type));
+                        }
+                    }
+                    QflType::I64
+                }
                 "order" => {
                     if arg_types.len() >= 1 && !is_side_compat(arg_types[0]) {
                         self.error(format!("quince:order() side must be side or i64, got {}",

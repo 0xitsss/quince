@@ -833,6 +833,16 @@ pub mod handlers {
         tracing::info!("QFL: {}", msg);
     }
 
+    pub unsafe extern "C" fn vm_log2(vm: &mut Vm, instr: u64) {
+        let idx = vm.regs.get_unchecked(rs1(instr) as usize).i as usize;
+        let val = vm.regs.get_unchecked(rs2(instr) as usize).f;
+        let msg = match vm.const_pool.get(idx) {
+            Some(ConstEntry::String(s)) => format!("{}: {}", s, val),
+            _ => format!("{}", val),
+        };
+        tracing::info!("QFL: {}", msg);
+    }
+
     pub unsafe extern "C" fn vm_halt(vm: &mut Vm, instr: u64) {
         let _ = instr;
         vm.running = false;

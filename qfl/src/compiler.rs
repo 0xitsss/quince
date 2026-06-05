@@ -869,7 +869,18 @@ impl Compiler {
                 let r = self.alloc_int();
                 if let Some(arg) = args.first() {
                     let (arg_r, _) = self.compile_expr(arg);
-                    self.emit(Instruction::rr(O::Log, r, arg_r));
+                    if args.len() >= 2 {
+                        let (val_r, is_float) = self.compile_expr(&args[1]);
+                        // Ensure value is in float register for Log2
+                        let val_f = if is_float { val_r } else {
+                            let fr = self.alloc_float();
+                            self.emit(Instruction::rr(O::I2F, fr, val_r));
+                            fr
+                        };
+                        self.emit(Instruction::rrr(O::Log2, r, arg_r, val_f));
+                    } else {
+                        self.emit(Instruction::rr(O::Log, r, arg_r));
+                    }
                 }
                 (r, false)
             }
@@ -1898,7 +1909,7 @@ function on_trade(v)
     x = x + 1.0
 end
 function on_eval()
-    quince.log(x)
+    quince.log(\"x.val\", x)
 end
 ";
         let program = parser::parse(src).unwrap();
