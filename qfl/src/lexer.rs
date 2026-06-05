@@ -57,10 +57,17 @@ pub enum Token {
     GtEq,       // >=
     Concat,     // ..
     VarArg,     // ...
+    Arrow,      // ->
 
-    // Directive
+    // Directives
     AtPersist, // @persist
-    Using,     // --USING (parsed as special comment)
+    AtUsing,   // @using
+    AtWindow,  // @window
+
+    // Phase 4h keywords
+    State,     // state
+    On,        // on
+    Fn,        // fn
 
     Comment(String),
 
@@ -120,8 +127,13 @@ impl fmt::Display for Token {
             Token::GtEq => write!(f, ">="),
             Token::Concat => write!(f, ".."),
             Token::VarArg => write!(f, "..."),
+            Token::Arrow => write!(f, "->"),
             Token::AtPersist => write!(f, "@persist"),
-            Token::Using => write!(f, "--USING"),
+            Token::AtUsing => write!(f, "@using"),
+            Token::AtWindow => write!(f, "@window"),
+            Token::State => write!(f, "state"),
+            Token::On => write!(f, "on"),
+            Token::Fn => write!(f, "fn"),
             Token::Comment(c) => write!(f, "--{}", c),
             Token::Eof => write!(f, "eof"),
         }
@@ -302,6 +314,9 @@ impl Lexer {
             "nil" => Token::Nil,
             "true" => Token::True,
             "false" => Token::False,
+            "state" => Token::State,
+            "on" => Token::On,
+            "fn" => Token::Fn,
             _ => Token::Ident(s),
         }
     }
@@ -314,7 +329,7 @@ impl Lexer {
             Some(c) => c,
         };
 
-        // Single-line comment or USING directive
+        // Single-line comment
         if c == '-' && self.peek_ahead(1) == Some('-') {
             self.advance(); // first -
             self.advance(); // second -
@@ -325,10 +340,6 @@ impl Lexer {
                 }
                 content.push(ch);
                 self.advance();
-            }
-            let trimmed = content.trim();
-            if trimmed.starts_with("USING") || trimmed.starts_with("using") {
-                return Ok(Token::Using);
             }
             return Ok(Token::Comment(content));
         }
@@ -356,7 +367,7 @@ impl Lexer {
             return Ok(Token::Comment(content));
         }
 
-        // @persist directive
+        // @persist / @using directives
         if c == '@' {
             self.advance();
             let mut s = String::new();
@@ -368,10 +379,12 @@ impl Lexer {
                     break;
                 }
             }
-            if s == "persist" {
-                return Ok(Token::AtPersist);
+            match s.as_str() {
+                "persist" => return Ok(Token::AtPersist),
+                "using" => return Ok(Token::AtUsing),
+                "window" => return Ok(Token::AtWindow),
+                _ => return Ok(Token::Ident(format!("@{}", s))),
             }
-            return Ok(Token::Ident(format!("@{}", s)));
         }
 
         // Numbers
@@ -397,7 +410,14 @@ impl Lexer {
         let next = self.peek();
         match c {
             '+' => Ok(Token::Plus),
-            '-' => Ok(Token::Minus),
+            '-' => {
+                if next == Some('>') {
+                    self.advance();
+                    Ok(Token::Arrow)
+                } else {
+                    Ok(Token::Minus)
+                }
+            },
             '*' => Ok(Token::Star),
             '/' => {
                 if next == Some('/') {
@@ -580,7 +600,7 @@ mod tests {
     #[test]
     fn test_using_directive() {
         let tokens = tokenize("--USING sma 20").unwrap();
-        assert_eq!(tokens[0], Token::Using);
+        assert_eq!(tokens[0], Token::Comment("USING sma 20".into()));
     }
 
     #[test]
@@ -694,7 +714,36 @@ mod tests {
     #[test]
     fn test_using_keyword() {
         let tokens = tokenize("--USING ema 20").unwrap();
-        assert_eq!(tokens[0], Token::Using);
+        assert_eq!(tokens[0], Token::Comment("USING ema 20".into()));
+    }
+
+    #[test]
+    fn test_at_using() {
+        let tokens = tokenize("@using ema:12 ema:48").unwrap();
+        assert_eq!(tokens[0], Token::AtUsing);
+        assert_eq!(tokens[1], Token::Ident("ema".into()));
+        assert_eq!(tokens[2], Token::Colon);
+        assert_eq!(tokens[3], Token::Number("12".into()));
+        assert_eq!(tokens[4], Token::Ident("ema".into()));
+        assert_eq!(tokens[5], Token::Colon);
+        assert_eq!(tokens[6], Token::Number("48".into()));
+    }
+
+    #[test]
+    fn test_at_window() {
+        let tokens = tokenize("@window midprice 512").unwrap();
+        assert_eq!(tokens[0], Token::AtWindow);
+        assert_eq!(tokens[1], Token::Ident("midprice".into()));
+        assert_eq!(tokens[2], Token::Number("512".into()));
+    }
+
+    #[test]
+    fn test_keywords_state_on_fn() {
+        let tokens = tokenize("state on fn ->").unwrap();
+        assert_eq!(tokens[0], Token::State);
+        assert_eq!(tokens[1], Token::On);
+        assert_eq!(tokens[2], Token::Fn);
+        assert_eq!(tokens[3], Token::Arrow);
     }
 
     #[test]

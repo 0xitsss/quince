@@ -2,7 +2,7 @@
 
 [![Work In Progress](https://img.shields.io/badge/status-WIP-yellow)](https://github.com/0xitsss/quince)
 [![Build](https://img.shields.io/badge/build-passing-brightgreen)](https://github.com/0xitsss/quince)
-[![Tests](https://img.shields.io/badge/tests-744%20passing-brightgreen)](https://github.com/0xitsss/quince)
+[![Tests](https://img.shields.io/badge/tests-695%20passing-brightgreen)](https://github.com/0xitsss/quince)
 [![License](https://img.shields.io/badge/license-AGPL--3.0-blue)](https://www.gnu.org/licenses/agpl-3.0)
 
 **Q**uantitative **U**ltra-low-latency **I**nterpreter for **N**etwork-centric **C**ompetitive **E**xecution
@@ -219,7 +219,7 @@ cargo test
 - ✅ Purged CV-style walkforward validation support
 
 ### QFL VM (quince-qfl crate)
-- ✅ Register VM: 192 int + 64 float registers, 64 persist slots
+- ✅ Register VM: 192 int + 64 float registers, 64 persist slots, 256 EmaState slots
 - ✅ Typed IR + type checker (10 domain types: i64, f64, bool, timestamp, duration, price, qty, symbol, side, order_id)
 - ✅ Optimization pipeline: constant folding → CSE → dead code elimination (71 tests)
 - ✅ Profiler: opcode execution counts `[u64; 65]` + per-handler timing (12 tests)
@@ -228,6 +228,9 @@ cargo test
 - ✅ StrategyGraph — window/signal detection from bytecode (7 tests)
 - ✅ VmSnapshot — full state capture + `restore()` for replay/hot-reload (5 tests)
 - ✅ RiskEngine integration — risk-gated `flush_pending_order()` (6 tests)
+- ✅ Ema fused opcode (opcode=64) — single-instruction EMA update with pre-allocated state (2 tests)
+- ✅ Phase 4g: Declarative `@using name:param` / `@window capacity` / `feature` / `signal` syntax (13 tests)
+- ✅ Phase 4h: `state name : type = default`, `on event(param?) { body }`, `fn name(params) -> type { body }` (11 tests)
 
 ### Indicators (VecDeque → RingVec)
 - ✅ Trend: SMA, EMA, WMA, VWMA, LSMA
@@ -252,10 +255,11 @@ cargo test
 - ✅ `puffin` profiler behind `profiling` feature flag (http://127.0.0.1:29012)
 - ✅ QFL Profiler: per-opcode counts `[u64; 65]` + per-handler timing (12 tests)
 - ✅ QFL Tracer: signal/feature/fill/risk event ring buffer (29 tests)
-- ✅ Hot path optimized: indicators use `HashMap<&'static str, f64>` — zero alloc per tick
+- ✅ Hot path optimized: slot-based indicator writes (`set_indicator_by_slot`), no HashMap in tick (Phase 4g)
 
 ### Testing
-- ✅ 744 tests passing in quince-qfl (15 pre-existing failures in lexer/parser/runtime unrelated to our changes)
+- ✅ 695 tests passing in quince-qfl (16 pre-existing failures in lexer/parser/runtime unrelated to our changes)
+- ✅ 28 integration tests in quince-engine (1 pre-existing failure: intg_fill_handler)
 - ✅ 0 build warnings
 - ✅ Mock mode tests with real position/balance tracking
 
@@ -265,6 +269,7 @@ cargo test
 
 | Version | Phase | Changes |
 |---------|-------|---------|
+| v0.4.0 | 4g+4h | Feature pipeline (`@using name:param`, `@window`, `feature`, `signal`), State declarations (`state name : type`), Event handlers (`on event() { }`), Typed functions (`fn name() -> type { }`), Ema fused opcode, slot-based indicator writes |
 | v0.3.6 | 4e | Tracing — signal/feature/fill/risk event ring buffer |
 | v0.3.5 | 4d | Profiler — opcode counts + per-handler timing |
 | v0.3.4 | 4c | CSE — Common Subexpression Elimination |

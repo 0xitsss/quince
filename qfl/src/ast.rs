@@ -220,6 +220,57 @@ pub enum Stmt {
         exprs: Vec<Expr>,
     },
     ExprStmt(Expr),
+
+    // Phase 4g: declarative feature pipeline
+    Using {
+        indicators: Vec<UsingEntry>,
+    },
+    Window {
+        name: String,
+        capacity: usize,
+    },
+    Feature {
+        name: String,
+        expr: Box<Expr>,
+    },
+    Signal {
+        name: String,
+        expr: Box<Expr>,
+    },
+
+    // Phase 4h: typed state variables
+    State {
+        name: String,
+        type_name: String,
+        default: Option<Box<Expr>>,
+    },
+
+    // Phase 4h: event handlers
+    EventHandler {
+        event: String,
+        param: Option<String>,
+        body: Vec<Stmt>,
+    },
+
+    // Phase 4h: typed user functions
+    FnDecl {
+        name: String,
+        params: Vec<FnParam>,
+        return_type: String,
+        body: Vec<Stmt>,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct FnParam {
+    pub name: String,
+    pub type_name: String,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct UsingEntry {
+    pub name: String,
+    pub params: Vec<f64>,
 }
 
 impl fmt::Display for Stmt {
@@ -280,6 +331,44 @@ impl fmt::Display for Stmt {
                     write!(f, "{}", expr)?;
                 }
                 Ok(())
+            }
+            Stmt::Using { indicators } => {
+                write!(f, "@using")?;
+                for entry in indicators {
+                    write!(f, " {}:{}", entry.name, entry.params.iter().map(|p| p.to_string()).collect::<Vec<_>>().join(":"))?;
+                }
+                Ok(())
+            }
+            Stmt::Window { name, capacity } => {
+                write!(f, "window {} {}", name, capacity)
+            }
+            Stmt::Feature { name, expr } => {
+                write!(f, "feature {} = {}", name, expr)
+            }
+            Stmt::Signal { name, expr } => {
+                write!(f, "signal {} = {}", name, expr)
+            }
+            Stmt::State { name, type_name, default } => {
+                write!(f, "state {} : {}", name, type_name)?;
+                if let Some(expr) = default {
+                    write!(f, " = {}", expr)?;
+                }
+                Ok(())
+            }
+            Stmt::EventHandler { event, param, body } => {
+                write!(f, "on {}(", event)?;
+                if let Some(p) = param {
+                    write!(f, "{}", p)?;
+                }
+                write!(f, ") {{ ... }} ({} stmts)", body.len())
+            }
+            Stmt::FnDecl { name, params, return_type, body } => {
+                write!(f, "fn {}(", name)?;
+                for (i, p) in params.iter().enumerate() {
+                    if i > 0 { write!(f, ", ")?; }
+                    write!(f, "{}: {}", p.name, p.type_name)?;
+                }
+                write!(f, ") -> {} {{ ... }} ({} stmts)", return_type, body.len())
             }
         }
     }

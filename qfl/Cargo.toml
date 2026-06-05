@@ -9,6 +9,7 @@ quince-core = { path = "../core" }
 tracing.workspace = true
 crossbeam-channel.workspace = true
 thiserror.workspace = true
+memmap2 = "0.9"
 
 [dev-dependencies]
 chrono.workspace = true

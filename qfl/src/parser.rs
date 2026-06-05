@@ -99,10 +99,17 @@ impl Parser {
                 self.advance();
                 Ok(Stmt::ExprStmt(Expr::Literal(Literal::Nil)))
             }
-            Token::Using | Token::Comment(_) => {
+            Token::Comment(_) => {
                 self.advance();
                 self.parse_stmt()
             }
+            Token::AtUsing => self.parse_using(),
+            Token::AtWindow => self.parse_window(),
+            Token::State => self.parse_state(),
+            Token::On => self.parse_event_handler(),
+            Token::Fn => self.parse_fn_decl(),
+            Token::Ident(s) if s == "feature" => self.parse_feature(),
+            Token::Ident(s) if s == "signal" => self.parse_signal(),
             _ => {
                 if persist {
                     self.parse_var_decl(false, true)
@@ -132,6 +139,140 @@ impl Parser {
             names.push(self.expect_ident()?);
         }
         Ok(names)
+    }
+
+    fn parse_number_value(&mut self) -> Result<f64, ParseError> {
+        match self.peek().clone() {
+            Token::Number(s) => {
+                self.advance();
+                parse_number(&s).and_then(|lit| match lit {
+                    Literal::F64(v) => Ok(v),
+                    Literal::I64(v) => Ok(v as f64),
+                    _ => Err(self.err("expected number")),
+                })
+            }
+            ref tok => Err(self.err(&format!("expected number, got {}", tok))),
+        }
+    }
+
+    // @using name:param name:param ...
+    fn parse_using(&mut self) -> Result<Stmt, ParseError> {
+        self.advance();
+        let mut indicators = Vec::new();
+        while matches!(self.peek(), Token::Ident(_)) && matches!(self.peek_at(1), Token::Colon) {
+            let name = self.expect_ident()?.to_lowercase();
+            self.advance(); // colon
+            let mut params = Vec::new();
+            params.push(self.parse_number_value()?);
+            while matches!(self.peek(), Token::Colon) {
+                self.advance();
+                params.push(self.parse_number_value()?);
+            }
+            indicators.push(crate::ast::UsingEntry { name, params });
+        }
+        Ok(Stmt::Using { indicators })
+    }
+
+    // @window name capacity
+    fn parse_window(&mut self) -> Result<Stmt, ParseError> {
+        self.advance();
+        let name = self.expect_ident()?;
+        let cap = self.parse_number_value()? as usize;
+        Ok(Stmt::Window { name, capacity: cap })
+    }
+
+    // feature name = expr
+    fn parse_feature(&mut self) -> Result<Stmt, ParseError> {
+        self.advance();
+        let name = self.expect_ident()?;
+        self.expect(&Token::Eq)?;
+        let expr = self.parse_expr()?;
+        Ok(Stmt::Feature { name, expr: Box::new(expr) })
+    }
+
+    // signal name = expr
+    fn parse_signal(&mut self) -> Result<Stmt, ParseError> {
+        self.advance();
+        let name = self.expect_ident()?;
+        self.expect(&Token::Eq)?;
+        let expr = self.parse_expr()?;
+        Ok(Stmt::Signal { name, expr: Box::new(expr) })
+    }
+
+    // state name : type [= expr]
+    fn parse_state(&mut self) -> Result<Stmt, ParseError> {
+        self.advance();
+        let name = self.expect_ident()?;
+        self.expect(&Token::Colon)?;
+        let type_name = self.expect_ident()?;
+        let default = if matches!(self.peek(), Token::Eq) {
+            self.advance();
+            Some(Box::new(self.parse_expr()?))
+        } else {
+            None
+        };
+        Ok(Stmt::State { name, type_name, default })
+    }
+
+    // on event(param?) { body }
+    fn parse_event_handler(&mut self) -> Result<Stmt, ParseError> {
+        self.advance();
+        let event = self.expect_ident()?;
+        self.expect(&Token::LParen)?;
+        let param = if matches!(self.peek(), Token::Ident(_)) {
+            Some(self.expect_ident()?)
+        } else {
+            None
+        };
+        self.expect(&Token::RParen)?;
+        let body = self.parse_brace_block()?;
+        Ok(Stmt::EventHandler { event, param, body })
+    }
+
+    // { stmts }
+    fn parse_brace_block(&mut self) -> Result<Vec<Stmt>, ParseError> {
+        self.expect(&Token::LBrace)?;
+        let stmts = self.parse_block_until(&[Token::RBrace])?;
+        self.expect(&Token::RBrace)?;
+        Ok(stmts)
+    }
+
+    // fn name(params) -> type { body }
+    fn parse_fn_decl(&mut self) -> Result<Stmt, ParseError> {
+        self.advance();
+        let name = self.expect_ident()?;
+        self.expect(&Token::LParen)?;
+        let mut params = Vec::new();
+        if !matches!(self.peek(), Token::RParen) {
+            let p_name = self.expect_ident()?;
+            let p_type = if matches!(self.peek(), Token::Colon) {
+                self.advance();
+                self.expect_ident()?
+            } else {
+                "i64".into()
+            };
+            params.push(crate::ast::FnParam { name: p_name, type_name: p_type });
+            while matches!(self.peek(), Token::Comma) {
+                self.advance();
+                let p_name = self.expect_ident()?;
+                let p_type = if matches!(self.peek(), Token::Colon) {
+                    self.advance();
+                    self.expect_ident()?
+                } else {
+                    "i64".into()
+                };
+                params.push(crate::ast::FnParam { name: p_name, type_name: p_type });
+            }
+        }
+        self.expect(&Token::RParen)?;
+        let return_type = if matches!(self.peek(), Token::Arrow) {
+            self.advance();
+            self.expect_ident()?
+        } else {
+            "i64".into()
+        };
+        let body = self.parse_brace_block()?;
+        Ok(Stmt::FnDecl { name, params, return_type, body })
     }
 
     fn parse_function_decl(&mut self) -> Result<Stmt, ParseError> {
@@ -1660,5 +1801,165 @@ until x >= 10
             }
         }
         assert_eq!(count_add_depth(&prog[0]), 99);
+    }
+
+    #[test]
+    fn test_state_decl() {
+        let prog = parse("state x : f64 = 42.0\nstate y : i32\nstate z : qty").unwrap();
+        assert_eq!(prog.len(), 3);
+        match &prog[0] {
+            Stmt::State { name, type_name, default } => {
+                assert_eq!(name, "x");
+                assert_eq!(type_name, "f64");
+                assert!(default.is_some());
+            }
+            _ => panic!("expected State"),
+        }
+        match &prog[1] {
+            Stmt::State { name, type_name, default } => {
+                assert_eq!(name, "y");
+                assert_eq!(type_name, "i32");
+                assert!(default.is_none());
+            }
+            _ => panic!("expected State"),
+        }
+        match &prog[2] {
+            Stmt::State { name, type_name, .. } => {
+                assert_eq!(name, "z");
+                assert_eq!(type_name, "qty");
+            }
+            _ => panic!("expected State"),
+        }
+    }
+
+    #[test]
+    fn test_event_handler() {
+        let prog = parse("on trade(t) { local x = t.price }").unwrap();
+        assert_eq!(prog.len(), 1);
+        match &prog[0] {
+            Stmt::EventHandler { event, param, body } => {
+                assert_eq!(event, "trade");
+                assert_eq!(param.as_deref(), Some("t"));
+                assert_eq!(body.len(), 1);
+            }
+            _ => panic!("expected EventHandler"),
+        }
+    }
+
+    #[test]
+    fn test_event_handler_no_params() {
+        let prog = parse("on eval() { quince.log(\"tick\") }").unwrap();
+        assert_eq!(prog.len(), 1);
+        match &prog[0] {
+            Stmt::EventHandler { event, param, body } => {
+                assert_eq!(event, "eval");
+                assert_eq!(param, &None);
+                assert_eq!(body.len(), 1);
+            }
+            _ => panic!("expected EventHandler"),
+        }
+    }
+
+    #[test]
+    fn test_fn_typed_decl() {
+        let prog = parse("fn calc(x: f64, y: f64) -> f64 { return x + y }").unwrap();
+        assert_eq!(prog.len(), 1);
+        match &prog[0] {
+            Stmt::FnDecl { name, params, return_type, body } => {
+                assert_eq!(name, "calc");
+                assert_eq!(params.len(), 2);
+                assert_eq!(params[0].name, "x");
+                assert_eq!(params[0].type_name, "f64");
+                assert_eq!(params[1].name, "y");
+                assert_eq!(params[1].type_name, "f64");
+                assert_eq!(return_type, "f64");
+                assert_eq!(body.len(), 1);
+            }
+            _ => panic!("expected FnDecl"),
+        }
+    }
+
+    // ── Phase 4g parser tests ──
+
+    #[test]
+    fn test_at_using_directive() {
+        let prog = parse("@using ema:12 ema:48 bbands:20:2.0").unwrap();
+        assert_eq!(prog.len(), 1);
+        match &prog[0] {
+            Stmt::Using { indicators } => {
+                assert_eq!(indicators.len(), 3);
+                assert_eq!(indicators[0].name, "ema");
+                assert_eq!(indicators[0].params, vec![12.0]);
+                assert_eq!(indicators[1].name, "ema");
+                assert_eq!(indicators[1].params, vec![48.0]);
+                assert_eq!(indicators[2].name, "bbands");
+                assert_eq!(indicators[2].params, vec![20.0, 2.0]);
+            }
+            _ => panic!("expected Using"),
+        }
+    }
+
+    #[test]
+    fn test_at_window_directive() {
+        let prog = parse("@window midprice 512\n@window returns 2048").unwrap();
+        assert_eq!(prog.len(), 2);
+        match &prog[0] {
+            Stmt::Window { name, capacity } => {
+                assert_eq!(name, "midprice");
+                assert_eq!(*capacity, 512);
+            }
+            _ => panic!("expected Window"),
+        }
+        match &prog[1] {
+            Stmt::Window { name, capacity } => {
+                assert_eq!(name, "returns");
+                assert_eq!(*capacity, 2048);
+            }
+            _ => panic!("expected Window"),
+        }
+    }
+
+    #[test]
+    fn test_feature_decl() {
+        let prog = parse("feature ema_fast = ema(midprice, 12)").unwrap();
+        assert_eq!(prog.len(), 1);
+        match &prog[0] {
+            Stmt::Feature { name, expr } => {
+                assert_eq!(name, "ema_fast");
+                match expr.as_ref() {
+                    Expr::FnCall { name: fn_name, args } => {
+                        assert_eq!(fn_name, "ema");
+                        assert_eq!(args.len(), 2);
+                    }
+                    _ => panic!("expected FnCall"),
+                }
+            }
+            _ => panic!("expected Feature"),
+        }
+    }
+
+    #[test]
+    fn test_signal_decl() {
+        let prog = parse("signal trend_up = ema_fast > ema_slow").unwrap();
+        assert_eq!(prog.len(), 1);
+        match &prog[0] {
+            Stmt::Signal { name, expr } => {
+                assert_eq!(name, "trend_up");
+                match expr.as_ref() {
+                    Expr::Binary { op, .. } => {
+                        assert_eq!(*op, BinOp::Gt);
+                    }
+                    _ => panic!("expected Binary(Gt)"),
+                }
+            }
+            _ => panic!("expected Signal"),
+        }
+    }
+
+    #[test]
+    fn test_feature_signal_not_reserved_inside_fn() {
+        // feature and signal must NOT be reserved — usable as variable names inside functions
+        let prog = parse("function on_trade() local feature = 1 local signal = 2 end").unwrap();
+        assert_eq!(prog.len(), 1);
     }
 }

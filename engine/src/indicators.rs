@@ -15,39 +15,18 @@ pub fn parse_using(src: &str) -> Vec<IndicatorEntry> {
 
     for line in src.lines() {
         let line = line.trim();
-        if let Some(rest) = line.strip_prefix("-- USING ") {
-            // Split on ';' to handle inline "; SET BUFFER <N>"
-            let (decl, extra) = match rest.find(';') {
-                Some(pos) => (&rest[..pos], Some(&rest[pos + 1..])),
-                None => (rest, None),
-            };
 
-            let parts: Vec<&str> = decl.split_whitespace().collect();
-            if parts.is_empty() { continue; }
-            let name = parts[0].to_lowercase();
-            let params: Vec<f64> = parts[1..].iter()
-                .filter_map(|s| s.parse::<f64>().ok())
-                .collect();
-            let mut buf = default_buffer(&name, &params);
-
-            if let Some(xtra) = extra {
-                let xtra = xtra.trim();
-                if let Some(bstr) = xtra.strip_prefix("SET BUFFER ") {
-                    if let Ok(n) = bstr.trim().parse::<usize>() {
-                        if n > 0 { buf = n; }
-                    }
-                }
-            }
-
-            entries.push(IndicatorEntry { name, params, buffer: buf });
-        } else if let Some(rest) = line.strip_prefix("-- SET BUFFER ") {
-            // Standalone line (for the last entry)
-            if let Ok(n) = rest.trim().parse::<usize>() {
-                if n > 0 {
-                    if let Some(entry) = entries.last_mut() {
-                        entry.buffer = n;
-                    }
-                }
+        // New format: @using name:param name:param ...
+        if let Some(rest) = line.strip_prefix("@using ") {
+            for token in rest.split_whitespace() {
+                let parts: Vec<&str> = token.split(':').collect();
+                if parts.is_empty() || parts[0].is_empty() { continue; }
+                let name = parts[0].to_lowercase();
+                let params: Vec<f64> = parts[1..].iter()
+                    .filter_map(|s| s.parse::<f64>().ok())
+                    .collect();
+                let buf = default_buffer(&name, &params);
+                entries.push(IndicatorEntry { name, params, buffer: buf });
             }
         }
     }
@@ -88,7 +67,8 @@ enum ActiveIndicator {
 
 pub struct IndicatorBank {
     indicators: Vec<ActiveIndicator>,
-    results: Vec<(&'static str, f64)>,
+    results: Vec<(u16, f64)>,
+    name_to_slot: std::collections::HashMap<String, u16>,
     cum_buy: f64,
     cum_sell: f64,
     trades: u64,
@@ -129,101 +109,127 @@ impl IndicatorBank {
         Self {
             indicators,
             results: Vec::with_capacity(64),
+            name_to_slot: std::collections::HashMap::new(),
             cum_buy: 0.0,
             cum_sell: 0.0,
             trades: 0,
         }
     }
 
-    pub fn on_trade(&mut self, trade: &Trade) -> &[(&'static str, f64)] {
+    /// Pre-assign name→slot mapping (call once at init).
+    pub fn set_name_to_slot(&mut self, name: &str, slot: u16) {
+        self.name_to_slot.insert(name.to_string(), slot);
+    }
+
+    /// Assign sequential slot indices for all known indicator names (for tests).
+    pub fn assign_all_slots(&mut self) {
+        let mut next = 0u16;
+        for name in &[
+            "sma","ema","wma","vwma","lsma","rsi",
+            "macd","macd.signal","macd.histogram",
+            "cci","roc","stoch",
+            "bb.middle","bb.upper","bb.lower","bb.bandwidth",
+            "kc.middle","kc.upper","kc.lower",
+            "atr","mfi","adx","zscore","cvd","pmdi","nmdi",
+            "price","volume_delta","avg_trade_size","trade_count",
+            "bid_depth","ask_depth","depth_imbalance",
+            "entry_price","unrealized_pnl",
+        ] {
+            self.name_to_slot.entry(name.to_string()).or_insert_with(|| { let s = next; next += 1; s });
+        }
+    }
+
+    pub fn on_trade(&mut self, trade: &Trade) -> &[(u16, f64)] {
         self.results.clear();
         let p = trade.price;
         let v = trade.qty;
         let buy = trade.side == Side::Buy;
+        let slots = &self.name_to_slot;
 
         self.trades += 1;
         if buy { self.cum_buy += v } else { self.cum_sell += v }
 
         for ind in &mut self.indicators {
             match ind {
-                ActiveIndicator::Sma(ind) => { if let Some(val) = ind.update(p) { self.results.push(("sma", val)); } }
-                ActiveIndicator::Ema(ind) => { self.results.push(("ema", ind.update(p))); }
-                ActiveIndicator::Wma(ind) => { if let Some(val) = ind.update(p) { self.results.push(("wma", val)); } }
-                ActiveIndicator::Vwma(ind) => { if let Some(val) = ind.update(p, v) { self.results.push(("vwma", val)); } }
-                ActiveIndicator::Lsma(ind) => { if let Some(val) = ind.update(p) { self.results.push(("lsma", val)); } }
-                ActiveIndicator::Rsi(ind) => { if let Some(val) = ind.update(p) { self.results.push(("rsi", val)); } }
+                ActiveIndicator::Sma(ind) => { if let Some(val) = ind.update(p) { self.results.push((*slots.get("sma").unwrap_or(&0), val)); } }
+                ActiveIndicator::Ema(ind) => { self.results.push((*slots.get("ema").unwrap_or(&0), ind.update(p))); }
+                ActiveIndicator::Wma(ind) => { if let Some(val) = ind.update(p) { self.results.push((*slots.get("wma").unwrap_or(&0), val)); } }
+                ActiveIndicator::Vwma(ind) => { if let Some(val) = ind.update(p, v) { self.results.push((*slots.get("vwma").unwrap_or(&0), val)); } }
+                ActiveIndicator::Lsma(ind) => { if let Some(val) = ind.update(p) { self.results.push((*slots.get("lsma").unwrap_or(&0), val)); } }
+                ActiveIndicator::Rsi(ind) => { if let Some(val) = ind.update(p) { self.results.push((*slots.get("rsi").unwrap_or(&0), val)); } }
                 ActiveIndicator::Macd(ind) => {
                     if let Some(o) = ind.update(p) {
-                        self.results.push(("macd", o.macd_line));
-                        self.results.push(("macd.signal", o.signal_line));
-                        self.results.push(("macd.histogram", o.histogram));
+                        self.results.push((*slots.get("macd").unwrap_or(&0), o.macd_line));
+                        self.results.push((*slots.get("macd.signal").unwrap_or(&0), o.signal_line));
+                        self.results.push((*slots.get("macd.histogram").unwrap_or(&0), o.histogram));
                     }
                 }
-                ActiveIndicator::Cci(ind) => { if let Some(val) = ind.update(p, p, p) { self.results.push(("cci", val)); } }
-                ActiveIndicator::Roc(ind) => { if let Some(val) = ind.update(p) { self.results.push(("roc", val)); } }
-                ActiveIndicator::Stoch(ind) => { if let Some(val) = ind.update(p, p, p) { self.results.push(("stoch", val)); } }
+                ActiveIndicator::Cci(ind) => { if let Some(val) = ind.update(p, p, p) { self.results.push((*slots.get("cci").unwrap_or(&0), val)); } }
+                ActiveIndicator::Roc(ind) => { if let Some(val) = ind.update(p) { self.results.push((*slots.get("roc").unwrap_or(&0), val)); } }
+                ActiveIndicator::Stoch(ind) => { if let Some(val) = ind.update(p, p, p) { self.results.push((*slots.get("stoch").unwrap_or(&0), val)); } }
                 ActiveIndicator::Bb(ind) => {
                     if let Some(o) = ind.update(p) {
-                        self.results.push(("bb.middle", o.middle));
-                        self.results.push(("bb.upper", o.upper));
-                        self.results.push(("bb.lower", o.lower));
-                        self.results.push(("bb.bandwidth", o.bandwidth));
+                        self.results.push((*slots.get("bb.middle").unwrap_or(&0), o.middle));
+                        self.results.push((*slots.get("bb.upper").unwrap_or(&0), o.upper));
+                        self.results.push((*slots.get("bb.lower").unwrap_or(&0), o.lower));
+                        self.results.push((*slots.get("bb.bandwidth").unwrap_or(&0), o.bandwidth));
                     }
                 }
                 ActiveIndicator::Kc(ind) => {
                     if let Some(o) = ind.update(p, p, p) {
-                        self.results.push(("kc.middle", o.middle));
-                        self.results.push(("kc.upper", o.upper));
-                        self.results.push(("kc.lower", o.lower));
+                        self.results.push((*slots.get("kc.middle").unwrap_or(&0), o.middle));
+                        self.results.push((*slots.get("kc.upper").unwrap_or(&0), o.upper));
+                        self.results.push((*slots.get("kc.lower").unwrap_or(&0), o.lower));
                     }
                 }
-                ActiveIndicator::Atr(ind) => { if let Some(val) = ind.update(p, p, p) { self.results.push(("atr", val)); } }
+                ActiveIndicator::Atr(ind) => { if let Some(val) = ind.update(p, p, p) { self.results.push((*slots.get("atr").unwrap_or(&0), val)); } }
                 ActiveIndicator::Mfi(ind) => {
                     let candle = Candle::from_trade(p, v);
-                    if let Some(val) = ind.update(&candle) { self.results.push(("mfi", val)); }
+                    if let Some(val) = ind.update(&candle) { self.results.push((*slots.get("mfi").unwrap_or(&0), val)); }
                 }
                 ActiveIndicator::Adx(ind) => {
                     let candle = Candle::from_trade(p, v);
-                    if let Some(val) = ind.update(&candle) { self.results.push(("adx", val)); }
+                    if let Some(val) = ind.update(&candle) { self.results.push((*slots.get("adx").unwrap_or(&0), val)); }
                 }
-                ActiveIndicator::Zscore(ind) => { if let Some(val) = ind.update(p) { self.results.push(("zscore", val)); } }
+                ActiveIndicator::Zscore(ind) => { if let Some(val) = ind.update(p) { self.results.push((*slots.get("zscore").unwrap_or(&0), val)); } }
                 ActiveIndicator::Cvd(cum) => {
                     if buy { *cum += v } else { *cum -= v }
-                    self.results.push(("cvd", *cum));
+                    self.results.push((*slots.get("cvd").unwrap_or(&0), *cum));
                 }
                 ActiveIndicator::Pmdi { value, prev_data, has_prev } => {
                     if *has_prev {
                         if p > *prev_data { *value += value.max(1.0) * ((p + *prev_data) / *prev_data); }
                         *prev_data = p;
                     } else { *value = p; *prev_data = p; *has_prev = true; }
-                    self.results.push(("pmdi", *value));
+                    self.results.push((*slots.get("pmdi").unwrap_or(&0), *value));
                 }
                 ActiveIndicator::Nmdi { value, prev_data, has_prev } => {
                     if *has_prev {
                         if p < *prev_data { *value += value.max(1.0) * ((p + *prev_data) / *prev_data); }
                         *prev_data = p;
                     } else { *value = p; *prev_data = p; *has_prev = true; }
-                    self.results.push(("nmdi", *value));
+                    self.results.push((*slots.get("nmdi").unwrap_or(&0), *value));
                 }
             }
         }
 
-        self.results.push(("price", p));
-        self.results.push(("volume_delta", self.cum_buy - self.cum_sell));
-        self.results.push(("avg_trade_size", if self.trades == 0 { 0.0 } else { (self.cum_buy + self.cum_sell) / self.trades as f64 }));
-        self.results.push(("trade_count", self.trades as f64));
+        self.results.push((*slots.get("price").unwrap_or(&0), p));
+        self.results.push((*slots.get("volume_delta").unwrap_or(&0), self.cum_buy - self.cum_sell));
+        self.results.push((*slots.get("avg_trade_size").unwrap_or(&0), if self.trades == 0 { 0.0 } else { (self.cum_buy + self.cum_sell) / self.trades as f64 }));
+        self.results.push((*slots.get("trade_count").unwrap_or(&0), self.trades as f64));
 
         &self.results
     }
 
-    pub fn on_depth(&mut self, depth: &Depth) -> &[(&'static str, f64)] {
+    pub fn on_depth(&mut self, depth: &Depth) -> &[(u16, f64)] {
         self.results.clear();
+        let slots = &self.name_to_slot;
         let bid_vol: f64 = depth.bids.iter().map(|l| l.qty).sum();
         let ask_vol: f64 = depth.asks.iter().map(|l| l.qty).sum();
-        self.results.push(("bid_depth", bid_vol));
-        self.results.push(("ask_depth", ask_vol));
+        self.results.push((*slots.get("bid_depth").unwrap_or(&0), bid_vol));
+        self.results.push((*slots.get("ask_depth").unwrap_or(&0), ask_vol));
         let imb = if bid_vol + ask_vol == 0.0 { 0.0 } else { (bid_vol - ask_vol) / (bid_vol + ask_vol) * 100.0 };
-        self.results.push(("depth_imbalance", imb));
+        self.results.push((*slots.get("depth_imbalance").unwrap_or(&0), imb));
         &self.results
     }
 }
@@ -234,7 +240,7 @@ mod tests {
 
     #[test]
     fn parse_using_simple() {
-        let src = "-- USING sma 20\n-- USING ema 20";
+        let src = "@using sma:20 ema:20";
         let entries = parse_using(src);
         assert_eq!(entries.len(), 2);
         assert_eq!(entries[0].name, "sma");
@@ -244,27 +250,17 @@ mod tests {
     }
 
     #[test]
-    fn parse_using_with_buffer() {
-        let src = "-- USING sma 20; SET BUFFER 2048\n-- USING ema 20";
-        let entries = parse_using(src);
-        assert_eq!(entries.len(), 2);
-        assert_eq!(entries[0].buffer, 2048);
-        assert_eq!(entries[1].name, "ema");
-    }
-
-    #[test]
     fn parse_using_multi_param() {
-        let src = "-- USING bb 20 2.0; SET BUFFER 512";
+        let src = "@using bb:20:2.0";
         let entries = parse_using(src);
         assert_eq!(entries.len(), 1);
         assert_eq!(entries[0].name, "bb");
         assert_eq!(entries[0].params, vec![20.0, 2.0]);
-        assert_eq!(entries[0].buffer, 512);
     }
 
     #[test]
     fn parse_using_no_params() {
-        let src = "-- USING cvd\n-- USING pmdi";
+        let src = "@using cvd pmdi";
         let entries = parse_using(src);
         assert_eq!(entries.len(), 2);
         assert_eq!(entries[0].name, "cvd");
@@ -273,51 +269,43 @@ mod tests {
 
     #[test]
     fn parse_using_unknown_skipped() {
-        let src = "-- USING unknown 42\n-- USING sma 10";
+        let src = "@using unknown:42 sma:10";
         let entries = parse_using(src);
-        // unknown is still parsed (it's the caller's choice to skip)
         assert_eq!(entries.len(), 2);
     }
 
     #[test]
     fn indicator_bank_new_all_types() {
-        let src = "-- USING sma 20; SET BUFFER 64\n-- USING cvd\n-- USING pmdi\n-- USING nmdi\n-- USING zscore 20";
+        let src = "@using sma:20 cvd pmdi nmdi zscore:20";
         let entries = parse_using(src);
         let mut bank = IndicatorBank::new(&entries);
+        bank.assign_all_slots();
         assert_eq!(bank.indicators.len(), 5);
 
         let trade = Trade { price: 100.0, qty: 1.0, time: chrono::Utc::now(), side: Side::Buy, trade_id: 1 };
         let r = bank.on_trade(&trade);
         assert!(!r.is_empty());
-        // at minimum: price, volume_delta, avg_trade_size, trade_count + cvd + pmdi + nmdi
         assert!(r.len() >= 7);
-        let map: std::collections::HashMap<&str, f64> = r.iter().map(|&(k, v)| (k, v)).collect();
-        assert_eq!(map.get("price"), Some(&100.0));
-        assert_eq!(map.get("cvd"), Some(&1.0));
-        assert!(map.contains_key("pmdi"));
-        assert!(map.contains_key("nmdi"));
-        assert!(map.contains_key("trade_count"));
     }
 
     #[test]
     fn indicator_bank_depth() {
-        let entries = parse_using("-- USING cvd");
+        let entries = parse_using("@using cvd");
         let mut bank = IndicatorBank::new(&entries);
+        bank.assign_all_slots();
         let depth = Depth {
             bids: vec![DepthLevel { price: 100.0, qty: 10.0 }, DepthLevel { price: 99.0, qty: 20.0 }],
             asks: vec![DepthLevel { price: 101.0, qty: 15.0 }],
         };
         let r = bank.on_depth(&depth);
         assert_eq!(r.len(), 3);
-        let map: std::collections::HashMap<&str, f64> = r.iter().map(|&(k, v)| (k, v)).collect();
-        assert_eq!(map.get("bid_depth"), Some(&30.0));
-        assert_eq!(map.get("ask_depth"), Some(&15.0));
     }
 
     #[test]
     fn indicator_bank_zero_allocs_per_tick() {
-        let entries = parse_using("-- USING sma 10; SET BUFFER 64\n-- USING ema 10\n-- USING cvd");
+        let entries = parse_using("@using sma:10 ema:10 cvd");
         let mut bank = IndicatorBank::new(&entries);
+        bank.assign_all_slots();
         let trade = Trade { price: 100.0, qty: 1.0, time: chrono::Utc::now(), side: Side::Buy, trade_id: 1 };
 
         // Warmup

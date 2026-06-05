@@ -83,7 +83,22 @@ impl<E: Exchange> Engine<E> {
         }
         tracing::info!("parsed {} indicator directives", ind_cfg.len());
 
-        let indicators = IndicatorBank::new(&ind_cfg);
+        let mut indicators = IndicatorBank::new(&ind_cfg);
+
+        // Phase 4g: pre-assign indicator slots — zero HashMap lookups in hot path
+        let synthetic_names = [
+            "price", "volume_delta", "avg_trade_size", "trade_count",
+            "bid_depth", "ask_depth", "depth_imbalance",
+            "entry_price", "unrealized_pnl",
+        ];
+        for entry in &ind_cfg {
+            let slot = qfl.ensure_indicator_slot(&entry.name);
+            indicators.set_name_to_slot(&entry.name, slot);
+        }
+        for name in &synthetic_names {
+            let slot = qfl.ensure_indicator_slot(name);
+            indicators.set_name_to_slot(name, slot);
+        }
         tracing::info!("indicator bank ready: {} indicators", ind_cfg.len());
         drop(src);
 
@@ -202,17 +217,14 @@ impl<E: Exchange> Engine<E> {
         match msg {
             StreamMsg::Trade(trade) => {
                 self.last_price = trade.price;
-                let ind_vals = self.indicators.on_trade(&trade).to_vec();
-                for &(k, v) in &ind_vals {
-                    self.qfl.set_indicator(k, v);
+                for &(slot, v) in self.indicators.on_trade(&trade) {
+                    self.qfl.set_indicator_by_slot(slot, v);
                 }
-                // Push trade to QFL VM
                 self.qfl.feed_trade(trade);
             }
             StreamMsg::Depth(depth) => {
-                let ind_vals = self.indicators.on_depth(&depth).to_vec();
-                for &(k, v) in &ind_vals {
-                    self.qfl.set_indicator(k, v);
+                for &(slot, v) in self.indicators.on_depth(&depth) {
+                    self.qfl.set_indicator_by_slot(slot, v);
                 }
                 self.qfl.feed_depth(depth);
             }
@@ -275,8 +287,10 @@ impl<E: Exchange> Engine<E> {
         }
         if let Some(pos) = &self.position {
             self.qfl.set_position_size(pos.size);
-            self.qfl.set_indicator("entry_price", pos.entry_price);
-            self.qfl.set_indicator("unrealized_pnl", pos.unrealized_pnl);
+            let ep_slot = self.qfl.ensure_indicator_slot("entry_price");
+            let up_slot = self.qfl.ensure_indicator_slot("unrealized_pnl");
+            self.qfl.set_indicator_by_slot(ep_slot, pos.entry_price);
+            self.qfl.set_indicator_by_slot(up_slot, pos.unrealized_pnl);
         }
         self.qfl.feed_eval();
         self.equity_check();

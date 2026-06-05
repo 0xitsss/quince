@@ -76,7 +76,20 @@ impl QflRuntime {
 
     /// Save current program to .qfr file
     pub fn save_qfr(&self, qfr_path: &str) -> Result<(), String> {
-        self.vm.program.save(qfr_path)
+        let mut entries = Vec::with_capacity(self.vm.entry_count as usize);
+        for i in 0..self.vm.entry_count as usize {
+            let name_bytes = self.vm.entry_names[i].to_le_bytes();
+            let name_end = name_bytes.iter().position(|&b| b == 0).unwrap_or(8);
+            let name = String::from_utf8_lossy(&name_bytes[..name_end]).to_string();
+            entries.push(crate::ir::EntryPoint { name, code_offset: self.vm.entry_offsets[i] });
+        }
+        let prog = crate::ir::QfrProgram {
+            entries,
+            const_pool: self.vm.const_pool.clone(),
+            code: self.vm.code_instr(),
+            const_map: self.vm.const_map.clone(),
+        };
+        prog.save(qfr_path)
     }
 
     pub fn set_order_sender(&mut self, tx: crossbeam_channel::Sender<quince_core::types::Order>) {
@@ -87,14 +100,14 @@ impl QflRuntime {
         self.vm.set_last_price(trade.price);
         self.vm.set_position_size(0.0);
 
-        self.vm.float_regs[0] = trade.price;
-        self.vm.float_regs[1] = trade.qty;
-        self.vm.int_regs[2] = match trade.side {
+        self.vm.regs[0].f = trade.price;
+        self.vm.regs[1].f = trade.qty;
+        self.vm.regs[2].i = match trade.side {
             Side::Buy => 0,
             Side::Sell => 1,
         };
-        self.vm.int_regs[3] = trade.trade_id as i64;
-        self.vm.int_regs[4] = trade.time.timestamp_nanos_opt().unwrap_or(0);
+        self.vm.regs[3].i = trade.trade_id as i64;
+        self.vm.regs[4].i = trade.time.timestamp_nanos_opt().unwrap_or(0);
 
         self.vm.call("on_trade");
         self.flush_pending_order();
@@ -111,9 +124,9 @@ impl QflRuntime {
 
     pub fn feed_fill(&mut self, fill: OrderFill) {
         self.vm.set_last_price(fill.price);
-        self.vm.float_regs[0] = fill.price;
-        self.vm.float_regs[1] = fill.qty;
-        self.vm.int_regs[2] = match fill.side {
+        self.vm.regs[0].f = fill.price;
+        self.vm.regs[1].f = fill.qty;
+        self.vm.regs[2].i = match fill.side {
             Side::Buy => 0,
             Side::Sell => 1,
         };
@@ -132,6 +145,14 @@ impl QflRuntime {
 
     pub fn set_indicator(&mut self, name: &str, val: f64) {
         self.vm.set_indicator(name, val);
+    }
+
+    pub fn ensure_indicator_slot(&mut self, name: &str) -> u16 {
+        self.vm.ensure_indicator_slot(name)
+    }
+
+    pub fn set_indicator_by_slot(&mut self, slot: u16, val: f64) {
+        self.vm.set_indicator_by_slot(slot, val);
     }
 
     pub fn set_balance(&mut self, asset: &str, val: f64) {
@@ -241,8 +262,7 @@ mod tests {
     fn test_load_and_eval() {
         let path = write_test_strategy("runtime_test_load_eval", "function on_eval() end");
         let rt = QflRuntime::load(&path).unwrap();
-        assert_eq!(rt.vm.program.entries.len(), 1);
-        assert_eq!(rt.vm.program.entries[0].name, "on_eval");
+        assert_eq!(rt.vm.entry_count, 1);
         let _ = std::fs::remove_file(&path);
     }
 
@@ -269,10 +289,10 @@ function on_trade(trade) end
         let trade = make_trade(50000.0, 0.1, Side::Buy, 1);
         rt.feed_trade(trade);
 
-        assert_eq!(rt.vm.float_regs[0], 50000.0);
-        assert_eq!(rt.vm.float_regs[1], 0.1);
-        assert_eq!(rt.vm.int_regs[2], 0);
-        assert_eq!(rt.vm.int_regs[3], 1);
+        assert_eq!(rt.vm.reg_f(0), 50000.0);
+        assert_eq!(rt.vm.reg_f(1), 0.1);
+        assert_eq!(rt.vm.reg_i(2), 0);
+        assert_eq!(rt.vm.reg_i(3), 1);
         let _ = std::fs::remove_file(&path);
     }
 
@@ -285,10 +305,10 @@ function on_trade(trade) end
         let trade = make_trade(50100.0, 0.2, Side::Sell, 42);
         rt.feed_trade(trade);
 
-        assert_eq!(rt.vm.float_regs[0], 50100.0);
-        assert_eq!(rt.vm.float_regs[1], 0.2);
-        assert_eq!(rt.vm.int_regs[2], 1);
-        assert_eq!(rt.vm.int_regs[3], 42);
+        assert_eq!(rt.vm.reg_f(0), 50100.0);
+        assert_eq!(rt.vm.reg_f(1), 0.2);
+        assert_eq!(rt.vm.reg_i(2), 1);
+        assert_eq!(rt.vm.reg_i(3), 42);
         let _ = std::fs::remove_file(&path);
     }
 
@@ -307,8 +327,8 @@ function on_trade(trade) end
             ],
         };
         rt.feed_depth(depth);
-        assert_eq!(rt.vm.depth_bids.len(), 2);
-        assert_eq!(rt.vm.depth_asks.len(), 2);
+        assert_eq!(rt.vm.depth_bids_len, 2);
+        assert_eq!(rt.vm.depth_asks_len, 2);
         let _ = std::fs::remove_file(&path);
     }
 
@@ -318,9 +338,9 @@ function on_trade(trade) end
         let mut rt = QflRuntime::load(&path).unwrap();
         let fill = make_fill(50000.0, 0.1, Side::Buy);
         rt.feed_fill(fill);
-        assert_eq!(rt.vm.float_regs[0], 50000.0);
-        assert_eq!(rt.vm.float_regs[1], 0.1);
-        assert_eq!(rt.vm.int_regs[2], 0);
+        assert_eq!(rt.vm.reg_f(0), 50000.0);
+        assert_eq!(rt.vm.reg_f(1), 0.1);
+        assert_eq!(rt.vm.reg_i(2), 0);
         let _ = std::fs::remove_file(&path);
     }
 
@@ -330,7 +350,7 @@ function on_trade(trade) end
         let mut rt = QflRuntime::load(&path).unwrap();
         let fill = make_fill(50100.0, 0.2, Side::Sell);
         rt.feed_fill(fill);
-        assert_eq!(rt.vm.int_regs[2], 1);
+        assert_eq!(rt.vm.reg_i(2), 1);
         let _ = std::fs::remove_file(&path);
     }
 
@@ -339,7 +359,7 @@ function on_trade(trade) end
         let path = write_test_strategy("runtime_test_set_ind", "function on_eval() end");
         let mut rt = QflRuntime::load(&path).unwrap();
         rt.set_indicator("ema", 123.456);
-        assert!((rt.vm.indicators.get("ema").unwrap() - 123.456).abs() < 0.001);
+        assert!((rt.vm.indicators[(*rt.vm.indicator_map.get("ema").unwrap()) as usize] - 123.456).abs() < 0.001);
         let _ = std::fs::remove_file(&path);
     }
 
@@ -349,8 +369,8 @@ function on_trade(trade) end
         let mut rt = QflRuntime::load(&path).unwrap();
         rt.set_balance("USDT", 50000.0);
         rt.set_balance("BTC", 1.5);
-        assert!((rt.vm.balances.get("USDT").unwrap() - 50000.0).abs() < 0.001);
-        assert!((rt.vm.balances.get("BTC").unwrap() - 1.5).abs() < 0.001);
+        assert!((rt.vm.balances[(*rt.vm.balance_map.get("USDT").unwrap()) as usize] - 50000.0).abs() < 0.001);
+        assert!((rt.vm.balances[(*rt.vm.balance_map.get("BTC").unwrap()) as usize] - 1.5).abs() < 0.001);
         let _ = std::fs::remove_file(&path);
     }
 
@@ -552,8 +572,8 @@ function on_trade(trade) end
         let mut rt = QflRuntime::load(&path).unwrap();
         let trade = make_trade(100.0, 0.5, Side::Sell, 99);
         rt.feed_trade(trade);
-        assert_eq!(rt.vm.int_regs[2], 1);
-        assert_eq!(rt.vm.int_regs[3], 99);
+        assert_eq!(rt.vm.reg_i(2), 1);
+        assert_eq!(rt.vm.reg_i(3), 99);
         let _ = std::fs::remove_file(&path);
     }
 
@@ -1343,10 +1363,10 @@ end
             asks: vec![DepthLevel { price: 50100.0, qty: 2.0 }],
         };
         rt.feed_depth(depth);
-        assert_eq!(rt.vm.depth_bids.len(), 1);
-        assert_eq!(rt.vm.depth_asks.len(), 1);
-        assert!((rt.vm.depth_bids[0].0 - 49900.0).abs() < 0.001);
-        assert!((rt.vm.depth_asks[0].0 - 50100.0).abs() < 0.001);
+        assert_eq!(rt.vm.depth_bids_len, 1);
+        assert_eq!(rt.vm.depth_asks_len, 1);
+        assert!((rt.vm.depth_bids_price[0] - 49900.0).abs() < 0.001);
+        assert!((rt.vm.depth_asks_price[0] - 50100.0).abs() < 0.001);
         let _ = std::fs::remove_file(&path);
     }
 
@@ -1356,9 +1376,9 @@ end
         let mut rt = QflRuntime::load(&path).unwrap();
         let fill = make_fill(50200.0, 0.25, Side::Buy);
         rt.feed_fill(fill);
-        assert!((rt.vm.float_regs[0] - 50200.0).abs() < 0.001);
-        assert!((rt.vm.float_regs[1] - 0.25).abs() < 0.001);
-        assert_eq!(rt.vm.int_regs[2], 0);
+        assert!((rt.vm.reg_f(0) - 50200.0).abs() < 0.001);
+        assert!((rt.vm.reg_f(1) - 0.25).abs() < 0.001);
+        assert_eq!(rt.vm.reg_i(2), 0);
         let _ = std::fs::remove_file(&path);
     }
 
@@ -1457,7 +1477,7 @@ end
         let mut rt = QflRuntime::load(&path).unwrap();
         let trade = make_trade(50000.0, 0.1, Side::Buy, 1);
         rt.feed_event(Event::Trade(trade));
-        assert!((rt.vm.float_regs[0] - 50000.0).abs() < 0.001);
+        assert!((rt.vm.reg_f(0) - 50000.0).abs() < 0.001);
         let _ = std::fs::remove_file(&path);
     }
 
@@ -1470,7 +1490,7 @@ end
             asks: vec![],
         };
         rt.feed_event(Event::Depth(depth));
-        assert_eq!(rt.vm.depth_bids.len(), 1);
+        assert_eq!(rt.vm.depth_bids_len, 1);
         let _ = std::fs::remove_file(&path);
     }
 
@@ -1480,7 +1500,7 @@ end
         let mut rt = QflRuntime::load(&path).unwrap();
         let fill = make_fill(50200.0, 0.25, Side::Buy);
         rt.feed_event(Event::Fill(fill));
-        assert!((rt.vm.float_regs[0] - 50200.0).abs() < 0.001);
+        assert!((rt.vm.reg_f(0) - 50200.0).abs() < 0.001);
         let _ = std::fs::remove_file(&path);
     }
 
@@ -1650,9 +1670,9 @@ end
         let _ = std::fs::remove_file(qfr_path);
 
         // Verify loaded program has same structure
-        assert_eq!(rt2.vm.program.entries.len(), 2);
-        assert_eq!(rt2.vm.program.code.len(), rt.vm.program.code.len());
-        assert_eq!(rt2.vm.program.const_pool.len(), rt.vm.program.const_pool.len());
+        assert_eq!(rt2.vm.entry_count, 2);
+        assert_eq!(rt2.vm.code_len, rt.vm.code_len);
+        assert_eq!(rt2.vm.const_pool.len(), rt.vm.const_pool.len());
     }
 
     #[test]

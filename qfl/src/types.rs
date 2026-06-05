@@ -60,6 +60,24 @@ impl fmt::Display for QflType {
     }
 }
 
+/// Parse a state declaration type string to QflType.
+/// e.g. "f64" → QflType::F64, "qty" → QflType::Qty, "i32" → QflType::I64
+pub fn parse_state_type(s: &str) -> QflType {
+    match s {
+        "f64" => QflType::F64,
+        "i32" | "i64" => QflType::I64,
+        "price" => QflType::Price,
+        "qty" => QflType::Qty,
+        "side" => QflType::Side,
+        "bool" => QflType::Bool,
+        "timestamp" => QflType::Timestamp,
+        "duration" => QflType::Duration,
+        "symbol" => QflType::Symbol,
+        "order_id" => QflType::OrderId,
+        _ => QflType::I64, // default
+    }
+}
+
 /// A type error with a message.
 #[derive(Debug, Clone, PartialEq)]
 pub struct TypeError {
@@ -358,6 +376,52 @@ impl TypeChecker {
                 for e in exprs { self.infer_expr(e); }
             }
             ExprStmt(expr) => { self.infer_expr(expr); }
+            Using { .. } => { /* setup directive — no codegen */ }
+            Window { .. } => { /* setup directive — no codegen */ }
+            State { name, type_name, default } => {
+                let st = parse_state_type(type_name);
+                if let Some(expr) = default {
+                    let et = self.infer_expr(expr);
+                    if et != st {
+                        self.error(format!("state '{}' declared as {}, default expr is {}", name, st, et));
+                    }
+                }
+                self.define(name, st);
+            }
+            FnDecl { name: _, params, return_type: _, body } => {
+                self.push_scope();
+                for p in params {
+                    let pt = parse_state_type(&p.type_name);
+                    self.define(&p.name, pt);
+                }
+                for s in body { self.check_stmt(s); }
+                self.pop_scope();
+            }
+            EventHandler { event, param, body } => {
+                self.push_scope();
+                if let Some(p) = param {
+                    let param_type = match event.as_str() {
+                        "trade" => QflType::Price,
+                        "depth" => QflType::Price,
+                        "fill" => QflType::Price,
+                        "eval" => QflType::I64,
+                        "timer" => QflType::Duration,
+                        "pnl_update" => QflType::F64,
+                        _ => QflType::I64,
+                    };
+                    self.define(p, param_type);
+                }
+                for s in body { self.check_stmt(s); }
+                self.pop_scope();
+            }
+            Feature { name, expr } => {
+                let _typ = self.infer_expr(expr);
+                self.define(name, QflType::F64);
+            }
+            Signal { name, expr } => {
+                let _typ = self.infer_expr(expr);
+                self.define(name, QflType::Bool);
+            }
         }
     }
 

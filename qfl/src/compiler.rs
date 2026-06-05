@@ -1,6 +1,7 @@
 use crate::ast::*;
-use crate::ir::QfrProgram;
+use crate::ir::{self, QfrProgram};
 use crate::opcodes::{Instruction, Opcode as O};
+use std::collections::HashMap;
 
 /// Compile a QFL Program into a QfrProgram (bytecode).
 pub fn compile(program: &Program) -> QfrProgram {
@@ -24,6 +25,7 @@ struct Compiler {
     persist_slots: Vec<(String, u8)>,
     next_persist_slot: u8,
     current_fn: Option<String>,
+    state_types: HashMap<String, bool>, // name → is_float
 }
 
 impl Compiler {
@@ -36,6 +38,7 @@ impl Compiler {
             persist_slots: Vec::new(),
             next_persist_slot: 0,
             current_fn: None,
+            state_types: HashMap::new(),
         }
     }
 
@@ -154,6 +157,58 @@ impl Compiler {
             }
             Stmt::ExprStmt(expr) => {
                 self.compile_expr_discard(expr);
+            }
+            Stmt::Using { .. } | Stmt::Window { .. } => {
+                // setup directives — no bytecode emitted
+            }
+            Stmt::State { name, type_name, default: _ } => {
+                // Allocate persist slot — compile_ident/compile_assign handle
+                // PersistGet/PersistSet lazily on first use in any function.
+                self.persist_slot(name);
+                let is_float = crate::types::parse_state_type(type_name).is_float();
+                self.state_types.insert(name.clone(), is_float);
+            }
+            Stmt::FnDecl { name, params, return_type: _, body } => {
+                let offset = self.prog.code.len() as u32;
+                self.prog.entries.push(ir::EntryPoint { name: name.clone(), code_offset: offset });
+                self.current_fn = Some(name.clone());
+                self.push_scope();
+                for p in params {
+                    let is_float = crate::types::parse_state_type(&p.type_name).is_float();
+                    let pr = if is_float { self.alloc_float() } else { self.alloc_int() };
+                    self.define_var(&p.name, pr, is_float);
+                }
+                for stmt in body {
+                    self.compile_stmt(stmt);
+                }
+                self.emit(Instruction::single(O::Ret));
+                self.pop_scope();
+                self.current_fn = None;
+            }
+            Stmt::EventHandler { event, param, body } => {
+                let fn_name = format!("on_{}", event);
+                let offset = self.prog.code.len() as u32;
+                self.prog.entries.push(ir::EntryPoint { name: fn_name.clone(), code_offset: offset });
+                self.current_fn = Some(fn_name);
+                self.push_scope();
+                if let Some(p) = param {
+                    let pr = self.alloc_int();
+                    self.define_var(p, pr, false);
+                }
+                for stmt in body {
+                    self.compile_stmt(stmt);
+                }
+                self.emit(Instruction::single(O::Ret));
+                self.pop_scope();
+                self.current_fn = None;
+            }
+            Stmt::Feature { name, expr } => {
+                let (r, _) = self.compile_expr(expr);
+                self.define_var(name, r, true);
+            }
+            Stmt::Signal { name, expr } => {
+                let (r, _) = self.compile_expr(expr);
+                self.define_var(name, r, false);
             }
         }
     }
@@ -527,13 +582,14 @@ impl Compiler {
     }
 
     fn compile_ident(&mut self, name: &str) -> (u8, bool) {
-        // Check persist first
+        // Check persist/state first — lazy PersistGet on first use
         for (pn, _) in &self.persist_slots {
             if pn == name {
-                let r = self.alloc_int();
+                let is_float = self.state_types.get(name).copied().unwrap_or(false);
+                let r = if is_float { self.alloc_float() } else { self.alloc_int() };
                 let slot = self.persist_slot(name);
                 self.emit(Instruction::rri(O::PersistGet, r, 0, slot as u32));
-                return (r, false);
+                return (r, is_float);
             }
         }
         // Trade convention builtins
@@ -1729,5 +1785,90 @@ end
         let program = parser::parse(src).unwrap();
         let result = compile_checked(&program);
         assert!(result.is_ok(), "strategy should type-check: {:?}", result.err());
+    }
+
+    // ── Phase 4g: feature/signal compilation ──
+
+    strategy_compiles!(test_feature_signal, "
+feature f1 = 1.0 + 2.0
+signal s1 = 1.0 > 0.5
+function on_eval() quince.log(\"ok\") end
+", 1, 4);
+
+    strategy_compiles!(test_state_persist_simple, "
+state x : f64 = 0.0
+function on_trade(t)
+    x = t
+end
+", 1, 4);
+
+    strategy_compiles!(test_state_event_handler, "
+state acc : f64 = 0.0
+on eval() {
+    quince.log(\"ok\")
+}
+", 1, 3);
+
+    #[test]
+    fn test_state_typed_compiles() {
+        let src = "state price : f64 = 100.0\nfunction on_eval() quince.log(\"ok\") end";
+        let program = parser::parse(src).unwrap();
+        let result = compile_checked(&program);
+        assert!(result.is_ok(), "state decl should type-check: {:?}", result.err());
+    }
+
+    #[test]
+    fn test_fn_typed_compiles() {
+        let src = "fn add(x: f64, y: f64) -> f64 { return x + y }\nfunction on_eval() quince.log(\"ok\") end";
+        let program = parser::parse(src).unwrap();
+        let result = compile_checked(&program);
+        assert!(result.is_ok(), "fn decl should type-check: {:?}", result.err());
+    }
+
+    #[test]
+    fn test_event_handler_compiles() {
+        let src = "on eval() { quince.log(\"ok\") }\nfunction on_eval_old() quince.log(\"done\") end";
+        let program = parser::parse(src).unwrap();
+        let result = compile_checked(&program);
+        assert!(result.is_ok(), "event handler should type-check: {:?}", result.err());
+    }
+
+    #[test]
+    fn test_state_persists_across_functions() {
+        // state x used in two functions — each should emit PersistGet
+        let src = "\
+state x : f64 = 0.0
+function on_trade(v)
+    x = x + 1.0
+end
+function on_eval()
+    quince.log(x)
+end
+";
+        let program = parser::parse(src).unwrap();
+        let result = compile_checked(&program);
+        assert!(result.is_ok(), "state cross-fn should type-check: {:?}", result.err());
+        let prog = compile(&program);
+        // Should have 2 entry points
+        assert!(prog.entries.len() >= 2, "should have at least 2 entries (on_trade + on_eval)");
+        // Should contain PersistGet opcode (54)
+        let has_persist_get = prog.code.iter().any(|i| i.opcode() == crate::opcodes::Opcode::PersistGet);
+        let has_persist_set = prog.code.iter().any(|i| i.opcode() == crate::opcodes::Opcode::PersistSet);
+        assert!(has_persist_get, "state must emit PersistGet");
+        assert!(has_persist_set, "state x = x + 1.0 must emit PersistSet");
+    }
+
+    #[test]
+    fn test_event_handler_type_check() {
+        let src = "\
+state acc : f64 = 0.0
+on eval() {
+    acc = acc + 1.0
+}
+function on_eval_old() quince.log(\"ok\") end
+";
+        let program = parser::parse(src).unwrap();
+        let result = compile_checked(&program);
+        assert!(result.is_ok(), "event handler should type-check: {:?}", result.err());
     }
 }

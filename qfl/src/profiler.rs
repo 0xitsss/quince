@@ -215,7 +215,7 @@ mod tests {
     #[test]
     fn record_opcode_max_opcode() {
         let mut p = Profiler::new();
-        p.record_opcode(O::MaxOpcode);
+        p.record_opcode(O::Halt);
         assert!(p.total_instructions > 0);
     }
 
