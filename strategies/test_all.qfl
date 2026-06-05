@@ -1,40 +1,36 @@
--- --USING ema 5
--- --USING bb 20 2.0
+@using ema:5
+@using bb:20:2.0
 
-@persist local call_count = 0
+state call_count : i64 = 0
 
-function on_trade(trade)
-    call_count = call_count + 1
-    local price = trade.price
-    local side = trade.side
-    local qty = trade.qty
-    local id = trade.trade_id
-    local t = trade.time
+on trade(t) {
+    state call_count = call_count + 1
+    feature price = t.price
+    feature ema = quince.get("ema")
 
-    local px = quince.price()
-    local pos = quince.position()
-    local ema = quince.get("ema")
+    feature px = quince.price()
+    feature pos = quince.position()
 
-    if ema > 0 and call_count > 5 then
+    if ema > 0 and call_count > 5 {
         quince.order(0, 0.5, 0)
         quince.log("test_all: buy signal")
-    end
-end
+    }
+}
 
-function on_depth()
+on depth() {
     quince.log("test_all: depth update")
-end
+}
 
-function on_fill(fill)
-    local fill_price = fill.price
-    local fill_qty = fill.qty
+on fill(f) {
+    feature fill_price = f.price
+    feature fill_qty = f.qty
     quince.log("test_all: fill received")
-end
+}
 
-function on_eval()
-    local bal = quince.balance("USDT")
-    local pos = quince.position()
-    local cnt = call_count
-    local price = quince.price()
+on eval() {
+    feature bal = quince.balance("USDT")
+    feature pos = quince.position()
+    feature cnt = call_count
+    feature price = quince.price()
     quince.log("test_all: eval")
-end
+}

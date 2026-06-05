@@ -1,5 +1,0 @@
-
-@persist local val = 0.0
-function on_eval()
-    val = 3.14159
-end

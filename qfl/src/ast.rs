@@ -376,3 +376,66 @@ impl fmt::Display for Stmt {
 
 /// The top-level QFL program: a list of statements
 pub type Program = Vec<Stmt>;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn display_binop_add() { assert_eq!(BinOp::Add.to_string(), "+"); }
+    #[test]
+    fn display_binop_sub() { assert_eq!(BinOp::Sub.to_string(), "-"); }
+    #[test]
+    fn display_binop_mul() { assert_eq!(BinOp::Mul.to_string(), "*"); }
+    #[test]
+    fn display_binop_div() { assert_eq!(BinOp::Div.to_string(), "/"); }
+    #[test]
+    fn display_binop_idiv() { assert_eq!(BinOp::IDiv.to_string(), "//"); }
+    #[test]
+    fn display_binop_mod() { assert_eq!(BinOp::Mod.to_string(), "%%"); }
+    #[test]
+    fn display_binop_pow() { assert_eq!(BinOp::Pow.to_string(), "^"); }
+    #[test]
+    fn display_binop_concat() { assert_eq!(BinOp::Concat.to_string(), ".."); }
+    #[test]
+    fn display_binop_eq() { assert_eq!(BinOp::Eq.to_string(), "=="); }
+    #[test]
+    fn display_binop_ne() { assert_eq!(BinOp::Ne.to_string(), "~="); }
+    #[test]
+    fn display_binop_lt() { assert_eq!(BinOp::Lt.to_string(), "<"); }
+    #[test]
+    fn display_unary_neg() { assert_eq!(UnaryOp::Neg.to_string(), "-"); }
+    #[test]
+    fn display_unary_not() { assert_eq!(UnaryOp::Not.to_string(), "not"); }
+    #[test]
+    fn display_unary_len() { assert_eq!(UnaryOp::Len.to_string(), "#"); }
+    #[test]
+    fn display_literal_i64() { assert_eq!(Literal::I64(42).to_string(), "42"); }
+    #[test]
+    fn display_literal_f64() { assert_eq!(Literal::F64(3.14).to_string(), "3.14"); }
+    #[test]
+    fn display_literal_bool() {
+        assert_eq!(Literal::Bool(true).to_string(), "true");
+        assert_eq!(Literal::Bool(false).to_string(), "false");
+    }
+    #[test]
+    fn display_literal_string() { assert_eq!(Literal::String("hello".into()).to_string(), "\"hello\""); }
+    #[test]
+    fn display_literal_nil() { assert_eq!(Literal::Nil.to_string(), "nil"); }
+    #[test]
+    fn display_expr_ident() { assert_eq!(Expr::Ident("x".into()).to_string(), "x"); }
+    #[test]
+    fn display_expr_fcall() {
+        let e = Expr::FnCall { name: "foo".into(), args: vec![Expr::Literal(Literal::I64(1))] };
+        assert_eq!(e.to_string(), "foo(1)");
+    }
+    #[test]
+    fn display_expr_binop() {
+        let e = Expr::Binary {
+            lhs: Box::new(Expr::Literal(Literal::I64(1))),
+            op: BinOp::Add,
+            rhs: Box::new(Expr::Literal(Literal::I64(2))),
+        };
+        assert_eq!(e.to_string(), "(1 + 2)");
+    }
+}

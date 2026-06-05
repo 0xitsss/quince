@@ -26,6 +26,13 @@ struct Compiler {
     next_persist_slot: u8,
     current_fn: Option<String>,
     state_types: HashMap<String, bool>, // name → is_float
+    fused_indicators: HashMap<String, FusedInfo>, // name → fused indicator info
+    next_ema_state: u8,
+}
+
+#[derive(Clone)]
+enum FusedInfo {
+    Ema { state_id: u8 },
 }
 
 impl Compiler {
@@ -39,6 +46,8 @@ impl Compiler {
             next_persist_slot: 0,
             current_fn: None,
             state_types: HashMap::new(),
+            fused_indicators: HashMap::new(),
+            next_ema_state: 0,
         }
     }
 
@@ -158,8 +167,26 @@ impl Compiler {
             Stmt::ExprStmt(expr) => {
                 self.compile_expr_discard(expr);
             }
-            Stmt::Using { .. } | Stmt::Window { .. } => {
-                // setup directives — no bytecode emitted
+            Stmt::Using { indicators } => {
+                for entry in indicators {
+                    let name = entry.name.as_str();
+                    for &period in &entry.params {
+                        match name {
+                            "ema" => {
+                                let sid = self.next_ema_state;
+                                self.next_ema_state += 1;
+                                let alpha = 2.0 / (period + 1.0);
+                                self.prog.ema_alphas.push(alpha);
+                                let ind_name = format!("ema{}", period as i64);
+                                self.fused_indicators.insert(ind_name, FusedInfo::Ema { state_id: sid });
+                            }
+                            _ => {}
+                        }
+                    }
+                }
+            }
+            Stmt::Window { .. } => {
+                // setup directive — no bytecode emitted
             }
             Stmt::State { name, type_name, default: _ } => {
                 // Allocate persist slot — compile_ident/compile_assign handle
@@ -215,11 +242,17 @@ impl Compiler {
 
     fn compile_var_decl(&mut self, names: &[String], init: Option<&Vec<Expr>>, persist: bool) {
         if persist {
-            for name in names {
+            for (i, name) in names.iter().enumerate() {
                 let slot = self.persist_slot(name);
-                let r = self.alloc_int();
+                let is_float = init.map_or(false, |exprs| {
+                    exprs.get(i).map_or(false, |e| matches!(e, Expr::Literal(Literal::F64(_))))
+                });
+                let r = if is_float { self.alloc_float() } else { self.alloc_int() };
                 self.emit(Instruction::rri(O::PersistGet, r, 0, slot as u32));
-                self.define_var(name, r, false);
+                self.define_var(name, r, is_float);
+                if is_float {
+                    self.state_types.insert(name.clone(), true);
+                }
             }
             // Note: init values are NOT applied on every call.
             // Persist variables carry their value across calls.
@@ -458,11 +491,12 @@ impl Compiler {
         // Pre-define function parameters as registers
         // Check for special entry point names to use trade convention
         let is_trade_entry = name == "on_trade";
+        let is_fill_entry = name == "on_fill";
         let saved_fn = self.current_fn.replace(name.to_string());
 
         self.push_scope();
         for (i, param) in params.iter().enumerate() {
-            if is_trade_entry && i < 5 {
+            if (is_trade_entry || is_fill_entry) && i < 5 {
                 // Trade entry convention: r0-r4 pre-loaded by VM
                 let r = i as u8;
                 let is_float = i < 2; // price, qty are floats; side, id, time are ints
@@ -575,9 +609,13 @@ impl Compiler {
     fn emit_ldi(&mut self, r: u8, val: i64) {
         if val >= i32::MIN as i64 && val <= i32::MAX as i64 {
             self.emit(Instruction::rri(O::Ldi, r, 0, val as u32));
-        } else {
-            // Use ri40 for large immediates
+        } else if val >= -(1i64 << 39) && val < (1i64 << 39) {
+            // Use ri40 for large immediates (fits in 40-bit signed)
             self.emit(Instruction::ri40(O::Ldi64, r, val));
+        } else {
+            // Fall back to constant pool — store as f64 (preserves i64 up to 2^53)
+            let idx = self.prog.intern_f64(val as f64);
+            self.emit(Instruction::rri(O::Ldc, r, 0, idx));
         }
     }
 
@@ -784,6 +822,21 @@ impl Compiler {
         match name {
             "quince.get" | "get" => {
                 let r = self.alloc_float();
+                // Check if this is a fused indicator (string literal name)
+                let fused = args.first().and_then(|a| {
+                    if let Expr::Literal(Literal::String(name)) = a {
+                        self.fused_indicators.get(name).cloned()
+                    } else {
+                        None
+                    }
+                });
+                if let Some(FusedInfo::Ema { state_id }) = fused {
+                    let val_r = self.alloc_float();
+                    self.emit(Instruction::ri(O::GetPrice, val_r, 0));
+                    self.emit(Instruction::rrr(O::Ema, val_r, state_id, r));
+                    return (r, true);
+                }
+                // Fallback: runtime GetInd
                 let arg_r = if args.is_empty() {
                     self.compile_literal(&Literal::String(String::new())).0
                 } else {
@@ -898,7 +951,10 @@ impl Compiler {
         // Handle `trade.price` → GetPrice, `trade.qty` → r1, etc.
         if let Expr::Ident(obj_name) = obj {
             if let Some(fname) = &self.current_fn {
-                if fname == "on_trade" && obj_name == "trade" {
+                let is_handler = (fname == "on_trade" && obj_name == "trade")
+                    || (fname == "on_fill" && obj_name == "fill")
+                    || (fname == "on_depth" && obj_name == "depth");
+                if is_handler {
                     match field {
                         "price" => {
                             let r = self.alloc_float();
@@ -1870,5 +1926,41 @@ function on_eval_old() quince.log(\"ok\") end
         let program = parser::parse(src).unwrap();
         let result = compile_checked(&program);
         assert!(result.is_ok(), "event handler should type-check: {:?}", result.err());
+    }
+
+    #[test]
+    fn test_on_fill_field_access_compiles() {
+        let src = "function on_fill(fill) local p = fill.price local q = fill.qty end";
+        let program = parser::parse(src).unwrap();
+        let result = compile_checked(&program);
+        assert!(result.is_ok(), "on_fill with field access: {:?}", result.err());
+    }
+
+    #[test]
+    fn test_state_persist_used_in_event_handler() {
+        let src = "\
+state x : f64 = 0.0
+on eval() {
+    x = x + 1.0
+}
+";
+        let program = parser::parse(src).unwrap();
+        let result = compile_checked(&program);
+        assert!(result.is_ok(), "state in event handler: {:?}", result.err());
+        let prog = compile(&program);
+        assert!(prog.code.iter().any(|i| i.opcode() == O::PersistGet));
+        assert!(prog.code.iter().any(|i| i.opcode() == O::PersistSet));
+    }
+
+    #[test]
+    fn test_expr_table_compiles() {
+        let prog = compile_str("local t = {}");
+        assert!(prog.code.len() >= 1);
+    }
+
+    #[test]
+    fn test_index_expr_compiles() {
+        let prog = compile_str("local t = {} local x = t[1]");
+        assert!(prog.code.len() >= 2);
     }
 }

@@ -1,5 +1,0 @@
-
-@persist local val = 0
-function on_eval()
-    val = quince.get("nonexistent")
-end

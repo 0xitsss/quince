@@ -1,35 +1,32 @@
--- --USING ema 5
--- --USING bb 20 2.0
+@using ema:5
+@using bb:20:2.0
 
-@persist position_size
-@persist last_entry
+state position_size : i64 = 0
+state last_entry : f64 = 0.0
 
-function on_trade(trade)
-    local price = trade.price
-    local side = trade.side
-    local qty = trade.qty
+on trade(t) {
+    feature price = t.price
+    feature mid = quince.get("bb.middle")
+    feature upper = quince.get("bb.upper")
+    feature lower = quince.get("bb.lower")
+    feature ema = quince.get("ema")
 
-    local mid = quince.get("bb.middle")
-    local upper = quince.get("bb.upper")
-    local lower = quince.get("bb.lower")
-    local ema = quince.get("ema")
-
-    if price < lower and ema > mid and position_size == 0 then
+    if price < lower and ema > mid and position_size == 0 {
         quince.order(0, 1.0, 0)
-        position_size = 1
-        last_entry = price
+        state position_size = 1
+        state last_entry = price
         quince.log("long entry")
-    end
+    }
 
-    if price > upper and ema < mid and position_size > 0 then
+    if price > upper and ema < mid and position_size > 0 {
         quince.order(1, 1.0, 0)
-        position_size = 0
+        state position_size = 0
         quince.log("exit")
-    end
-end
+    }
+}
 
-function on_eval()
-    local bal = quince.balance("USDT")
-    local pos = quince.position()
+on eval() {
+    feature bal = quince.balance("USDT")
+    feature pos = quince.position()
     quince.log("eval: scalper running")
-end
+}

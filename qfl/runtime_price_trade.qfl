@@ -1,5 +1,0 @@
-
-@persist local last = 0
-function on_trade(trade)
-    last = quince.price()
-end

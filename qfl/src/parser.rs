@@ -155,18 +155,20 @@ impl Parser {
         }
     }
 
-    // @using name:param name:param ...
+    // @using name[:param[:param...]] name ...
     fn parse_using(&mut self) -> Result<Stmt, ParseError> {
         self.advance();
         let mut indicators = Vec::new();
-        while matches!(self.peek(), Token::Ident(_)) && matches!(self.peek_at(1), Token::Colon) {
+        while matches!(self.peek(), Token::Ident(_)) {
             let name = self.expect_ident()?.to_lowercase();
-            self.advance(); // colon
             let mut params = Vec::new();
-            params.push(self.parse_number_value()?);
-            while matches!(self.peek(), Token::Colon) {
+            if matches!(self.peek(), Token::Colon) {
                 self.advance();
                 params.push(self.parse_number_value()?);
+                while matches!(self.peek(), Token::Colon) {
+                    self.advance();
+                    params.push(self.parse_number_value()?);
+                }
             }
             indicators.push(crate::ast::UsingEntry { name, params });
         }
@@ -199,19 +201,31 @@ impl Parser {
         Ok(Stmt::Signal { name, expr: Box::new(expr) })
     }
 
-    // state name : type [= expr]
+    // state name : type [= expr]   (declaration)
+    // state name = expr            (reassignment)
     fn parse_state(&mut self) -> Result<Stmt, ParseError> {
         self.advance();
         let name = self.expect_ident()?;
-        self.expect(&Token::Colon)?;
-        let type_name = self.expect_ident()?;
-        let default = if matches!(self.peek(), Token::Eq) {
+        if matches!(self.peek(), Token::Colon) {
+            // Declaration: state name : type [= expr]
             self.advance();
-            Some(Box::new(self.parse_expr()?))
+            let type_name = self.expect_ident()?;
+            let default = if matches!(self.peek(), Token::Eq) {
+                self.advance();
+                Some(Box::new(self.parse_expr()?))
+            } else {
+                None
+            };
+            Ok(Stmt::State { name, type_name, default })
         } else {
-            None
-        };
-        Ok(Stmt::State { name, type_name, default })
+            // Reassignment: state name = expr
+            self.expect(&Token::Eq)?;
+            let expr = self.parse_expr()?;
+            Ok(Stmt::Assign {
+                targets: vec![crate::ast::Expr::Ident(name)],
+                exprs: vec![expr],
+            })
+        }
     }
 
     // on event(param?) { body }
@@ -296,6 +310,30 @@ impl Parser {
     fn parse_if(&mut self) -> Result<Stmt, ParseError> {
         self.advance();
         let cond = Box::new(self.parse_expr()?);
+
+        // Brace syntax: if cond { body } [elseif cond { body }]* [else { body }]
+        if matches!(self.peek(), Token::LBrace) {
+            let then_body = self.parse_brace_block()?;
+
+            let mut elseif_branches = Vec::new();
+            let mut else_body = Vec::new();
+
+            while matches!(self.peek(), Token::ElseIf) {
+                self.advance();
+                let econd = Box::new(self.parse_expr()?);
+                let ebody = self.parse_brace_block()?;
+                elseif_branches.push((econd, ebody));
+            }
+
+            if matches!(self.peek(), Token::Else) {
+                self.advance();
+                else_body = self.parse_brace_block()?;
+            }
+
+            return Ok(Stmt::If { cond, then_body, elseif_branches, else_body });
+        }
+
+        // Legacy syntax: if cond then body [elseif cond then body]* [else body] end
         self.expect(&Token::Then)?;
         let then_body = self.parse_block_until(&[Token::Else, Token::ElseIf, Token::End])?;
 
@@ -532,6 +570,7 @@ impl Parser {
                     let obj = match &expr {
                         Expr::Ident(name) => name.clone(),
                         Expr::FieldAccess { field, .. } => field.clone(),
+                        Expr::MethodCall { method: m, .. } => m.clone(),
                         _ => return Err(self.err("method call requires an object")),
                     };
                     expr = Expr::MethodCall { obj, method, args };
@@ -1961,5 +2000,120 @@ until x >= 10
         // feature and signal must NOT be reserved — usable as variable names inside functions
         let prog = parse("function on_trade() local feature = 1 local signal = 2 end").unwrap();
         assert_eq!(prog.len(), 1);
+    }
+
+    #[test]
+    fn test_state_decl_all_types() {
+        let prog = parse("state a : i64\nstate b : f64\nstate c : bool\nstate d : timestamp\nstate e : duration\nstate f : price\nstate g : qty\nstate h : symbol\nstate i : side\nstate j : order_id").unwrap();
+        assert_eq!(prog.len(), 10);
+    }
+
+    #[test]
+    fn test_state_without_default() {
+        let prog = parse("state x : f64").unwrap();
+        match &prog[0] {
+            Stmt::State { name, type_name, default } => {
+                assert_eq!(name, "x");
+                assert_eq!(type_name, "f64");
+                assert!(default.is_none());
+            }
+            _ => panic!("expected State"),
+        }
+    }
+
+    #[test]
+    fn test_event_handler_trade_with_field_access() {
+        let prog = parse("on trade(t) { local p = t.price local q = t.qty }").unwrap();
+        assert_eq!(prog.len(), 1);
+        match &prog[0] {
+            Stmt::EventHandler { event, param, body } => {
+                assert_eq!(event, "trade");
+                assert_eq!(param.as_deref(), Some("t"));
+                assert_eq!(body.len(), 2);
+            }
+            _ => panic!("expected EventHandler"),
+        }
+    }
+
+    #[test]
+    fn test_event_handler_fill_with_field_access() {
+        let prog = parse("on fill(f) { local p = f.price local q = f.qty }").unwrap();
+        assert_eq!(prog.len(), 1);
+        match &prog[0] {
+            Stmt::EventHandler { event, param, body } => {
+                assert_eq!(event, "fill");
+                assert_eq!(param.as_deref(), Some("f"));
+                assert_eq!(body.len(), 2);
+            }
+            _ => panic!("expected EventHandler"),
+        }
+    }
+
+    #[test]
+    fn test_event_handler_no_body() {
+        let prog = parse("on eval() {}").unwrap();
+        match &prog[0] {
+            Stmt::EventHandler { event, body, .. } => {
+                assert_eq!(event, "eval");
+                assert!(body.is_empty());
+            }
+            _ => panic!("expected EventHandler"),
+        }
+    }
+
+    #[test]
+    fn test_fn_typed_with_empty_body() {
+        let prog = parse("fn empty() -> i64 {}").unwrap();
+        match &prog[0] {
+            Stmt::FnDecl { name, return_type, body, .. } => {
+                assert_eq!(name, "empty");
+                assert_eq!(return_type, "i64");
+                assert!(body.is_empty());
+            }
+            _ => panic!("expected FnDecl"),
+        }
+    }
+
+    #[test]
+    fn test_multiline_event_handler() {
+        let src = "
+on eval() {
+    local x = 1
+    local y = 2
+    local z = x + y
+}
+";
+        let prog = parse(src).unwrap();
+        assert_eq!(prog.len(), 1);
+        match &prog[0] {
+            Stmt::EventHandler { body, .. } => {
+                assert_eq!(body.len(), 3);
+            }
+            _ => panic!("expected EventHandler"),
+        }
+    }
+
+    #[test]
+    fn test_feature_and_signal_in_event_handler() {
+        let prog = parse("feature f = 1.0 + 2.0\nsignal s = 1.0 > 0.5\non eval() { quince.log(\"ok\") }").unwrap();
+        assert_eq!(prog.len(), 3);
+    }
+
+    #[test]
+    fn test_at_using_with_no_params() {
+        let prog = parse("@using cvd pmdi nmdi").unwrap();
+        match &prog[0] {
+            Stmt::Using { indicators } => {
+                assert_eq!(indicators.len(), 3);
+                assert!(indicators[0].params.is_empty());
+            }
+            _ => panic!("expected Using"),
+        }
+    }
+
+    #[test]
+    fn test_mixed_old_and_new_syntax() {
+        let prog = parse("function on_trade(trade) end\non eval() { quince.log(\"ok\") }").unwrap();
+        assert_eq!(prog.len(), 2);
     }
 }

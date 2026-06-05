@@ -1,63 +1,56 @@
--- --USING ma 20
+@using ma:20
 
-@persist local ma_sum = 0
-@persist local ma_count = 0
-@persist local position_size = 0
-@persist local entry_price = 0
+state ma_sum : f64 = 0.0
+state ma_count : i64 = 0
+state position_size : i64 = 0
+state entry_price : f64 = 0.0
 
-function on_trade(trade)
-  local price = trade.price
-  
-  -- Обновляем скользящее среднее
-  ma_sum = ma_sum + price
-  ma_count = ma_count + 1
-  
-  -- Берем последние 20 цен
-  if ma_count > 20 then
-    ma_count = 20
-  end
-  
-  -- Если еще не достаточно данных, ждем
-  if ma_count < 20 then
-    return
-  end
-  
-  local ma = ma_sum / ma_count
-  local deviation = (price - ma) / ma * 100
-  
-  -- Редкий сигнал: только при отклонении > 2%
-  local threshold = 2.0
-  
-  -- LONG: цена выше MA на 2%
-  if deviation > threshold and position_size == 0 then
-    quince.order(0, 1.0, 0)
-    position_size = 1
-    entry_price = price
-    quince.log("LONG rare signal")
-  end
-  
-  -- SHORT: цена ниже MA на 2%
-  if deviation < -threshold and position_size == 0 then
-    quince.order(1, 1.0, 0)
-    position_size = -1
-    entry_price = price
-    quince.log("SHORT rare signal")
-  end
-  
-  -- Выход: если отклонение вернулось к норме
-  if position_size > 0 and price < entry_price then
-    quince.order(1, 1.0, 0)
-    position_size = 0
-    quince.log("LONG close")
-  end
-  
-  if position_size < 0 and price > entry_price then
-    quince.order(0, 1.0, 0)
-    position_size = 0
-    quince.log("SHORT close")
-  end
-end
+on trade(t) {
+    feature price = t.price
 
-function on_eval()
-  quince.log("rare_signal eval")
-end
+    state ma_sum = ma_sum + price
+    state ma_count = ma_count + 1
+
+    if ma_count > 20 {
+        state ma_count = 20
+    }
+
+    if ma_count < 20 {
+        return
+    }
+
+    feature ma = ma_sum / ma_count
+    feature deviation = (price - ma) / ma * 100
+
+    feature threshold = 2.0
+
+    if deviation > threshold and position_size == 0 {
+        quince.order(0, 1.0, 0)
+        state position_size = 1
+        state entry_price = price
+        quince.log("LONG rare signal")
+    }
+
+    if deviation < -threshold and position_size == 0 {
+        quince.order(1, 1.0, 0)
+        state position_size = -1
+        state entry_price = price
+        quince.log("SHORT rare signal")
+    }
+
+    if position_size > 0 and price < entry_price {
+        quince.order(1, 1.0, 0)
+        state position_size = 0
+        quince.log("LONG close")
+    }
+
+    if position_size < 0 and price > entry_price {
+        quince.order(0, 1.0, 0)
+        state position_size = 0
+        quince.log("SHORT close")
+    }
+}
+
+on eval() {
+    quince.log("rare_signal eval")
+}

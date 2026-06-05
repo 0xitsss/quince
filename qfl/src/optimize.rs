@@ -1489,4 +1489,80 @@ mod tests {
         assert_eq!(opt.code[2].opcode(), O::Add);
         assert_eq!(opt.code[3].opcode(), O::Mov);
     }
+
+    #[test]
+    fn fold_bitxor_with_constants() {
+        let p = make_prog(vec![
+            I::rri(O::Ldi, 0, 0, 0b1100),
+            I::rri(O::Ldi, 1, 0, 0b1010),
+            I::rrr(O::BitXor, 2, 0, 1),
+        ]);
+        let opt = constant_fold(&p);
+        assert_eq!(opt.code[2].imm_signed(), 0b0110);
+    }
+
+    #[test]
+    fn fold_shr_with_constants() {
+        let p = make_prog(vec![
+            I::rri(O::Ldi, 0, 0, 256),
+            I::rri(O::Ldi, 1, 0, 8),
+            I::rrr(O::Shr, 2, 0, 1),
+        ]);
+        let opt = constant_fold(&p);
+        assert_eq!(opt.code[2].imm_signed(), 1);
+    }
+
+    #[test]
+    fn fold_ne_with_constants() {
+        let p = make_prog(vec![
+            I::rri(O::Ldi, 0, 0, 5),
+            I::rri(O::Ldi, 1, 0, 3),
+            I::rrr(O::Ne, 2, 0, 1),
+        ]);
+        let opt = constant_fold(&p);
+        assert_eq!(opt.code[2].imm_signed(), 1);
+    }
+
+    #[test]
+    fn fold_le_with_constants() {
+        let p = make_prog(vec![
+            I::rri(O::Ldi, 0, 0, 3),
+            I::rri(O::Ldi, 1, 0, 5),
+            I::rrr(O::Le, 2, 0, 1),
+        ]);
+        let opt = constant_fold(&p);
+        assert_eq!(opt.code[2].imm_signed(), 1);
+    }
+
+    #[test]
+    fn fold_ge_with_constants() {
+        let p = make_prog(vec![
+            I::rri(O::Ldi, 0, 0, 5),
+            I::rri(O::Ldi, 1, 0, 3),
+            I::rrr(O::Ge, 2, 0, 1),
+        ]);
+        let opt = constant_fold(&p);
+        assert_eq!(opt.code[2].imm_signed(), 1);
+    }
+
+    #[test]
+    fn cse_fadd_eliminated_large_regs() {
+        let p = make_prog(vec![
+            I::rrr(O::FAdd, 200, 192, 193),
+            I::rrr(O::FAdd, 201, 192, 193),
+        ]);
+        let opt = common_subexpr_elim(&p);
+        assert_eq!(opt.code.len(), 2);
+        assert_eq!(opt.code[1].opcode(), O::Mov);
+    }
+
+    #[test]
+    fn dce_no_entries_removes_all() {
+        let p = make_prog(vec![
+            I::rri(O::Ldi, 0, 0, 1),
+            I::single(O::Ret),
+        ]);
+        let opt = dead_code_eliminate(&p);
+        assert!(opt.code.is_empty());
+    }
 }

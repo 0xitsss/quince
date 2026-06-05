@@ -93,3 +93,108 @@ pub enum PositionSide {
     Short,
     None,
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn side_from_taker_buy() {
+        assert_eq!(Side::from_taker("buy"), Side::Buy);
+    }
+
+    #[test]
+    fn side_from_taker_buy_upper() {
+        assert_eq!(Side::from_taker("BUY"), Side::Buy);
+    }
+
+    #[test]
+    fn side_from_taker_buy_stream() {
+        assert_eq!(Side::from_taker("takerBuy"), Side::Buy);
+    }
+
+    #[test]
+    fn side_from_taker_sell_default() {
+        assert_eq!(Side::from_taker("sell"), Side::Sell);
+    }
+
+    #[test]
+    fn side_from_taker_unknown() {
+        assert_eq!(Side::from_taker("unknown"), Side::Sell);
+    }
+
+    #[test]
+    fn side_debug_buy() {
+        assert_eq!(format!("{:?}", Side::Buy), "Buy");
+    }
+
+    #[test]
+    fn side_partial_eq() {
+        assert_eq!(Side::Buy, Side::Buy);
+        assert_ne!(Side::Buy, Side::Sell);
+    }
+
+    #[test]
+    fn order_type_partial_eq() {
+        assert_eq!(OrderType::Market, OrderType::Market);
+        assert_ne!(OrderType::Market, OrderType::Limit);
+    }
+
+    #[test]
+    fn position_side_partial_eq() {
+        assert_eq!(PositionSide::Long, PositionSide::Long);
+        assert_eq!(PositionSide::Short, PositionSide::Short);
+        assert_eq!(PositionSide::None, PositionSide::None);
+    }
+
+    #[test]
+    fn trade_default_fields() {
+        let t = Trade {
+            price: 50000.0,
+            qty: 0.1,
+            time: chrono::Utc::now(),
+            side: Side::Buy,
+            trade_id: 1,
+        };
+        assert_eq!(t.price, 50000.0);
+        assert_eq!(t.trade_id, 1);
+    }
+
+    #[test]
+    fn depth_level_default() {
+        let dl = DepthLevel { price: 100.0, qty: 1.5 };
+        assert_eq!(dl.price, 100.0);
+        assert_eq!(dl.qty, 1.5);
+    }
+
+    #[test]
+    fn order_new_market() {
+        let o = Order {
+            symbol: "btcusdt".into(),
+            side: Side::Buy,
+            qty: 1.0,
+            price: None,
+            order_type: OrderType::Market,
+            reduce_only: false,
+            stop_loss: None,
+            take_profit: None,
+        };
+        assert_eq!(o.symbol, "btcusdt");
+        assert_eq!(o.order_type, OrderType::Market);
+    }
+
+    #[test]
+    fn order_fill_has_fee() {
+        let f = OrderFill {
+            order_id: "test".into(),
+            side: Side::Sell,
+            price: 50000.0,
+            qty: 0.5,
+            fee: 25.0,
+            fee_asset: "USDT".into(),
+            time: chrono::Utc::now(),
+        };
+        assert_eq!(f.fee, 25.0);
+        assert_eq!(f.fee_asset, "USDT");
+    }
+}

@@ -34,6 +34,7 @@ impl TradeLog {
         if let Err(e) = writeln!(writer, "{}", line) {
             tracing::error!("trade log write: {}", e);
         }
+        let _ = writer.flush();
     }
 }
 
@@ -136,6 +137,102 @@ mod tests {
         }
         let content = std::fs::read_to_string(path).unwrap();
         assert_eq!(content.lines().count(), 2);
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn test_log_zero_qty() {
+        let path = "test_log_zero.log";
+        let _ = std::fs::remove_file(path);
+        let mut log = TradeLog::new(path);
+        let fill = make_fill("zero", 50000.0, 0.0, Side::Buy);
+        log.log_fill(&fill);
+        let content = std::fs::read_to_string(path).unwrap();
+        assert!(content.contains("\"qty\":0.0"));
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn test_log_large_values() {
+        let path = "test_log_large.log";
+        let _ = std::fs::remove_file(path);
+        let mut log = TradeLog::new(path);
+        let fill = OrderFill {
+            order_id: "large".into(),
+            side: Side::Buy,
+            price: 999999.99,
+            qty: 999.999,
+            fee: 0.01,
+            fee_asset: "BTC".into(),
+            time: chrono::Utc::now(),
+        };
+        log.log_fill(&fill);
+        let content = std::fs::read_to_string(path).unwrap();
+        assert!(content.contains("999999.99"));
+        assert!(content.contains("999.999"));
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn test_log_unicode_symbol() {
+        let path = "test_log_uni.log";
+        let _ = std::fs::remove_file(path);
+        let mut log = TradeLog::new(path);
+        let fill = OrderFill {
+            order_id: "uni".into(),
+            side: Side::Buy,
+            price: 0.0001,
+            qty: 1000.0,
+            fee: 0.1,
+            fee_asset: "USDT".into(),
+            time: chrono::Utc::now(),
+        };
+        log.log_fill(&fill);
+        let content = std::fs::read_to_string(path).unwrap();
+        assert!(content.contains("uni"));
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn test_log_overwrite_same_path() {
+        let path = "test_log_overwrite.log";
+        let _ = std::fs::remove_file(path);
+        {
+            let mut log = TradeLog::new(path);
+            log.log_fill(&make_fill("old", 100.0, 0.1, Side::Buy));
+        }
+        {
+            let mut log = TradeLog::new(path);
+            log.log_fill(&make_fill("new", 200.0, 0.2, Side::Sell));
+        }
+        let content = std::fs::read_to_string(path).unwrap();
+        assert!(content.contains("old"));
+        assert!(content.contains("new"));
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn test_log_json_valid() {
+        let path = "test_log_json.log";
+        let _ = std::fs::remove_file(path);
+        let mut log = TradeLog::new(path);
+        log.log_fill(&make_fill("json_test", 50000.0, 0.5, Side::Buy));
+        let content = std::fs::read_to_string(path).unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(content.trim()).unwrap();
+        assert_eq!(parsed["order_id"], "json_test");
+        assert_eq!(parsed["side"], "Buy");
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn test_log_empty_order_id() {
+        let path = "test_log_empty_id.log";
+        let _ = std::fs::remove_file(path);
+        let mut log = TradeLog::new(path);
+        let fill = make_fill("", 100.0, 0.1, Side::Sell);
+        log.log_fill(&fill);
+        let content = std::fs::read_to_string(path).unwrap();
+        assert!(content.contains("\"order_id\":\"\""));
         let _ = std::fs::remove_file(path);
     }
 }

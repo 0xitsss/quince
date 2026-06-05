@@ -301,4 +301,109 @@ mod tests {
         assert!((po.avg_price - 101.0).abs() < 1e-12); // (0.5*100 + 0.5*102) / 1.0
         assert!(matches!(po.status, PendingStatus::Filled));
     }
+
+    #[test]
+    fn new_order_manager_empty() {
+        let om = OrderManager::new();
+        assert!(om.orders.is_empty());
+        assert!(om.exchange_to_client.is_empty());
+    }
+
+    #[test]
+    fn register_creates_waiting_order() {
+        let mut om = OrderManager::new();
+        let id = om.register(buy_order(None, None));
+        let po = om.get(&id).unwrap();
+        assert!(matches!(po.status, PendingStatus::Waiting));
+    }
+
+    #[test]
+    fn mark_placed_updates_status() {
+        let mut om = OrderManager::new();
+        let id = om.register(buy_order(None, None));
+        om.mark_placed(&id, "exchange_1".into());
+        let po = om.get(&id).unwrap();
+        assert!(matches!(po.status, PendingStatus::Placed { .. }));
+    }
+
+    #[test]
+    fn mark_failed_updates_status() {
+        let mut om = OrderManager::new();
+        let id = om.register(buy_order(None, None));
+        om.mark_failed(&id, "insufficient funds".into());
+        let po = om.get(&id).unwrap();
+        assert!(matches!(po.status, PendingStatus::Failed(_)));
+    }
+
+    #[test]
+    fn mark_cancelled_updates_status() {
+        let mut om = OrderManager::new();
+        let id = om.register(buy_order(None, None));
+        om.cancel(&id);
+        let po = om.get(&id).unwrap();
+        assert!(matches!(po.status, PendingStatus::Cancelled));
+    }
+
+    #[test]
+    fn pending_order_ids_returns_only_active() {
+        let mut om = OrderManager::new();
+        let id1 = om.register(buy_order(None, None));
+        let id2 = om.register(buy_order(None, None));
+        om.mark_placed(&id1, "ex1".into());
+        om.cancel(&id2);
+        let pending = om.pending_order_ids();
+        assert_eq!(pending.len(), 1);
+        assert_eq!(pending[0], id1);
+    }
+
+    #[test]
+    fn cleanup_filled_removes_non_active() {
+        let mut om = OrderManager::new();
+        let id1 = om.register(buy_order(None, None));
+        let id2 = om.register(buy_order(None, None));
+        om.mark_placed(&id1, "ex1".into());
+        om.update_fill(&id1, 1.0, 100.0);
+        om.cancel(&id2);
+        om.cleanup_filled();
+        assert_eq!(om.orders.len(), 0);
+    }
+
+    #[test]
+    fn find_client_by_exchange_id() {
+        let mut om = OrderManager::new();
+        let id = om.register(buy_order(None, None));
+        om.mark_placed(&id, "ex_id".into());
+        assert_eq!(om.find_client_by_exchange_id("ex_id"), Some(id.as_str()));
+        assert_eq!(om.find_client_by_exchange_id("unknown"), None);
+    }
+
+    #[test]
+    fn remove_exchange_mapping() {
+        let mut om = OrderManager::new();
+        let id = om.register(buy_order(None, None));
+        om.mark_placed(&id, "ex_id".into());
+        om.remove_exchange_mapping("ex_id");
+        assert_eq!(om.find_client_by_exchange_id("ex_id"), None);
+    }
+
+    #[test]
+    fn active_sl_tp_for_sell_order_returns_buy() {
+        let mut om = OrderManager::new();
+        let order = Order {
+            symbol: "btcusdt".into(),
+            side: Side::Sell,
+            qty: 1.0,
+            price: None,
+            order_type: OrderType::Market,
+            reduce_only: false,
+            stop_loss: Some(110.0),
+            take_profit: Some(90.0),
+        };
+        let id = om.register(order);
+        om.mark_placed(&id, "ex1".into());
+        om.update_fill(&id, 1.0, 100.0);
+        let stops = om.active_sl_tp();
+        assert_eq!(stops.len(), 1);
+        assert_eq!(stops[0].side, Side::Buy); // sell→close with buy
+    }
 }

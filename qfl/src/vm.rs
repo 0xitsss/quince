@@ -183,7 +183,7 @@ impl Vm {
         let indicator_map = HashMap::new();
         let balance_map = HashMap::new();
 
-        Vm {
+        let mut vm = Vm {
             regs: [Register::default(); NUM_REGS],
             pc: 0,
             running: false,
@@ -219,7 +219,14 @@ impl Vm {
             ema_states: [EmaState::default(); MAX_EMA_STATES],
             profiler: None,
             tracer: None,
+        };
+        // Initialize EMA alphas from compiled program
+        for (i, alpha) in program.ema_alphas.iter().enumerate() {
+            if i < MAX_EMA_STATES {
+                vm.ema_states[i].alpha = *alpha;
+            }
         }
+        vm
     }
 
     // ── Register access helpers ──
@@ -1755,5 +1762,115 @@ mod tests {
         let mut vm = Vm::new(prog);
         vm.call("main");
         assert!((vm.reg_f(193) - 100.0).abs() < 0.001);
+    }
+
+    #[test]
+    fn persist_get_unset_returns_zero() {
+        let mut vm = Vm::new(make_prog(vec![
+            Instruction::rri(Opcode::PersistGet, 1, 0, 0),
+            Instruction::single(Opcode::Halt),
+        ]));
+        vm.call("main");
+        assert_eq!(vm.reg_i(1), 0);
+    }
+
+    #[test]
+    fn getprice_returns_zero_when_not_set() {
+        let mut vm = Vm::new(make_prog(vec![
+            Instruction::ri(Opcode::GetPrice, 192, 0),
+            Instruction::single(Opcode::Halt),
+        ]));
+        vm.call("main");
+        assert!((vm.reg_f(192) - 0.0).abs() < 0.001);
+    }
+
+    #[test]
+    fn getpos_returns_zero_when_not_set() {
+        let mut vm = Vm::new(make_prog(vec![
+            Instruction::ri(Opcode::GetPos, 192, 0),
+            Instruction::single(Opcode::Halt),
+        ]));
+        vm.call("main");
+        assert!((vm.reg_f(192) - 0.0).abs() < 0.001);
+    }
+
+    #[test]
+    fn set_indicator_by_slot_works() {
+        let mut vm = Vm::new(make_prog(vec![
+            Instruction::single(Opcode::Halt),
+        ]));
+        vm.set_indicator_by_slot(0, 42.5);
+        assert!((vm.indicators[0] - 42.5).abs() < 0.001);
+    }
+
+    #[test]
+    fn mov_between_float_regs() {
+        let mut prog = QfrProgram::new();
+        let fv = prog.intern_f64(3.14);
+        prog.entries.push(EntryPoint { name: "main".into(), code_offset: 0 });
+        prog.code = vec![
+            Instruction::rri(Opcode::Ldc, 192, 0, fv),
+            Instruction::rr(Opcode::Mov, 193, 192),
+            Instruction::single(Opcode::Halt),
+        ];
+        let mut vm = Vm::new(prog);
+        vm.call("main");
+        assert!((vm.reg_f(193) - 3.14).abs() < 0.001);
+    }
+
+    #[test]
+    fn jz_with_large_offset() {
+        let mut vm = Vm::new(make_prog(vec![
+            Instruction::rri(Opcode::Ldi, 0, 0, 0),
+            Instruction::rri(Opcode::Jz, 0, 0, 2),
+            Instruction::rri(Opcode::Ldi, 1, 0, 99),
+            Instruction::single(Opcode::Halt),
+            Instruction::rri(Opcode::Ldi, 1, 0, 42),
+            Instruction::single(Opcode::Halt),
+        ]));
+        vm.call("main");
+        assert_eq!(vm.reg_i(1), 42);
+    }
+
+    #[test]
+    fn neg_zero_returns_zero() {
+        let mut prog = QfrProgram::new();
+        let fv = prog.intern_f64(0.0);
+        prog.entries.push(EntryPoint { name: "main".into(), code_offset: 0 });
+        prog.code = vec![
+            Instruction::rri(Opcode::Ldc, 192, 0, fv),
+            Instruction::rr(Opcode::FNeg, 193, 192),
+            Instruction::single(Opcode::Halt),
+        ];
+        let mut vm = Vm::new(prog);
+        vm.call("main");
+        assert!((vm.reg_f(193) - 0.0).abs() < 0.001);
+    }
+
+    #[test]
+    fn getdepthbid_no_levels_returns_zero() {
+        let mut vm = Vm::new(make_prog(vec![
+            Instruction::rri(Opcode::Ldi, 0, 0, 0),
+            Instruction::rrr(Opcode::GetDepthBid, 192, 0, 0),
+            Instruction::single(Opcode::Halt),
+        ]));
+        vm.set_depth_bids(vec![]);
+        vm.call("main");
+        assert!((vm.reg_f(192) - 0.0).abs() < 0.001);
+    }
+
+    #[test]
+    fn f2i_with_negative_float() {
+        let mut prog = QfrProgram::new();
+        let fv = prog.intern_f64(-3.7);
+        prog.entries.push(EntryPoint { name: "main".into(), code_offset: 0 });
+        prog.code = vec![
+            Instruction::rri(Opcode::Ldc, 192, 0, fv),
+            Instruction::rr(Opcode::F2I, 0, 192),
+            Instruction::single(Opcode::Halt),
+        ];
+        let mut vm = Vm::new(prog);
+        vm.call("main");
+        assert_eq!(vm.reg_i(0), -3);
     }
 }

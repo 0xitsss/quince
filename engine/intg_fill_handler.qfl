@@ -1,5 +1,0 @@
-
-function on_fill(fill)
-    local p = fill.price
-    local q = fill.qty
-end

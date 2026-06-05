@@ -420,3 +420,46 @@ impl<E: Exchange> Engine<E> {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn engine_error_exchange_display() {
+        let msg = EngineError::Exchange(ExchangeError::Ws("timeout".into())).to_string();
+        assert!(msg.contains("Exchange error"));
+    }
+
+    #[test]
+    fn engine_error_strategy_display() {
+        let msg = EngineError::Strategy("compilation failed".into()).to_string();
+        assert!(msg.contains("compilation failed"));
+    }
+
+    #[test]
+    fn engine_error_risk_display() {
+        let msg = EngineError::RiskRejected("max drawdown exceeded".into()).to_string();
+        assert!(msg.contains("Risk rejected"));
+    }
+
+    #[test]
+    fn engine_error_order_timeout_display() {
+        let msg = EngineError::OrderTimeout("order 123".into()).to_string();
+        assert!(msg.contains("Order timeout"));
+    }
+
+    #[test]
+    fn constants_defined() {
+        assert_eq!(ORDER_TIMEOUT, Duration::from_secs(30));
+        assert_eq!(EVAL_INTERVAL, Duration::from_secs(1));
+        assert_eq!(ACCOUNT_SYNC_INTERVAL, Duration::from_secs(10));
+        assert_eq!(IDLE_SLEEP_MS, 1);
+    }
+
+    #[test]
+    fn engine_error_from_exchange_error() {
+        let e: EngineError = ExchangeError::Ws("fail".into()).into();
+        assert!(matches!(e, EngineError::Exchange(_)));
+    }
+}

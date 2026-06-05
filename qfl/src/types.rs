@@ -289,7 +289,9 @@ impl TypeChecker {
                                 continue;
                             };
                             if let Some(var_type) = self.lookup(name) {
-                                if var_type != rhs_type {
+                                let compatible = var_type == rhs_type
+                                    || (var_type.is_float() && rhs_type.is_float());
+                                if !compatible {
                                     self.error(format!("cannot assign {} to {} variable '{}'",
                                         rhs_type, var_type, name));
                                 }
@@ -401,9 +403,9 @@ impl TypeChecker {
                 self.push_scope();
                 if let Some(p) = param {
                     let param_type = match event.as_str() {
-                        "trade" => QflType::Price,
-                        "depth" => QflType::Price,
-                        "fill" => QflType::Price,
+                        "trade" => QflType::Symbol,
+                        "depth" => QflType::Symbol,
+                        "fill" => QflType::Symbol,
                         "eval" => QflType::I64,
                         "timer" => QflType::Duration,
                         "pnl_update" => QflType::F64,
@@ -442,9 +444,11 @@ impl TypeChecker {
             };
             self.define(param, typ);
         }
-        // For on_trade, also make "trade" object available
-        if is_trade {
-            self.define("trade", QflType::Symbol);
+        // For on_trade and on_fill, make the object available for field access
+        if let Some(param) = params.first() {
+            if fn_name == "on_trade" || fn_name == "on_fill" || fn_name == "on_depth" {
+                self.define(param, QflType::Symbol);
+            }
         }
     }
 

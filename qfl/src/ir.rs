@@ -31,6 +31,7 @@ pub struct QfrProgram {
     pub const_pool: Vec<ConstEntry>,
     pub code: Vec<Instruction>,
     pub const_map: HashMap<String, u32>,
+    pub ema_alphas: Vec<f64>,
 }
 
 impl QfrProgram {
@@ -40,6 +41,7 @@ impl QfrProgram {
             const_pool: Vec::new(),
             code: Vec::new(),
             const_map: HashMap::new(),
+            ema_alphas: Vec::new(),
         }
     }
 
@@ -387,7 +389,7 @@ pub fn deserialize_binarized(data: &[u8]) -> Result<QfrProgram, String> {
         code.push(Instruction::decode(&bytes));
     }
 
-    Ok(QfrProgram { entries, const_pool, code, const_map })
+    Ok(QfrProgram { entries, const_pool, code, const_map, ema_alphas: Vec::new() })
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -550,7 +552,7 @@ pub fn deserialize_v1(data: &[u8]) -> Result<QfrProgram, String> {
         }
     }
 
-    Ok(QfrProgram { entries, const_pool, code, const_map })
+    Ok(QfrProgram { entries, const_pool, code, const_map, ema_alphas: Vec::new() })
 }
 
 // Alias for backward compatibility

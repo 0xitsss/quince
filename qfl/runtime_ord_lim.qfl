@@ -1,4 +1,0 @@
-
-function on_eval()
-    quince.order(0, 1.0, 50000.0, 1)
-end

@@ -1,30 +1,30 @@
--- --USING ema 9 50
--- --USING ema 5 20
+@using ema:9:50
+@using ema:5:20
 
-@persist position_size
-@persist last_entry
+state position_size : i64 = 0
+state last_entry : f64 = 0.0
 
-function on_trade(trade)
-    local fast = quince.get("ema9")
-    local slow = quince.get("ema50")
+on trade(t) {
+    feature fast = quince.get("ema9")
+    feature slow = quince.get("ema50")
 
-    if fast > slow and position_size <= 0 then
+    if fast > slow and position_size <= 0 {
         quince.order(0, 1.0, 0)
-        position_size = 1
-        last_entry = trade.price
+        state position_size = 1
+        state last_entry = t.price
         quince.log("ema9 cross above ema50: long entry")
-    end
+    }
 
-    if fast < slow and position_size > 0 then
+    if fast < slow and position_size > 0 {
         quince.order(1, 1.0, 0)
-        position_size = 0
+        state position_size = 0
         quince.log("ema9 cross below ema50: exit")
-    end
-end
+    }
+}
 
-function on_eval()
-    local bal = quince.balance("USDT")
-    local pos = quince.position()
-    local price = quince.price()
+on eval() {
+    feature bal = quince.balance("USDT")
+    feature pos = quince.position()
+    feature price = quince.price()
     quince.log("eval: balance usdt pos price")
-end
+}

@@ -266,6 +266,7 @@ impl Lexer {
                         Some('\\') => s.push('\\'),
                         Some('"') => s.push('"'),
                         Some('\'') => s.push('\''),
+                        Some('r') => s.push('\r'),
                         Some(c) => s.push(c),
                         None => {
                             return Err(LexerError {
@@ -329,22 +330,7 @@ impl Lexer {
             Some(c) => c,
         };
 
-        // Single-line comment
-        if c == '-' && self.peek_ahead(1) == Some('-') {
-            self.advance(); // first -
-            self.advance(); // second -
-            let mut content = String::new();
-            while let Some(ch) = self.peek() {
-                if ch == '\n' {
-                    break;
-                }
-                content.push(ch);
-                self.advance();
-            }
-            return Ok(Token::Comment(content));
-        }
-
-        // Multi-line comment --[[ ... ]]
+        // Multi-line comment --[[ ... ]] (check BEFORE single-line)
         if c == '-' && self.peek_ahead(1) == Some('-')
             && self.peek_ahead(2) == Some('[') && self.peek_ahead(3) == Some('[')
         {
@@ -363,6 +349,21 @@ impl Lexer {
                     }),
                     Some(c) => content.push(c),
                 }
+            }
+            return Ok(Token::Comment(content));
+        }
+
+        // Single-line comment
+        if c == '-' && self.peek_ahead(1) == Some('-') {
+            self.advance(); // first -
+            self.advance(); // second -
+            let mut content = String::new();
+            while let Some(ch) = self.peek() {
+                if ch == '\n' {
+                    break;
+                }
+                content.push(ch);
+                self.advance();
             }
             return Ok(Token::Comment(content));
         }
@@ -941,7 +942,7 @@ mod tests {
     #[test]
     fn test_very_deep_nested_brackets() {
         let tokens = tokenize("((((((((((1))))))))))").unwrap();
-        assert_eq!(tokens.len(), 21); // 10 x LParen + Number + 10 x RParen + Eof
+        assert_eq!(tokens.len(), 22); // 10 x LParen + Number + 10 x RParen + Eof
         for i in 0..10 {
             assert_eq!(tokens[i], Token::LParen, "LParen at index {}", i);
         }
@@ -949,5 +950,63 @@ mod tests {
         for i in 11..21 {
             assert_eq!(tokens[i], Token::RParen, "RParen at index {}", i);
         }
+    }
+
+    #[test]
+    fn test_line_comment() {
+        let tokens = tokenize("-- comment\n42").unwrap();
+        assert_eq!(tokens[0], Token::Comment(" comment".into()));
+        assert_eq!(tokens[1], Token::Number("42".into()));
+    }
+
+    #[test]
+    fn test_block_comment() {
+        let tokens = tokenize("--[[ block ]]\n42").unwrap();
+        assert_eq!(tokens[0], Token::Comment(" block ".into()));
+        assert_eq!(tokens[1], Token::Number("42".into()));
+    }
+
+    #[test]
+    fn test_arrow_token() {
+        let tokens = tokenize("->").unwrap();
+        assert_eq!(tokens[0], Token::Arrow);
+    }
+
+    #[test]
+    fn test_colon_number_dot() {
+        let tokens = tokenize(":42.0").unwrap();
+        assert_eq!(tokens[0], Token::Colon);
+        assert_eq!(tokens[1], Token::Number("42.0".into()));
+    }
+
+    #[test]
+    fn test_backslash_escape_t() {
+        let tokens = tokenize("\"\\t\"").unwrap();
+        assert_eq!(tokens[0], Token::String("\t".into()));
+    }
+
+    #[test]
+    fn test_backslash_escape_n() {
+        let tokens = tokenize("\"\\n\"").unwrap();
+        assert_eq!(tokens[0], Token::String("\n".into()));
+    }
+
+    #[test]
+    fn test_backslash_escape_r() {
+        let tokens = tokenize("\"\\r\"").unwrap();
+        assert_eq!(tokens[0], Token::String("\r".into()));
+    }
+
+    #[test]
+    fn test_hex_lowercase() {
+        let tokens = tokenize("0xabcdef").unwrap();
+        assert_eq!(tokens[0], Token::Number("0xabcdef".into()));
+    }
+
+    #[test]
+    fn test_token_display() {
+        let tk = Token::Ident("hello".into());
+        let s = format!("{:?}", tk);
+        assert!(s.contains("hello"));
     }
 }

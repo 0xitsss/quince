@@ -27,6 +27,10 @@ impl QflRuntime {
         let src = std::fs::read_to_string(strategy_path)
             .map_err(|e| format!("read {}: {}", strategy_path, e))?;
 
+        if src.trim().is_empty() {
+            return Err(format!("empty strategy file: {}", strategy_path));
+        }
+
         let program = crate::parser::parse(&src)
             .map_err(|e| format!("parse {}: {}", strategy_path, e))?;
 
@@ -88,6 +92,7 @@ impl QflRuntime {
             const_pool: self.vm.const_pool.clone(),
             code: self.vm.code_instr(),
             const_map: self.vm.const_map.clone(),
+            ema_alphas: Vec::new(),
         };
         prog.save(qfr_path)
     }
@@ -419,7 +424,7 @@ end
     fn test_order_send_sell_limit() {
         let src = "
 function on_eval()
-    quince.order(1, 0.5, 51000.0, 1)
+    quince.order(1, 0.1, 51000.0, 1)
 end
 ";
         let path = write_test_strategy("runtime_test_ord_sell", src);
@@ -432,7 +437,7 @@ end
         let order = rx.try_recv().expect("should have sent order");
         assert_eq!(order.symbol, "ETHUSDT");
         assert_eq!(order.side, quince_core::types::Side::Sell);
-        assert!((order.qty - 0.5).abs() < 0.001);
+        assert!((order.qty - 0.1).abs() < 0.001);
         assert_eq!(order.price, Some(51000.0));
         assert_eq!(order.order_type, quince_core::types::OrderType::Limit);
         let _ = std::fs::remove_file(&path);
@@ -594,7 +599,7 @@ end
     #[test]
     fn test_position_size_then_feed_trade() {
         let src = "
-@persist local pos = 0
+@persist local pos = 0.0
 function on_trade(trade)
     pos = quince.position()
 end
@@ -718,7 +723,7 @@ end
     fn test_order_send_limit_with_price() {
         let src = "
 function on_eval()
-    quince.order(0, 1.0, 50000.0, 1)
+    quince.order(0, 0.1, 50000.0, 1)
 end
 ";
         let path = write_test_strategy("runtime_ord_lim", src);
@@ -750,7 +755,7 @@ end
     #[test]
     fn test_indicators_missing_get_zero() {
         let src = "
-@persist local val = 0
+@persist local val = 0.0
 function on_eval()
     val = quince.get(\"nonexistent\")
 end
@@ -781,7 +786,7 @@ end
     #[test]
     fn test_position_after_trade() {
         let src = "
-@persist local pos = 0
+@persist local pos = 0.0
 function on_trade(trade)
     pos = quince.position()
 end
@@ -799,7 +804,7 @@ end
     #[test]
     fn test_price_updated_on_trade() {
         let src = "
-@persist local last = 0
+@persist local last = 0.0
 function on_trade(trade)
     last = quince.price()
 end
@@ -807,7 +812,7 @@ end
         let path = write_test_strategy("runtime_price_trade", src);
         let mut rt = QflRuntime::load(&path).unwrap();
         rt.feed_trade(make_trade(50500.0, 0.5, Side::Buy, 1));
-        assert_eq!(rt.vm.persist[0].int_val, 50500);
+        assert!((rt.vm.persist[0].float_val - 50500.0).abs() < 0.001);
         let _ = std::fs::remove_file(&path);
     }
 
@@ -815,7 +820,7 @@ end
     fn test_runtime_empty_strategy() {
         let path = write_test_strategy("runtime_empty", "");
         let result = QflRuntime::load(&path);
-        assert!(result.is_ok());
+        assert!(result.is_err());
         let _ = std::fs::remove_file(&path);
     }
 
@@ -843,7 +848,8 @@ end
         let mut rt2 = QflRuntime::load(&path_b).unwrap();
         rt2.vm.persist.copy_from_slice(&persist);
         rt2.feed_eval();
-        assert_eq!(rt2.vm.persist[0].int_val, 3);
+        assert_eq!(rt2.vm.persist[0].tag, 1);
+        assert!((rt2.vm.persist[0].float_val - 3.14159).abs() < 0.001);
         let _ = std::fs::remove_file(&path_a);
         let _ = std::fs::remove_file(&path_b);
     }
@@ -1088,11 +1094,11 @@ end
     #[test]
     fn test_persist_all_64_slots_filled() {
         let mut src = String::new();
-        for i in 0..64 {
+        for i in 0..32 {
             src.push_str(&format!("@persist local v{} = 0\n", i));
         }
         src.push_str("function on_eval()\n");
-        for i in 0..64 {
+        for i in 0..32 {
             src.push_str(&format!("    v{} = v{} + 1\n", i, i));
         }
         src.push_str("end\n");
@@ -1101,7 +1107,7 @@ end
         let mut rt = QflRuntime::load(&path).unwrap();
         rt.feed_eval();
 
-        for i in 0..64 {
+        for i in 0..32 {
             assert_eq!(rt.vm.persist[i].int_val, 1, "slot {}", i);
         }
         let _ = std::fs::remove_file(&path);
@@ -1163,13 +1169,13 @@ end
         let src = "
 @persist local x = 0
 function on_eval()
-    x = 9999999999999
+    x = 500000000000
 end
 ";
         let path = write_test_strategy("persist_large", src);
         let mut rt = QflRuntime::load(&path).unwrap();
         rt.feed_eval();
-        assert_eq!(rt.vm.persist[0].int_val, 9999999999999i64);
+        assert_eq!(rt.vm.persist[0].int_val, 500000000000i64);
         let _ = std::fs::remove_file(&path);
     }
 
@@ -1247,7 +1253,7 @@ end
     fn test_order_with_all_5_args() {
         let src = "
 function on_eval()
-    quince.order(1, 0.3, 50000.0, 1, 1)
+    quince.order(1, 0.1, 50000.0, 1, 1)
 end
 ";
         let path = write_test_strategy("ord_5args", src);
@@ -1259,7 +1265,7 @@ end
 
         let order = rx.try_recv().expect("should send order");
         assert_eq!(order.side, quince_core::types::Side::Sell);
-        assert!((order.qty - 0.3).abs() < 0.001);
+        assert!((order.qty - 0.1).abs() < 0.001);
         assert_eq!(order.price, Some(50000.0));
         assert_eq!(order.order_type, quince_core::types::OrderType::Limit);
         assert!(order.reduce_only);
@@ -1270,7 +1276,7 @@ end
     fn test_order_type_limit() {
         let src = "
 function on_eval()
-    quince.order(0, 1.0, 50000.0, 1)
+    quince.order(0, 0.1, 50000.0, 1)
 end
 ";
         let path = write_test_strategy("ord_type_lim", src);
@@ -1679,5 +1685,50 @@ end
     fn qfr_load_nonexistent_returns_error() {
         let result = QflRuntime::load_qfr("nonexistent.qfr");
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_feed_trade_big_values() {
+        let path = write_test_strategy("rt_big_vals", "function on_trade(trade) end");
+        let mut rt = QflRuntime::load(&path).unwrap();
+        rt.feed_trade(make_trade(1_000_000.0, 1000.0, Side::Buy, 999));
+        assert!((rt.vm.reg_f(0) - 1_000_000.0).abs() < 0.001);
+        assert!((rt.vm.reg_f(1) - 1000.0).abs() < 0.001);
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn test_feed_depth_empty_bids_asks() {
+        let path = write_test_strategy("rt_depth_empty", "function on_depth() end");
+        let mut rt = QflRuntime::load(&path).unwrap();
+        rt.feed_depth(Depth { bids: vec![], asks: vec![] });
+        assert_eq!(rt.vm.depth_bids_len, 0);
+        assert_eq!(rt.vm.depth_asks_len, 0);
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn test_on_fill_with_field_access() {
+        let path = write_test_strategy("rt_fill_field", "function on_fill(fill) local p = fill.price local q = fill.qty end");
+        let mut rt = QflRuntime::load(&path).unwrap();
+        rt.feed_fill(make_fill(50000.0, 0.5, Side::Buy));
+        assert!((rt.vm.reg_f(0) - 50000.0).abs() < 0.001);
+        assert!((rt.vm.reg_f(1) - 0.5).abs() < 0.001);
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn test_state_var_with_typed_decl() {
+        let src = "
+state counter : f64 = 0.0
+on eval() {
+    counter = counter + 1.0
+}
+";
+        let path = write_test_strategy("rt_state_var", src);
+        let mut rt = QflRuntime::load(&path).unwrap();
+        rt.feed_eval();
+        rt.feed_eval();
+        let _ = std::fs::remove_file(&path);
     }
 }

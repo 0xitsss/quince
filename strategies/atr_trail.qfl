@@ -1,29 +1,28 @@
--- --USING atr 14
+@using atr:14
 
-@persist local position_size = 0
-@persist local entry_price = 0
+state position_size : i64 = 0
+state entry_price : f64 = 0.0
 
-function on_trade(trade)
-    local price = trade.price
-    local atr = quince.get("atr")
-
-    if position_size > 0 then
-        local stop = entry_price - atr * 2
-        if price < stop then
+on trade(t) {
+    feature p = t.price
+    feature atr_val = quince.get("atr")
+    if position_size > 0 {
+        feature stop = entry_price - atr_val * 2
+        if p < stop {
             quince.order(1, 1.0, 0)
-            position_size = 0
+            state position_size = 0
+            state entry_price = 0.0
             quince.log("atr trailing stop hit")
-        end
-    end
-
-    if position_size <= 0 and atr > 0 then
+        }
+    }
+    if position_size <= 0 and atr_val > 0 {
         quince.order(0, 1.0, 0)
-        position_size = 1
-        entry_price = price
+        state position_size = 1
+        state entry_price = p
         quince.log("atr trail entry")
-    end
-end
+    }
+}
 
-function on_eval()
+on eval() {
     quince.log("atr_trail eval")
-end
+}

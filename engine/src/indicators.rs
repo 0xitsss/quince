@@ -315,4 +315,105 @@ mod tests {
         let len2 = bank.on_trade(&trade).len();
         assert_eq!(len1, len2);
     }
+
+    #[test]
+    fn parse_using_empty_src() {
+        let entries = parse_using("");
+        assert!(entries.is_empty());
+    }
+
+    #[test]
+    fn parse_using_no_at_using() {
+        let entries = parse_using("local x = 1");
+        assert!(entries.is_empty());
+    }
+
+    #[test]
+    fn parse_using_empty_name_skipped() {
+        let entries = parse_using("@using :20");
+        assert!(entries.is_empty());
+    }
+
+    #[test]
+    fn parse_using_case_insensitive() {
+        let entries = parse_using("@using SMA:20");
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].name, "sma");
+    }
+
+    #[test]
+    fn parse_using_non_numeric_param_skipped() {
+        let entries = parse_using("@using ema:abc:20");
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].params, vec![20.0]);
+    }
+
+    #[test]
+    fn indicator_bank_new_empty_cfg() {
+        let bank = IndicatorBank::new(&[]);
+        assert!(bank.indicators.is_empty());
+    }
+
+    #[test]
+    fn indicator_bank_unknown_name_skipped() {
+        let entries = parse_using("@using unknown_indicator:20");
+        let bank = IndicatorBank::new(&entries);
+        assert!(bank.indicators.is_empty());
+    }
+
+    #[test]
+    fn indicator_bank_on_trade_all_synthetic() {
+        let mut bank = IndicatorBank::new(&[]);
+        bank.assign_all_slots();
+        let trade = Trade { price: 100.0, qty: 1.0, time: chrono::Utc::now(), side: Side::Buy, trade_id: 1 };
+        let r = bank.on_trade(&trade);
+        assert_eq!(r.len(), 4); // price, volume_delta, avg_trade_size, trade_count
+    }
+
+    #[test]
+    fn indicator_bank_on_depth_empty() {
+        let mut bank = IndicatorBank::new(&[]);
+        bank.assign_all_slots();
+        let depth = Depth { bids: vec![], asks: vec![] };
+        let r = bank.on_depth(&depth);
+        assert_eq!(r.len(), 3); // bid_depth, ask_depth, depth_imbalance
+        for &(_, v) in r {
+            assert_eq!(v, 0.0);
+        }
+    }
+
+    #[test]
+    fn indicator_bank_set_name_to_slot() {
+        let mut bank = IndicatorBank::new(&[]);
+        bank.set_name_to_slot("custom", 99);
+        let trade = Trade { price: 50.0, qty: 2.0, time: chrono::Utc::now(), side: Side::Sell, trade_id: 2 };
+        bank.assign_all_slots();
+        let r = bank.on_trade(&trade);
+        assert!(r.len() >= 2);
+    }
+
+    #[test]
+    fn default_buffer_min_256() {
+        let e = parse_using("@using sma:1");
+        assert_eq!(e[0].buffer, 256);
+    }
+
+    #[test]
+    fn default_buffer_scales_with_period() {
+        let e = parse_using("@using sma:200");
+        assert_eq!(e[0].buffer, 400);
+    }
+
+    #[test]
+    fn indicator_bank_on_trade_sell_side() {
+        let mut bank = IndicatorBank::new(&[]);
+        bank.assign_all_slots();
+        let trade = Trade { price: 100.0, qty: 1.0, time: chrono::Utc::now(), side: Side::Sell, trade_id: 1 };
+        let r = bank.on_trade(&trade);
+        assert_eq!(r.len(), 4);
+        // price=100, volume_delta=-1, avg_trade_size=1, trade_count=1
+        for &(_, v) in r {
+            assert!(v > -2.0 && v <= 100.0);
+        }
+    }
 }

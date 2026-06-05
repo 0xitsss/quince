@@ -1,24 +1,24 @@
--- --USING sma 10 50
+@using sma:10:50
 
-@persist local position_size = 0
+state position_size : i64 = 0
 
-function on_trade(trade)
-    local fast = quince.get("sma10")
-    local slow = quince.get("sma50")
+on trade(t) {
+    feature fast = quince.get("sma10")
+    feature slow = quince.get("sma50")
 
-    if fast > slow and position_size <= 0 then
+    if fast > slow and position_size <= 0 {
         quince.order(0, 1.0, 0)
-        position_size = 1
+        state position_size = 1
         quince.log("sma cross up")
-    end
+    }
 
-    if fast < slow and position_size > 0 then
+    if fast < slow and position_size > 0 {
         quince.order(1, 1.0, 0)
-        position_size = 0
+        state position_size = 0
         quince.log("sma cross down")
-    end
-end
+    }
+}
 
-function on_eval()
+on eval() {
     quince.log("sma_cross eval")
-end
+}

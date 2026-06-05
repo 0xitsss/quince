@@ -1,41 +1,41 @@
--- --USING bb 20 2.0
+@using bb:20:2.0
 
-@persist local position_size = 0
-@persist local last_trade_price = 0
+state position_size : i64 = 0
+state last_trade_price : f64 = 0.0
 
-function on_trade(trade)
-    local price = trade.price
-    local mid = quince.get("bb.middle")
-    local upper = quince.get("bb.upper")
-    local lower = quince.get("bb.lower")
+on trade(t) {
+    feature p = t.price
+    feature mid = quince.get("bb.middle")
+    feature upper = quince.get("bb.upper")
+    feature lower = quince.get("bb.lower")
 
-    if price < lower and position_size <= 0 then
+    if p < lower and position_size <= 0 {
         quince.order(0, 0.5, 0)
-        position_size = 1
-        last_trade_price = price
+        state position_size = 1
+        state last_trade_price = p
         quince.log("bb bounce long")
-    end
+    }
 
-    if price > mid and position_size > 0 then
+    if p > mid and position_size > 0 {
         quince.order(1, 0.5, 0)
-        position_size = 0
+        state position_size = 0
         quince.log("bb bounce exit long")
-    end
+    }
 
-    if price > upper and position_size >= 0 then
+    if p > upper and position_size >= 0 {
         quince.order(1, 0.5, 0)
-        position_size = -1
-        last_trade_price = price
+        state position_size = -1
+        state last_trade_price = p
         quince.log("bb bounce short")
-    end
+    }
 
-    if price < mid and position_size < 0 then
+    if p < mid and position_size < 0 {
         quince.order(0, 0.5, 0)
-        position_size = 0
+        state position_size = 0
         quince.log("bb bounce exit short")
-    end
-end
+    }
+}
 
-function on_eval()
+on eval() {
     quince.log("bb_bounce eval")
-end
+}
