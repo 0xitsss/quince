@@ -1739,4 +1739,142 @@ on eval() {
         rt.feed_eval();
         let _ = std::fs::remove_file(&path);
     }
+
+    // ── Load test: full pipeline + VM execution ──
+
+    #[test]
+    fn load_test_scalper_10k_ticks() {
+        let src = std::fs::read_to_string("D:\\kokosmain\\quince\\strategies\\scalper.qfl")
+            .expect("read scalper.qfl");
+        let program = crate::parser::parse(&src).expect("parse scalper");
+        let qfr = crate::compiler::compile_checked(&program).expect("compile scalper");
+        let opt = crate::optimize::optimize(&qfr);
+
+        let trade = quince_core::types::Trade {
+            price: 100.0, qty: 1.0,
+            time: chrono::Utc::now(),
+            side: quince_core::types::Side::Buy,
+            trade_id: 1,
+        };
+
+        // Warmup
+        let mut vm = crate::vm::Vm::new(opt.clone());
+        for _ in 0..100 {
+            vm.set_last_price(trade.price);
+            vm.set_position_size(0.0);
+            vm.regs[0].f = trade.price;
+            vm.regs[1].f = trade.qty;
+            vm.regs[2].i = match trade.side { quince_core::types::Side::Buy => 0, _ => 1 };
+            vm.regs[3].i = trade.trade_id as i64;
+            vm.regs[4].i = trade.time.timestamp_nanos_opt().unwrap_or(0);
+            vm.call("on_trade");
+        }
+
+        // Timed run: 10k iterations
+        let start = std::time::Instant::now();
+        for _ in 0..10_000 {
+            vm.set_last_price(trade.price);
+            vm.set_position_size(0.0);
+            vm.regs[0].f = trade.price;
+            vm.regs[1].f = trade.qty;
+            vm.regs[2].i = match trade.side { quince_core::types::Side::Buy => 0, _ => 1 };
+            vm.regs[3].i = trade.trade_id as i64;
+            vm.regs[4].i = trade.time.timestamp_nanos_opt().unwrap_or(0);
+            vm.call("on_trade");
+        }
+        let elapsed = start.elapsed();
+        let ns_per_tick = elapsed.as_nanos() / 10_000;
+        println!(
+            "\n═══ LOAD TEST scalper.qfl ═══\n  {} iterations in {:?}\n  {:.1} ns/tick\n  {} instrs (optimized)\n  {} entries\n",
+            10_000, elapsed, ns_per_tick, opt.code.len(), opt.entries.len()
+        );
+    }
+
+    #[test]
+    fn load_test_ema_cross_10k_ticks() {
+        let src = std::fs::read_to_string("D:\\kokosmain\\quince\\strategies\\ema_cross.qfl")
+            .expect("read ema_cross.qfl");
+        let program = crate::parser::parse(&src).expect("parse ema_cross");
+        let qfr = crate::compiler::compile_checked(&program).expect("compile ema_cross");
+        let opt = crate::optimize::optimize(&qfr);
+
+        let trade = quince_core::types::Trade {
+            price: 100.0, qty: 1.0,
+            time: chrono::Utc::now(),
+            side: quince_core::types::Side::Buy,
+            trade_id: 1,
+        };
+
+        let mut vm = crate::vm::Vm::new(opt.clone());
+        for _ in 0..100 {
+            vm.set_last_price(trade.price);
+            vm.regs[0].f = trade.price;
+            vm.regs[1].f = trade.qty;
+            vm.regs[2].i = 0;
+            vm.regs[3].i = trade.trade_id as i64;
+            vm.regs[4].i = trade.time.timestamp_nanos_opt().unwrap_or(0);
+            vm.call("on_trade");
+        }
+
+        let start = std::time::Instant::now();
+        for _ in 0..10_000 {
+            vm.set_last_price(trade.price);
+            vm.regs[0].f = trade.price;
+            vm.regs[1].f = trade.qty;
+            vm.regs[2].i = 0;
+            vm.regs[3].i = trade.trade_id as i64;
+            vm.regs[4].i = trade.time.timestamp_nanos_opt().unwrap_or(0);
+            vm.call("on_trade");
+        }
+        let elapsed = start.elapsed();
+        let ns_per_tick = elapsed.as_nanos() / 10_000;
+        println!(
+            "\n═══ LOAD TEST ema_cross.qfl ═══\n  {} iterations in {:?}\n  {:.1} ns/tick\n  {} instrs (optimized)\n",
+            10_000, elapsed, ns_per_tick, opt.code.len()
+        );
+    }
+
+    #[test]
+    fn load_test_momentum_10k_ticks() {
+        let src = std::fs::read_to_string("D:\\kokosmain\\quince\\strategies\\momentum.qfl")
+            .expect("read momentum.qfl");
+        let program = crate::parser::parse(&src).expect("parse momentum");
+        let qfr = crate::compiler::compile_checked(&program).expect("compile momentum");
+        let opt = crate::optimize::optimize(&qfr);
+
+        let trade = quince_core::types::Trade {
+            price: 100.0, qty: 1.0,
+            time: chrono::Utc::now(),
+            side: quince_core::types::Side::Buy,
+            trade_id: 1,
+        };
+
+        let mut vm = crate::vm::Vm::new(opt.clone());
+        for _ in 0..100 {
+            vm.set_last_price(trade.price);
+            vm.regs[0].f = trade.price;
+            vm.regs[1].f = trade.qty;
+            vm.regs[2].i = 0;
+            vm.regs[3].i = trade.trade_id as i64;
+            vm.regs[4].i = trade.time.timestamp_nanos_opt().unwrap_or(0);
+            vm.call("on_trade");
+        }
+
+        let start = std::time::Instant::now();
+        for _ in 0..10_000 {
+            vm.set_last_price(trade.price);
+            vm.regs[0].f = trade.price;
+            vm.regs[1].f = trade.qty;
+            vm.regs[2].i = 0;
+            vm.regs[3].i = trade.trade_id as i64;
+            vm.regs[4].i = trade.time.timestamp_nanos_opt().unwrap_or(0);
+            vm.call("on_trade");
+        }
+        let elapsed = start.elapsed();
+        let ns_per_tick = elapsed.as_nanos() / 10_000;
+        println!(
+            "\n═══ LOAD TEST momentum.qfl ═══\n  {} iterations in {:?}\n  {:.1} ns/tick\n  {} instrs (optimized)\n",
+            10_000, elapsed, ns_per_tick, opt.code.len()
+        );
+    }
 }
