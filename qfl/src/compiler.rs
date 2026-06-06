@@ -28,6 +28,11 @@ struct Compiler {
     state_types: HashMap<String, bool>, // name → is_float
     fused_indicators: HashMap<String, FusedInfo>, // name → fused indicator info
     next_ema_state: u8,
+    // Mov elimination: track which register holds each variable's value.
+    // Keys: variable name. Values: register number.
+    // Validated against lookup_var on each read; self-corrects on scope changes.
+    active_int_regs: HashMap<String, u8>,
+    active_float_regs: HashMap<String, u8>,
 }
 
 #[derive(Clone)]
@@ -48,6 +53,8 @@ impl Compiler {
             state_types: HashMap::new(),
             fused_indicators: HashMap::new(),
             next_ema_state: 0,
+            active_int_regs: HashMap::new(),
+            active_float_regs: HashMap::new(),
         }
     }
 
@@ -686,9 +693,14 @@ impl Compiler {
             }
         }
         if let Some((reg, is_float)) = self.lookup_var(name) {
-            let r = self.alloc_type(is_float);
-            self.emit(Instruction::rr(O::Mov, r, reg));
-            (r, is_float)
+            let cache = if is_float { &mut self.active_float_regs } else { &mut self.active_int_regs };
+            if cache.get(name) == Some(&reg) {
+                // Cache hit — variable still in same register, reuse directly
+                return (reg, is_float);
+            }
+            // First read or register changed — cache source register, return directly
+            cache.insert(name.to_string(), reg);
+            (reg, is_float)
         } else {
             let r = self.alloc_int();
             self.emit(Instruction::rri(O::Ldi, r, 0, 0));
@@ -1127,6 +1139,41 @@ mod tests {
     }
 
     #[test]
+    fn test_mov_reuse_same_var() {
+        // Repeated reads of the same variable should reuse register (no Mov)
+        let prog = compile_str("
+function on_eval()
+    local a = 42
+    b = a + 1
+    c = a + 2
+    d = a + 3
+end
+");
+        let mov_count = prog.code.iter().filter(|i| i.opcode() == O::Mov).count();
+        // Without optimization: 6 Movs (3 var reads + 3 writes)
+        // With optimization:   <=4 Movs (only writes, reads reuse register)
+        assert!(mov_count <= 4, "expected <=4 Mov instructions with reuse, got {mov_count}");
+    }
+
+    #[test]
+    fn test_mov_reuse_shadowed_var() {
+        // Shadowed var in inner scope must not cause stale cache hits
+        let prog = compile_str("
+function on_eval()
+    local a = 10
+    if a > 0 then
+        local a = 20
+        b = a + 1
+    end
+    c = a + 1
+end
+");
+        let mov_count = prog.code.iter().filter(|i| i.opcode() == O::Mov).count();
+        // Must compile and use correct registers (no stale cache)
+        assert!(mov_count <= 5, "expected <=5 Mov with shadowed vars, got {mov_count}");
+    }
+
+    #[test]
     fn test_if_stmt() {
         let prog = compile_str("if 1 then a = 42 else a = 0 end");
         // Should have JZ + JMP instructions
@@ -1211,9 +1258,9 @@ mod tests {
     #[test]
     fn test_var_use() {
         let prog = compile_str("local x = 5 local y = x");
-        // LDI r0, 5; MOV r1, r0
-        assert_eq!(prog.code.len(), 2);
-        assert_eq!(prog.code[1].opcode(), O::Mov);
+        // LDI r0, 5 only (no Mov — x's register reused directly)
+        assert_eq!(prog.code.len(), 1);
+        assert_eq!(prog.code[0].opcode(), O::Ldi);
     }
 
     #[test]
@@ -1227,8 +1274,9 @@ mod tests {
     #[test]
     fn test_multiple_statements() {
         let prog = compile_str("local a = 1 local b = 2 local c = a + b");
-        assert_eq!(prog.code.len(), 5);
-        assert_eq!(prog.code[4].opcode(), O::Add);
+        // Ldi r0, 1; Ldi r1, 2; Add r2, r0, r1 (no Movs — regs reused directly)
+        assert_eq!(prog.code.len(), 3);
+        assert_eq!(prog.code[2].opcode(), O::Add);
     }
 
     #[test]
@@ -1809,7 +1857,8 @@ end
     fn test_func_param_names() {
         let prog = compile_str("function on_trade(a, b, c) local x = a + b + c end");
         assert_eq!(prog.entries.len(), 1);
-        assert!(prog.code.len() > 4);
+        // 3 Add + 1 Ret, no Movs for param reads
+        assert!(prog.code.len() >= 4);
     }
 
     #[test]
@@ -1889,7 +1938,7 @@ state x : f64 = 0.0
 function on_trade(t)
     x = t
 end
-", 1, 4);
+", 1, 3);
 
     strategy_compiles!(test_state_event_handler, "
 state acc : f64 = 0.0

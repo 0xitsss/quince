@@ -410,7 +410,7 @@ impl Parser {
     fn parse_return(&mut self) -> Result<Stmt, ParseError> {
         self.advance();
         let exprs = if self.is_eof()
-            || matches!(self.peek(), Token::End | Token::Else | Token::ElseIf | Token::Until)
+            || matches!(self.peek(), Token::End | Token::Else | Token::ElseIf | Token::Until | Token::RBrace)
         {
             Vec::new()
         } else {
