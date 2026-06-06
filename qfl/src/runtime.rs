@@ -156,6 +156,9 @@ impl QflRuntime {
             Side::Buy => 0,
             Side::Sell => 1,
         };
+        // OrderFill has no trade_id; fill.trade_id would read 0
+        self.vm.regs[3].i = 0;
+        self.vm.regs[4].i = fill.time.timestamp_nanos_opt().unwrap_or(0);
 
         if let Some(ref mut t) = self.vm.tracer {
             t.record_fill(fill.price, fill.qty, &format!("{:?}", fill.side));
@@ -1913,6 +1916,97 @@ on eval() {
             "\n═══ LOAD TEST momentum.qfl ═══\n  {} iterations in {:?}\n  {:.1} ns/tick  |  {:.0} ops/ms\n  {} instrs (optimized)\n",
             10_000, elapsed, ns_per_tick, ops_per_ms, qfr.code.len()
         );
+    }
+
+    #[test]
+    fn load_test_heavy_100k_events() {
+        let path = "D:\\kokosmain\\quince\\strategies\\heavy_test.qfl";
+        let src = std::fs::read_to_string(path).expect("read heavy_test.qfl");
+        let program = crate::parser::parse(&src).expect("parse heavy_test");
+        let mut qfr = crate::compiler::compile_checked(&program).expect("compile heavy_test");
+        crate::optimize::optimize(&mut qfr);
+        let instr_count = qfr.code.len();
+
+        let mut rt = QflRuntime::load(path).expect("load heavy_test.qfl");
+        rt.set_symbol("BTCUSDT");
+        rt.set_balance("USDT", 10000.0);
+        rt.set_position_size(0.0);
+
+        println!(
+            "\n═══ HEAVY TEST ═══\n  {} instrs (optimized)\n",
+            instr_count
+        );
+
+        // Warmup
+        for i in 0..100 {
+            let trade = quince_core::types::Trade {
+                price: 50000.0 + (i % 1000) as f64,
+                qty: 0.1 + (i % 5) as f64 * 0.1,
+                time: chrono::Utc::now(),
+                side: if i % 2 == 0 { quince_core::types::Side::Buy } else { quince_core::types::Side::Sell },
+                trade_id: i as u64,
+            };
+            rt.feed_trade(trade);
+        }
+        for _ in 0..10 {
+            let depth = quince_core::types::Depth {
+                bids: vec![
+                    quince_core::types::DepthLevel { price: 50000.0, qty: 1.0 },
+                    quince_core::types::DepthLevel { price: 49900.0, qty: 5.0 },
+                ],
+                asks: vec![
+                    quince_core::types::DepthLevel { price: 50100.0, qty: 1.5 },
+                    quince_core::types::DepthLevel { price: 50200.0, qty: 3.0 },
+                ],
+            };
+            rt.feed_depth(depth);
+        }
+        for _ in 0..10 {
+            rt.feed_eval();
+        }
+
+        // Timed run: 100k mixed events
+        let start = std::time::Instant::now();
+        for i in 0..100_000 {
+            let event_kind = i % 5;
+            match event_kind {
+                0 | 1 | 2 => {
+                    let trade = quince_core::types::Trade {
+                        price: 50000.0 + (i % 2000) as f64,
+                        qty: 0.1 + (i % 10) as f64 * 0.05,
+                        time: chrono::Utc::now(),
+                        side: if i % 2 == 0 { quince_core::types::Side::Buy } else { quince_core::types::Side::Sell },
+                        trade_id: i as u64,
+                    };
+                    rt.feed_trade(trade);
+                }
+                3 => {
+                    let depth = quince_core::types::Depth {
+                        bids: vec![
+                            quince_core::types::DepthLevel { price: 50000.0 - (i % 100) as f64, qty: 0.5 },
+                            quince_core::types::DepthLevel { price: 49800.0, qty: 2.0 },
+                        ],
+                        asks: vec![
+                            quince_core::types::DepthLevel { price: 50100.0 + (i % 100) as f64, qty: 0.8 },
+                            quince_core::types::DepthLevel { price: 50300.0, qty: 1.5 },
+                        ],
+                    };
+                    rt.feed_depth(depth);
+                }
+                4 => {
+                    rt.feed_eval();
+                }
+                _ => {}
+            }
+        }
+        let elapsed = start.elapsed();
+        let ns_per_event = elapsed.as_nanos() / 100_000;
+        let ops_per_ms = (100_000.0 / elapsed.as_secs_f64()) / 1000.0;
+        println!(
+            "═══ LOAD TEST heavy_test.qfl ═══\n  {} events in {:?}\n  {:.1} ns/event  |  {:.0} ops/ms\n  {} instrs (optimized)\n",
+            100_000, elapsed, ns_per_event, ops_per_ms, instr_count
+        );
+        assert!(elapsed.as_secs() < 30, "heavy_test took too long");
     }
 
 }

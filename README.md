@@ -2,10 +2,10 @@
 
 [![Work In Progress](https://img.shields.io/badge/status-WIP-yellow?style=for-the-badge)](https://github.com/0xitsss/quince)
 [![Build](https://img.shields.io/badge/build-passing-brightgreen?style=for-the-badge)](https://github.com/0xitsss/quince)
-[![Tests](https://img.shields.io/badge/tests-836%20passing-brightgreen?style=for-the-badge)](https://github.com/0xitsss/quince)
+[![Tests](https://img.shields.io/badge/tests-1032%20passing-brightgreen?style=for-the-badge)](https://github.com/0xitsss/quince)
 [![License](https://img.shields.io/badge/license-AGPL--3.0-blue?style=for-the-badge)](https://www.gnu.org/licenses/agpl-3.0)
 [![Rust](https://img.shields.io/badge/rust-1.80+-orange?style=for-the-badge\&logo=rust)](https://www.rust-lang.org)
-[![Version](https://img.shields.io/badge/version-0.4.5-purple?style=for-the-badge)](https://github.com/0xitsss/quince/releases)
+[![Version](https://img.shields.io/badge/version-0.6.1-purple?style=for-the-badge)](https://github.com/0xitsss/quince/releases)
 [![Performance](https://img.shields.io/badge/ULL-%3C0.5ms-red?style=for-the-badge)](https://github.com/0xitsss/quince)
 
 **Q**uantitative **U**ltra-low-latency **I**nterpreter for **N**etwork-centric **C**ompetitive **E**xecution
@@ -550,8 +550,8 @@ cargo test
 
 ## Testing
 
-* 785 tests
-* 28 integration tests
+* 988 unit tests
+* 44 integration tests
 * 0 build warnings
 * Mock mode validation
 
@@ -561,6 +561,12 @@ cargo test
 
 | Version | Phase | Changes                                                                                 |
 | ------- | ----- | --------------------------------------------------------------------------------------- |
+| v0.6.1  | 6b    | Compiler safety hardening (register overflow, Index/Table, name length, emit_at bounds), VM debug_asserts, fix Jz/Jnz fencepost errors |
+| v0.6.0  | 6a    | handler_param field access, persist coalesce, window O(1) deque, Vm hot/cold reorder |
+| v0.5.3  | 5c    | Mov elimination (reuse analysis) — skip redundant Mov on variable read                 |
+| v0.5.2  | 5b    | run_bare specialization, sanitize_f removal, JMP-after-Ret, TraceVM, engine HashMap removal |
+| v0.5.1  | 5a    | Engine hot path optimizations — zero HashMap lookups in on_trade, VM handler cache |
+| v0.5.0  | 4i    | Optimization pipeline v2 — local shadowing, LICM, loop unroll, fused lowering, GVN |
 | v0.4.0  | 4g+4h | Feature pipeline, state declarations, event handlers, typed functions, Ema fused opcode |
 | v0.3.6  | 4e    | Tracing                                                                                 |
 | v0.3.5  | 4d    | Profiler                                                                                |

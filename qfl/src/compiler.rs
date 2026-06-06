@@ -1,20 +1,25 @@
 use crate::ast::*;
 use crate::ir::{self, QfrProgram};
 use crate::opcodes::{Instruction, Opcode as O};
+use crate::vm::{REG_SEND_SIDE, REG_SEND_QTY, REG_SEND_PRICE, REG_SEND_TYPE, REG_SEND_REDUCE};
 use std::collections::HashMap;
 
 /// Compile a QFL Program into a QfrProgram (bytecode).
-pub fn compile(program: &Program) -> QfrProgram {
+/// Returns `Err(Vec<TypeError>)` if compilation errors occur (e.g. register overflow).
+pub fn compile(program: &Program) -> Result<QfrProgram, Vec<crate::types::TypeError>> {
     let mut c = Compiler::new();
     c.compile_program(program);
-    c.prog
+    if !c.errors.is_empty() {
+        return Err(c.errors);
+    }
+    Ok(c.prog)
 }
 
 /// Type-check then compile.
-/// Returns `Err(Vec<TypeError>)` if type checking fails.
+/// Returns `Err(Vec<TypeError>)` if type checking or compilation fails.
 pub fn compile_checked(program: &Program) -> Result<QfrProgram, Vec<crate::types::TypeError>> {
     crate::types::type_check(program)?;
-    Ok(compile(program))
+    compile(program)
 }
 
 struct Compiler {
@@ -22,6 +27,8 @@ struct Compiler {
     symbols: Vec<Vec<(String, u8, bool)>>,
     next_int_reg: u8,
     next_float_reg: u8,
+    int_reg_count: u16,
+    float_reg_count: u16,
     persist_slots: Vec<(String, u8)>,
     next_persist_slot: u8,
     current_fn: Option<String>,
@@ -34,6 +41,7 @@ struct Compiler {
     // Validated against lookup_var on each read; self-corrects on scope changes.
     active_int_regs: HashMap<String, u8>,
     active_float_regs: HashMap<String, u8>,
+    errors: Vec<crate::types::TypeError>,
 }
 
 #[derive(Clone)]
@@ -48,6 +56,8 @@ impl Compiler {
             symbols: vec![Vec::new()],
             next_int_reg: 0,
             next_float_reg: 192,
+            int_reg_count: 0,
+            float_reg_count: 0,
             persist_slots: Vec::new(),
             next_persist_slot: 0,
             current_fn: None,
@@ -57,6 +67,7 @@ impl Compiler {
             next_ema_state: 0,
             active_int_regs: HashMap::new(),
             active_float_regs: HashMap::new(),
+            errors: Vec::new(),
         }
     }
 
@@ -69,14 +80,32 @@ impl Compiler {
     // --- Register allocation ---
 
     fn alloc_int(&mut self) -> u8 {
+        if self.int_reg_count >= 192 {
+            self.errors.push(crate::types::TypeError {
+                msg: format!(
+                    "register overflow: integer register limit (max 192)",
+                ),
+            });
+            return 0;
+        }
         let r = self.next_int_reg;
         self.next_int_reg += 1;
+        self.int_reg_count += 1;
         r
     }
 
     fn alloc_float(&mut self) -> u8 {
+        if self.float_reg_count >= 64 {
+            self.errors.push(crate::types::TypeError {
+                msg: format!(
+                    "register overflow: float register limit (max 64)",
+                ),
+            });
+            return 192;
+        }
         let r = self.next_float_reg;
         self.next_float_reg += 1;
+        self.float_reg_count += 1;
         r
     }
 
@@ -128,6 +157,7 @@ impl Compiler {
     }
 
     fn emit_at(&mut self, idx: usize, instr: Instruction) {
+        debug_assert!(idx < self.prog.code.len(), "emit_at {idx} >= code.len() {}", self.prog.code.len());
         self.prog.code[idx] = instr;
     }
 
@@ -136,6 +166,11 @@ impl Compiler {
     }
 
     fn register_entry(&mut self, name: &str, offset: u32) {
+        if name.len() > 8 {
+            self.errors.push(crate::types::TypeError {
+                msg: format!("entry name '{}' exceeds 8 character limit (len={})", name, name.len()),
+            });
+        }
         self.prog.entries.push(crate::ir::EntryPoint {
             name: name.to_string(),
             code_offset: offset,
@@ -206,7 +241,7 @@ impl Compiler {
             }
             Stmt::FnDecl { name, params, return_type: _, body } => {
                 let offset = self.prog.code.len() as u32;
-                self.prog.entries.push(ir::EntryPoint { name: name.clone(), code_offset: offset });
+                self.register_entry(name, offset);
                 self.current_fn = Some(name.clone());
                 self.handler_param = None;
                 self.push_scope();
@@ -225,13 +260,18 @@ impl Compiler {
             Stmt::EventHandler { event, param, body } => {
                 let fn_name = format!("on_{}", event);
                 let offset = self.prog.code.len() as u32;
-                self.prog.entries.push(ir::EntryPoint { name: fn_name.clone(), code_offset: offset });
+                self.register_entry(&fn_name, offset);
                 self.current_fn = Some(fn_name);
                 self.handler_param = param.clone();
                 self.push_scope();
                 if let Some(ref p) = param {
                     let pr = self.alloc_int();
                     self.define_var(p, pr, false);
+                }
+                // Reserve registers 0-4: pre-loaded by runtime with handler param fields
+                // (price→r0, qty→r1, side→r2, trade_id→r3, time→r4)
+                if self.next_int_reg < 5 {
+                    self.next_int_reg = 5;
                 }
                 for stmt in body {
                     self.compile_stmt(stmt);
@@ -411,10 +451,11 @@ impl Compiler {
             self.pop_scope();
         }
 
-        if let Some(jmp) = jmp_to_end {
-            let after_end = self.current_offset();
-            let jmp_off = after_end - jmp as u32 - 1;
-            self.emit_at(jmp, Instruction::rri(O::Jmp, 0, 0, jmp_off));
+        // Patch JMP to end (skip else/elseif) if it was emitted
+        let after_else = self.current_offset();
+        if let Some(jmp_pos) = jmp_to_end {
+            let jmp_off = after_else - jmp_pos as u32 - 1;
+            self.emit_at(jmp_pos, Instruction::rri(O::Jmp, 0, 0, jmp_off));
         }
     }
 
@@ -532,11 +573,11 @@ impl Compiler {
         for (i, param) in params.iter().enumerate() {
             if (is_trade_entry || is_fill_entry) && i < 5 {
                 // Trade entry convention: r0-r4 pre-loaded by VM
-                let r = i as u8;
+                let src = i as u8;
                 let is_float = i < 2; // price, qty are floats; side, id, time are ints
-                // The register is already in the correct bank
-                let actual_reg = if is_float { 192 + r } else { r };
-                self.define_var(param, actual_reg, is_float);
+                let dst = if is_float { self.alloc_float() } else { self.alloc_int() };
+                self.emit(Instruction::rr(O::Mov, dst, src));
+                self.define_var(param, dst, is_float);
             } else {
                 let r = self.alloc_int();
                 self.define_var(param, r, false);
@@ -545,6 +586,11 @@ impl Compiler {
 
         if (name == "on_trade" || name == "on_fill" || name == "on_depth") && !params.is_empty() {
             self.handler_param = Some(params[0].clone());
+        }
+
+        // Reserve registers 0-4: pre-loaded by runtime with handler param fields
+        if (is_trade_entry || is_fill_entry) && self.next_int_reg < 5 {
+            self.next_int_reg = 5;
         }
 
         for stmt in body {
@@ -581,12 +627,17 @@ impl Compiler {
             Expr::Unary { op, expr: inner } => self.compile_unary(op, inner),
             Expr::FieldAccess { obj, field } => self.compile_field_access(obj, field),
             Expr::Index { obj, index } => {
-                let _ = (obj, index);
+                self.errors.push(crate::types::TypeError {
+                    msg: format!("index expression is not supported (index {:?} on {:?})", index, obj),
+                });
                 let r = self.alloc_int();
                 self.emit(Instruction::rri(O::Ldi, r, 0, 0));
                 (r, false)
             }
             Expr::Table(_) => {
+                self.errors.push(crate::types::TypeError {
+                    msg: "table literal is not supported".into(),
+                });
                 let r = self.alloc_int();
                 self.emit(Instruction::rri(O::Ldi, r, 0, 0));
                 (r, false)
@@ -908,6 +959,30 @@ impl Compiler {
                 self.emit(Instruction::rr(O::GetBal, r, name_r));
                 (r, true)
             }
+            "quince.depth_bid" | "depth_bid" => {
+                let r = self.alloc_float();
+                let level_r = if let Some(arg) = args.first() {
+                    self.compile_expr(arg).0
+                } else {
+                    let t = self.alloc_int();
+                    self.emit(Instruction::rri(O::Ldi, t, 0, 0));
+                    t
+                };
+                self.emit(Instruction::rrr(O::GetDepthBid, r, level_r, 0));
+                (r, true)
+            }
+            "quince.depth_ask" | "depth_ask" => {
+                let r = self.alloc_float();
+                let level_r = if let Some(arg) = args.first() {
+                    self.compile_expr(arg).0
+                } else {
+                    let t = self.alloc_int();
+                    self.emit(Instruction::rri(O::Ldi, t, 0, 0));
+                    t
+                };
+                self.emit(Instruction::rrr(O::GetDepthAsk, r, level_r, 0));
+                (r, true)
+            }
             "quince.log" | "log" => {
                 let r = self.alloc_int();
                 if let Some(arg) = args.first() {
@@ -928,8 +1003,10 @@ impl Compiler {
                 (r, false)
             }
             _ => {
-                // Regular function call — unknown, just return 0
                 let r = self.alloc_int();
+                self.errors.push(crate::types::TypeError {
+                    msg: format!("unknown function call: {}", name),
+                });
                 self.emit(Instruction::rri(O::Ldi, r, 0, 0));
                 (r, false)
             }
@@ -959,10 +1036,22 @@ impl Compiler {
                 self.emit(Instruction::rri(O::Ldi, r, 0, 0));
                 return (r, false);
             }
+            ("quince", "log2") => {
+                return self.compile_fn_call("quince.log", args);
+            }
+            ("quince", "depth_bid") => {
+                return self.compile_fn_call("quince.depth_bid", args);
+            }
+            ("quince", "depth_ask") => {
+                return self.compile_fn_call("quince.depth_ask", args);
+            }
             ("quince", "log") => {
                 return self.compile_fn_call("quince.log", args);
             }
             _ => {
+                self.errors.push(crate::types::TypeError {
+                    msg: format!("unknown method call: {}:{}", obj, method),
+                });
                 let r = self.alloc_int();
                 self.emit(Instruction::rri(O::Ldi, r, 0, 0));
                 return (r, false);
@@ -972,31 +1061,29 @@ impl Compiler {
 
     fn compile_send_order(&mut self, args: &[Expr]) {
         // quince.order(side, qty, price, type?, reduce_only?)
-        // Convention: r250=side (int), r192=qty (float), r193=price (float),
-        //             r253=type (int), r254=reduce (int)
         if let Some(arg) = args.get(0) {
             let (r, _) = self.compile_expr(arg);
-            self.emit(Instruction::rr(O::Mov, 250, r));
+            self.emit(Instruction::rr(O::Mov, REG_SEND_SIDE, r));
         }
         if let Some(arg) = args.get(1) {
             let (r, _) = self.compile_expr(arg);
-            self.emit(Instruction::rr(O::Mov, 192, r));
+            self.emit(Instruction::rr(O::Mov, REG_SEND_QTY, r));
         }
         if let Some(arg) = args.get(2) {
             let (r, _) = self.compile_expr(arg);
-            self.emit(Instruction::rr(O::Mov, 193, r));
+            self.emit(Instruction::rr(O::Mov, REG_SEND_PRICE, r));
         }
         if let Some(arg) = args.get(3) {
             let (r, _) = self.compile_expr(arg);
-            self.emit(Instruction::rr(O::Mov, 253, r));
+            self.emit(Instruction::rr(O::Mov, REG_SEND_TYPE, r));
         } else {
-            self.emit(Instruction::rri(O::Ldi, 253, 0, 0));
+            self.emit(Instruction::rri(O::Ldi, REG_SEND_TYPE, 0, 0));
         }
         if let Some(arg) = args.get(4) {
             let (r, _) = self.compile_expr(arg);
-            self.emit(Instruction::rr(O::Mov, 254, r));
+            self.emit(Instruction::rr(O::Mov, REG_SEND_REDUCE, r));
         } else {
-            self.emit(Instruction::rri(O::Ldi, 254, 0, 0));
+            self.emit(Instruction::rri(O::Ldi, REG_SEND_REDUCE, 0, 0));
         }
         self.emit(Instruction::single(O::SendOrder));
     }
@@ -1130,7 +1217,7 @@ mod tests {
 
     fn compile_str(input: &str) -> QfrProgram {
         let program = parser::parse(input).unwrap();
-        compile(&program)
+        compile(&program).unwrap()
     }
 
     #[test]
@@ -1353,6 +1440,40 @@ end
         let prog = compile_str("function f() return 42 end");
         assert_eq!(prog.entries.len(), 1);
         assert_eq!(prog.code.last().unwrap().opcode(), O::Ret);
+    }
+
+    #[test]
+    fn test_simple_test_log() {
+        let src = "
+@using sma:10:50
+
+state tick_count : i64 = 0
+state hellofrom : i64 = 0
+
+on trade(t) {
+    tick_count = tick_count + 1
+    hellofrom = 22 * tick_count
+    quince.log(\"\", t.qty)
+}
+
+on eval() {
+    quince.log(\"Hello From Quince-flavored Lua\", tick_count)
+}
+";
+        let mut prog = crate::compiler::compile_checked(&parser::parse(src).unwrap()).unwrap();
+        eprintln!("=== simple_test BEFORE optimize ({} instr) ===", prog.code.len());
+        for (i, instr) in prog.code.iter().enumerate() {
+            eprintln!("  {:3}: {:?} rd={} rs1={} rs2={} imm={}", i, instr.opcode(), instr.rd(), instr.rs1(), instr.rs2(), instr.imm());
+        }
+        crate::optimize::optimize(&mut prog);
+        eprintln!("=== simple_test AFTER optimize ({} instr) ===", prog.code.len());
+        for (i, instr) in prog.code.iter().enumerate() {
+            eprintln!("  {:3}: {:?} rd={} rs1={} rs2={} imm={}", i, instr.opcode(), instr.rd(), instr.rs1(), instr.rs2(), instr.imm());
+        }
+        for e in &prog.entries {
+            eprintln!("entry: {} @{}", e.name, e.code_offset);
+        }
+        assert!(prog.code.len() > 0);
     }
 
     #[test]
@@ -2011,7 +2132,7 @@ on eval() {
 
     #[test]
     fn test_event_handler_compiles() {
-        let src = "on eval() { quince.log(\"ok\") }\nfunction on_eval_old() quince.log(\"done\") end";
+        let src = "on eval() { quince.log(\"ok\") }\nfunction on_old() quince.log(\"done\") end";
         let program = parser::parse(src).unwrap();
         let result = compile_checked(&program);
         assert!(result.is_ok(), "event handler should type-check: {:?}", result.err());
@@ -2032,7 +2153,7 @@ end
         let program = parser::parse(src).unwrap();
         let result = compile_checked(&program);
         assert!(result.is_ok(), "state cross-fn should type-check: {:?}", result.err());
-        let prog = compile(&program);
+        let prog = compile(&program).unwrap();
         // Should have 2 entry points
         assert!(prog.entries.len() >= 2, "should have at least 2 entries (on_trade + on_eval)");
         // Should contain PersistGet opcode (54)
@@ -2049,7 +2170,7 @@ state acc : f64 = 0.0
 on eval() {
     acc = acc + 1.0
 }
-function on_eval_old() quince.log(\"ok\") end
+function on_old() quince.log(\"ok\") end
 ";
         let program = parser::parse(src).unwrap();
         let result = compile_checked(&program);
@@ -2075,20 +2196,23 @@ on eval() {
         let program = parser::parse(src).unwrap();
         let result = compile_checked(&program);
         assert!(result.is_ok(), "state in event handler: {:?}", result.err());
-        let prog = compile(&program);
+        let prog = compile(&program).unwrap();
         assert!(prog.code.iter().any(|i| i.opcode() == O::PersistGet));
         assert!(prog.code.iter().any(|i| i.opcode() == O::PersistSet));
     }
 
     #[test]
-    fn test_expr_table_compiles() {
-        let prog = compile_str("local t = {}");
-        assert!(prog.code.len() >= 1);
+    fn test_expr_table_errors() {
+        let program = parser::parse("local t = {}").unwrap();
+        let result = compile_checked(&program);
+        assert!(result.is_err(), "table literal should be rejected");
+        assert!(result.unwrap_err().iter().any(|e| e.msg.contains("table literal")));
     }
 
     #[test]
-    fn test_index_expr_compiles() {
-        let prog = compile_str("local t = {} local x = t[1]");
-        assert!(prog.code.len() >= 2);
+    fn test_index_expr_errors() {
+        let program = parser::parse("local t = {} local x = t[1]").unwrap();
+        let result = compile_checked(&program);
+        assert!(result.is_err(), "index expression should be rejected");
     }
 }

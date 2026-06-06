@@ -254,8 +254,8 @@ mod tests {
         r.window_start = Instant::now() - Duration::from_secs(2);
         r.order_count = 10;
         assert!(r.check_order(&make_order(1.0), 0.0, 10000.0).is_ok());
-        assert_eq!(r.order_count, 10);
+        assert_eq!(r.order_count, 0);
         r.record_trade();
-        assert_eq!(r.order_count, 11);
+        assert_eq!(r.order_count, 1);
     }
 }

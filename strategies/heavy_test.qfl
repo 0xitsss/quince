@@ -1,0 +1,80 @@
+state tick : i64 = 0
+state trade_count : i64 = 0
+state accum : i64 = 0
+state last_price : f64 = 0.0
+
+on trade(t) {
+    tick = tick + 1
+    trade_count = trade_count + 1
+    accum = accum + t.trade_id
+    last_price = t.price
+
+    if t.price > 50000.0 {
+        if t.trade_id % 2 == 0 {
+            accum = accum + 1
+        } else {
+            accum = accum - 1
+        }
+    }
+
+    if t.qty > 1.0 {
+        accum = accum + 10
+    } else {
+        accum = accum - 10
+    }
+
+    accum = accum + 1
+    accum = accum * 2
+    accum = accum / 3
+    accum = accum - 1
+    accum = accum % 7
+
+    if accum > 100 {
+        accum = 0
+    }
+
+    if trade_count % 5 == 0 {
+        quince.log("trade batch", t.price)
+    }
+
+    if t.trade_id % 100 == 0 {
+        quince.log("milestone trade", t.trade_id)
+    }
+}
+
+on eval() {
+    tick = tick + 1
+
+    if tick % 10 == 0 {
+        quince.log("eval tick", tick)
+    }
+
+    feature price = quince.price()
+    feature pos = quince.position()
+    feature bal = quince.balance("USDT")
+
+    if price > 50000.0 {
+        accum = accum + 3
+    } else {
+        accum = accum - 3
+    }
+
+    if pos > 0.0 {
+        accum = accum + 1
+    } else {
+        accum = accum - 1
+    }
+
+    if bal > 10000.0 {
+        accum = accum + 2
+    } else {
+        accum = accum - 2
+    }
+
+    if accum > 1000 {
+        accum = 0
+    }
+    if accum < -1000 {
+        accum = 0
+    }
+}

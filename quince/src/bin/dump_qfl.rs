@@ -38,7 +38,10 @@ fn main() {
             Ok(p) => p,
             Err(e) => { eprintln!("parse {path}: {e}"); continue; }
         };
-        let mut before = compile(&program);
+        let mut before = match compile(&program) {
+            Ok(p) => p,
+            Err(e) => { eprintln!("compile {path}: {:?}", e); continue; }
+        };
         optimize(&mut before);
 
         println!("────────────────────────────────────────────");

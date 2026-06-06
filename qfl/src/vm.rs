@@ -12,6 +12,12 @@ pub const MAX_WINDOWS: usize = 64;
 pub const WINDOW_ARENA_SIZE: usize = 65536;
 pub const MAX_DEPTH_LEVELS: usize = 64;
 pub const MAX_EMA_STATES: usize = 256;
+// SendOrder register convention
+pub const REG_SEND_SIDE: u8 = 250;
+pub const REG_SEND_QTY: u8 = 192;
+pub const REG_SEND_PRICE: u8 = 193;
+pub const REG_SEND_TYPE: u8 = 253;
+pub const REG_SEND_REDUCE: u8 = 254;
 
 #[derive(Clone, Copy)]
 #[repr(C)]
@@ -691,8 +697,11 @@ pub mod handlers {
     // ── Int arithmetic ──
 
     #[inline(always)]
-    pub unsafe fn vm_add(vm: &mut Vm, instr: u64) {
+pub unsafe fn vm_add(vm: &mut Vm, instr: u64) {
         let r = rd(instr) as usize;
+        debug_assert!(r < NUM_REGS);
+        debug_assert!((rs1(instr) as usize) < NUM_REGS);
+        debug_assert!((rs2(instr) as usize) < NUM_REGS);
         let a = vm.regs.get_unchecked(rs1(instr) as usize).i;
         let b = vm.regs.get_unchecked(rs2(instr) as usize).i;
         vm.regs.get_unchecked_mut(r).i = a.wrapping_add(b);
@@ -701,6 +710,9 @@ pub mod handlers {
     #[inline(always)]
 pub unsafe fn vm_sub(vm: &mut Vm, instr: u64) {
         let r = rd(instr) as usize;
+        debug_assert!(r < NUM_REGS);
+        debug_assert!((rs1(instr) as usize) < NUM_REGS);
+        debug_assert!((rs2(instr) as usize) < NUM_REGS);
         vm.regs.get_unchecked_mut(r).i = vm.regs.get_unchecked(rs1(instr) as usize).i
             .wrapping_sub(vm.regs.get_unchecked(rs2(instr) as usize).i);
     }
@@ -708,6 +720,9 @@ pub unsafe fn vm_sub(vm: &mut Vm, instr: u64) {
     #[inline(always)]
 pub unsafe fn vm_mul(vm: &mut Vm, instr: u64) {
         let r = rd(instr) as usize;
+        debug_assert!(r < NUM_REGS);
+        debug_assert!((rs1(instr) as usize) < NUM_REGS);
+        debug_assert!((rs2(instr) as usize) < NUM_REGS);
         vm.regs.get_unchecked_mut(r).i = vm.regs.get_unchecked(rs1(instr) as usize).i
             .wrapping_mul(vm.regs.get_unchecked(rs2(instr) as usize).i);
     }
@@ -715,6 +730,9 @@ pub unsafe fn vm_mul(vm: &mut Vm, instr: u64) {
     #[inline(always)]
 pub unsafe fn vm_div(vm: &mut Vm, instr: u64) {
         let r = rd(instr) as usize;
+        debug_assert!(r < NUM_REGS);
+        debug_assert!((rs1(instr) as usize) < NUM_REGS);
+        debug_assert!((rs2(instr) as usize) < NUM_REGS);
         let divisor = vm.regs.get_unchecked(rs2(instr) as usize).i;
         vm.regs.get_unchecked_mut(r).i = if divisor == 0 { 0 }
             else { vm.regs.get_unchecked(rs1(instr) as usize).i / divisor };
@@ -723,6 +741,9 @@ pub unsafe fn vm_div(vm: &mut Vm, instr: u64) {
     #[inline(always)]
 pub unsafe fn vm_mod(vm: &mut Vm, instr: u64) {
         let r = rd(instr) as usize;
+        debug_assert!(r < NUM_REGS);
+        debug_assert!((rs1(instr) as usize) < NUM_REGS);
+        debug_assert!((rs2(instr) as usize) < NUM_REGS);
         let divisor = vm.regs.get_unchecked(rs2(instr) as usize).i;
         vm.regs.get_unchecked_mut(r).i = if divisor == 0 { 0 }
             else { vm.regs.get_unchecked(rs1(instr) as usize).i % divisor };
@@ -731,6 +752,8 @@ pub unsafe fn vm_mod(vm: &mut Vm, instr: u64) {
     #[inline(always)]
 pub unsafe fn vm_neg(vm: &mut Vm, instr: u64) {
         let r = rd(instr) as usize;
+        debug_assert!(r < NUM_REGS);
+        debug_assert!((rs1(instr) as usize) < NUM_REGS);
         vm.regs.get_unchecked_mut(r).i =
             vm.regs.get_unchecked(rs1(instr) as usize).i.wrapping_neg();
     }
@@ -738,6 +761,8 @@ pub unsafe fn vm_neg(vm: &mut Vm, instr: u64) {
     #[inline(always)]
 pub unsafe fn vm_addi(vm: &mut Vm, instr: u64) {
         let r = rd(instr) as usize;
+        debug_assert!(r < NUM_REGS);
+        debug_assert!((rs1(instr) as usize) < NUM_REGS);
         vm.regs.get_unchecked_mut(r).i =
             vm.regs.get_unchecked(rs1(instr) as usize).i.wrapping_add(imm(instr) as i64);
     }
@@ -745,6 +770,8 @@ pub unsafe fn vm_addi(vm: &mut Vm, instr: u64) {
     #[inline(always)]
 pub unsafe fn vm_subi(vm: &mut Vm, instr: u64) {
         let r = rd(instr) as usize;
+        debug_assert!(r < NUM_REGS);
+        debug_assert!((rs1(instr) as usize) < NUM_REGS);
         vm.regs.get_unchecked_mut(r).i =
             vm.regs.get_unchecked(rs1(instr) as usize).i.wrapping_sub(imm(instr) as i64);
     }
@@ -752,6 +779,8 @@ pub unsafe fn vm_subi(vm: &mut Vm, instr: u64) {
     #[inline(always)]
 pub unsafe fn vm_muli(vm: &mut Vm, instr: u64) {
         let r = rd(instr) as usize;
+        debug_assert!(r < NUM_REGS);
+        debug_assert!((rs1(instr) as usize) < NUM_REGS);
         vm.regs.get_unchecked_mut(r).i =
             vm.regs.get_unchecked(rs1(instr) as usize).i.wrapping_mul(imm(instr) as i64);
     }
@@ -759,6 +788,8 @@ pub unsafe fn vm_muli(vm: &mut Vm, instr: u64) {
     #[inline(always)]
 pub unsafe fn vm_divi(vm: &mut Vm, instr: u64) {
         let r = rd(instr) as usize;
+        debug_assert!(r < NUM_REGS);
+        debug_assert!((rs1(instr) as usize) < NUM_REGS);
         let divisor = imm(instr) as i64;
         vm.regs.get_unchecked_mut(r).i = if divisor == 0 { 0 }
             else { vm.regs.get_unchecked(rs1(instr) as usize).i / divisor };
@@ -771,6 +802,9 @@ pub unsafe fn vm_divi(vm: &mut Vm, instr: u64) {
             #[inline(always)]
 pub unsafe fn $name(vm: &mut Vm, instr: u64) {
                 let r = rd(instr) as usize;
+                debug_assert!(r < NUM_REGS);
+                debug_assert!((rs1(instr) as usize) < NUM_REGS);
+                debug_assert!((rs2(instr) as usize) < NUM_REGS);
                 let a = vm.regs.get_unchecked(rs1(instr) as usize).f;
                 let b = vm.regs.get_unchecked(rs2(instr) as usize).f;
                 vm.regs.get_unchecked_mut(r).f = sanitize_f(a $op b);
@@ -804,6 +838,9 @@ pub unsafe fn vm_fneg(vm: &mut Vm, instr: u64) {
             #[inline(always)]
 pub unsafe fn $name(vm: &mut Vm, instr: u64) {
                 let r = rd(instr) as usize;
+                debug_assert!(r < NUM_REGS);
+                debug_assert!((rs1(instr) as usize) < NUM_REGS);
+                debug_assert!((rs2(instr) as usize) < NUM_REGS);
                 let a = vm.regs.get_unchecked(rs1(instr) as usize).i;
                 let b = vm.regs.get_unchecked(rs2(instr) as usize).i;
                 vm.regs.get_unchecked_mut(r).i = if a $cmp b { 1 } else { 0 };
@@ -825,6 +862,9 @@ pub unsafe fn $name(vm: &mut Vm, instr: u64) {
             #[inline(always)]
 pub unsafe fn $name(vm: &mut Vm, instr: u64) {
                 let r = rd(instr) as usize;
+                debug_assert!(r < NUM_REGS);
+                debug_assert!((rs1(instr) as usize) < NUM_REGS);
+                debug_assert!((rs2(instr) as usize) < NUM_REGS);
                 let a = vm.regs.get_unchecked(rs1(instr) as usize).f;
                 let b = vm.regs.get_unchecked(rs2(instr) as usize).f;
                 vm.regs.get_unchecked_mut(r).i = if a $cmp b { 1 } else { 0 };
@@ -869,6 +909,9 @@ pub unsafe fn vm_gti(vm: &mut Vm, instr: u64) {
             #[inline(always)]
 pub unsafe fn $name(vm: &mut Vm, instr: u64) {
                 let r = rd(instr) as usize;
+                debug_assert!(r < NUM_REGS);
+                debug_assert!((rs1(instr) as usize) < NUM_REGS);
+                debug_assert!((rs2(instr) as usize) < NUM_REGS);
                 let a = vm.regs.get_unchecked(rs1(instr) as usize).i;
                 let b = vm.regs.get_unchecked(rs2(instr) as usize).i;
                 vm.regs.get_unchecked_mut(r).i = a $op b;
@@ -883,12 +926,17 @@ pub unsafe fn $name(vm: &mut Vm, instr: u64) {
     #[inline(always)]
 pub unsafe fn vm_bitnot(vm: &mut Vm, instr: u64) {
         let r = rd(instr) as usize;
+        debug_assert!(r < NUM_REGS);
+        debug_assert!((rs1(instr) as usize) < NUM_REGS);
         vm.regs.get_unchecked_mut(r).i = !vm.regs.get_unchecked(rs1(instr) as usize).i;
     }
 
     #[inline(always)]
 pub unsafe fn vm_shl(vm: &mut Vm, instr: u64) {
         let r = rd(instr) as usize;
+        debug_assert!(r < NUM_REGS);
+        debug_assert!((rs1(instr) as usize) < NUM_REGS);
+        debug_assert!((rs2(instr) as usize) < NUM_REGS);
         let a = vm.regs.get_unchecked(rs1(instr) as usize).i;
         let b = vm.regs.get_unchecked(rs2(instr) as usize).i;
         vm.regs.get_unchecked_mut(r).i = a.wrapping_shl(b as u32);
@@ -897,6 +945,9 @@ pub unsafe fn vm_shl(vm: &mut Vm, instr: u64) {
     #[inline(always)]
 pub unsafe fn vm_shr(vm: &mut Vm, instr: u64) {
         let r = rd(instr) as usize;
+        debug_assert!(r < NUM_REGS);
+        debug_assert!((rs1(instr) as usize) < NUM_REGS);
+        debug_assert!((rs2(instr) as usize) < NUM_REGS);
         let a = vm.regs.get_unchecked(rs1(instr) as usize).i as u64;
         let b = vm.regs.get_unchecked(rs2(instr) as usize).i;
         vm.regs.get_unchecked_mut(r).i = a.wrapping_shr(b as u32) as i64;
@@ -907,31 +958,41 @@ pub unsafe fn vm_shr(vm: &mut Vm, instr: u64) {
     #[inline(always)]
 pub unsafe fn vm_jmp(vm: &mut Vm, instr: u64) {
         let target = (vm.pc as i64).wrapping_add(imm(instr) as i64) as usize;
+        debug_assert!(target < vm.code_len, "jmp target {target} >= code_len {}", vm.code_len);
         vm.pc = target;
     }
 
     #[inline(always)]
 pub unsafe fn vm_jz(vm: &mut Vm, instr: u64) {
+        debug_assert!((rs1(instr) as usize) < NUM_REGS);
         if vm.regs.get_unchecked(rs1(instr) as usize).i == 0 {
-            vm.pc = (vm.pc as i64).wrapping_add(imm(instr) as i64) as usize;
+            let target = (vm.pc as i64).wrapping_add(imm(instr) as i64) as usize;
+            debug_assert!(target < vm.code_len, "jz target {target} >= code_len {}", vm.code_len);
+            vm.pc = target;
         }
     }
 
     #[inline(always)]
 pub unsafe fn vm_jnz(vm: &mut Vm, instr: u64) {
+        debug_assert!((rs1(instr) as usize) < NUM_REGS);
         if vm.regs.get_unchecked(rs1(instr) as usize).i != 0 {
-            vm.pc = (vm.pc as i64).wrapping_add(imm(instr) as i64) as usize;
+            let target = (vm.pc as i64).wrapping_add(imm(instr) as i64) as usize;
+            debug_assert!(target < vm.code_len, "jnz target {target} >= code_len {}", vm.code_len);
+            vm.pc = target;
         }
     }
 
     #[inline(always)]
 pub unsafe fn vm_call(vm: &mut Vm, instr: u64) {
         let depth = vm.call_depth as usize;
+        debug_assert!(depth < MAX_CALL_DEPTH, "call_depth {depth} >= MAX_CALL_DEPTH");
         if depth < MAX_CALL_DEPTH {
             *vm.call_stack.get_unchecked_mut(depth) = vm.pc;
             vm.call_depth += 1;
         }
-        vm.pc = (vm.pc as i64).wrapping_add(imm(instr) as i64) as usize;
+        let target = (vm.pc as i64).wrapping_add(imm(instr) as i64) as usize;
+        debug_assert!(target < vm.code_len, "call target {target} >= code_len {}", vm.code_len);
+        vm.pc = target;
     }
 
     #[inline(always)]
@@ -1089,14 +1150,19 @@ pub unsafe fn vm_getdepthask(vm: &mut Vm, instr: u64) {
     #[inline(always)]
 pub unsafe fn vm_sendorder(vm: &mut Vm, instr: u64) {
         let _ = instr;
+        debug_assert!((REG_SEND_SIDE as usize) < NUM_REGS);
+        debug_assert!((REG_SEND_QTY as usize) < NUM_REGS);
+        debug_assert!((REG_SEND_PRICE as usize) < NUM_REGS);
+        debug_assert!((REG_SEND_TYPE as usize) < NUM_REGS);
+        debug_assert!((REG_SEND_REDUCE as usize) < NUM_REGS);
         vm.has_pending_order = true;
-        let _side = vm.regs.get_unchecked(250).i;
-        let _qty = vm.regs.get_unchecked(192).f;
-        let _price = vm.regs.get_unchecked(193).f;
+        let _side = vm.regs.get_unchecked(REG_SEND_SIDE as usize).i;
+        let _qty = vm.regs.get_unchecked(REG_SEND_QTY as usize).f;
+        let _price = vm.regs.get_unchecked(REG_SEND_PRICE as usize).f;
         tracing::info!("QFL: SEND_ORDER side={} qty={} price={} type={} reduce={}",
             _side, _qty, _price,
-            vm.regs.get_unchecked(253).i,
-            vm.regs.get_unchecked(254).i,
+            vm.regs.get_unchecked(REG_SEND_TYPE as usize).i,
+            vm.regs.get_unchecked(REG_SEND_REDUCE as usize).i,
         );
     }
 
@@ -1637,7 +1703,7 @@ mod tests {
             fn $name() {
                 let mut vm = Vm::new(make_prog(vec![
                     Instruction::rri(Opcode::Ldi, 0, 0, $val as u32),
-                    Instruction::rri(Opcode::Jz, 0, 0, 2),
+                    Instruction::rri(Opcode::Jz, 0, 0, 1),
                     Instruction::rri(Opcode::Ldi, 1, 0, 99),
                     Instruction::single(Opcode::Halt),
                 ]));
@@ -1656,7 +1722,7 @@ mod tests {
             fn $name() {
                 let mut vm = Vm::new(make_prog(vec![
                     Instruction::rri(Opcode::Ldi, 0, 0, $val as u32),
-                    Instruction::rri(Opcode::Jnz, 0, 0, 2),
+                    Instruction::rri(Opcode::Jnz, 0, 0, 1),
                     Instruction::rri(Opcode::Ldi, 1, 0, 99),
                     Instruction::single(Opcode::Halt),
                 ]));

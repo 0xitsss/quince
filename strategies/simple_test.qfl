@@ -6,10 +6,10 @@ state hellofrom : i64 = 0
 on trade(t) {
 
     tick_count = tick_count + 1
-    hellofrom = 22 * tick_count
+    quince.log("", t.qty)
 }
 
 on eval() {
     quince.log("Hello From Quince-flavored Lua", tick_count)
-    quince.log("", hellofrom)
+
 }

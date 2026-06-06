@@ -506,6 +506,6 @@ async fn intg_empty_strategy() {
     let exchange = MockExchange::new();
     let risk = risk_config();
     let result = Engine::new(exchange, &["BTCUSDT".into()], &path, risk, "test_trades.log");
-    assert!(result.is_ok(), "empty strategy should load");
+    assert!(result.is_err(), "empty strategy should not load");
     let _ = std::fs::remove_file(&path);
 }
