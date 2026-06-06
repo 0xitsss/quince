@@ -120,6 +120,24 @@ impl<E: Exchange> Engine<E> {
         for entry in &ind_cfg {
             let slot = qfl.ensure_indicator_slot(&entry.name);
             indicators.set_name_to_slot(&entry.name, slot);
+            match entry.name.as_str() {
+                "macd" => {
+                    indicators.set_name_to_slot("macd.signal", qfl.ensure_indicator_slot("macd.signal"));
+                    indicators.set_name_to_slot("macd.histogram", qfl.ensure_indicator_slot("macd.histogram"));
+                }
+                "bb" => {
+                    indicators.set_name_to_slot("bb.middle", qfl.ensure_indicator_slot("bb.middle"));
+                    indicators.set_name_to_slot("bb.upper", qfl.ensure_indicator_slot("bb.upper"));
+                    indicators.set_name_to_slot("bb.lower", qfl.ensure_indicator_slot("bb.lower"));
+                    indicators.set_name_to_slot("bb.bandwidth", qfl.ensure_indicator_slot("bb.bandwidth"));
+                }
+                "kc" => {
+                    indicators.set_name_to_slot("kc.middle", qfl.ensure_indicator_slot("kc.middle"));
+                    indicators.set_name_to_slot("kc.upper", qfl.ensure_indicator_slot("kc.upper"));
+                    indicators.set_name_to_slot("kc.lower", qfl.ensure_indicator_slot("kc.lower"));
+                }
+                _ => {}
+            }
         }
         for name in &synthetic_names {
             let slot = qfl.ensure_indicator_slot(name);

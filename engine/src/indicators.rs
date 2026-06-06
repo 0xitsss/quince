@@ -68,7 +68,33 @@ enum ActiveIndicator {
 pub struct IndicatorBank {
     indicators: Vec<ActiveIndicator>,
     results: Vec<(u16, f64)>,
-    name_to_slot: std::collections::HashMap<String, u16>,
+    // All indicator slots — zero HashMap in hot path
+    slot_sma: u16,
+    slot_ema: u16,
+    slot_wma: u16,
+    slot_vwma: u16,
+    slot_lsma: u16,
+    slot_rsi: u16,
+    slot_macd: u16,
+    slot_macd_signal: u16,
+    slot_macd_histogram: u16,
+    slot_cci: u16,
+    slot_roc: u16,
+    slot_stoch: u16,
+    slot_bb_middle: u16,
+    slot_bb_upper: u16,
+    slot_bb_lower: u16,
+    slot_bb_bandwidth: u16,
+    slot_kc_middle: u16,
+    slot_kc_upper: u16,
+    slot_kc_lower: u16,
+    slot_atr: u16,
+    slot_mfi: u16,
+    slot_adx: u16,
+    slot_zscore: u16,
+    slot_cvd: u16,
+    slot_pmdi: u16,
+    slot_nmdi: u16,
     // Pre-cached synthetic slots (zero HashMap lookups in hot path)
     slot_price: u16,
     slot_volume_delta: u16,
@@ -117,7 +143,32 @@ impl IndicatorBank {
         Self {
             indicators,
             results: Vec::with_capacity(64),
-            name_to_slot: std::collections::HashMap::new(),
+            slot_sma: 0,
+            slot_ema: 0,
+            slot_wma: 0,
+            slot_vwma: 0,
+            slot_lsma: 0,
+            slot_rsi: 0,
+            slot_macd: 0,
+            slot_macd_signal: 0,
+            slot_macd_histogram: 0,
+            slot_cci: 0,
+            slot_roc: 0,
+            slot_stoch: 0,
+            slot_bb_middle: 0,
+            slot_bb_upper: 0,
+            slot_bb_lower: 0,
+            slot_bb_bandwidth: 0,
+            slot_kc_middle: 0,
+            slot_kc_upper: 0,
+            slot_kc_lower: 0,
+            slot_atr: 0,
+            slot_mfi: 0,
+            slot_adx: 0,
+            slot_zscore: 0,
+            slot_cvd: 0,
+            slot_pmdi: 0,
+            slot_nmdi: 0,
             slot_price: 0,
             slot_volume_delta: 0,
             slot_avg_trade_size: 0,
@@ -132,9 +183,35 @@ impl IndicatorBank {
     }
 
     /// Pre-assign name→slot mapping (call once at init).
+    /// All indicator slots — zero HashMap lookups in hot path.
     pub fn set_name_to_slot(&mut self, name: &str, slot: u16) {
-        self.name_to_slot.insert(name.to_string(), slot);
         match name {
+            "sma" => self.slot_sma = slot,
+            "ema" => self.slot_ema = slot,
+            "wma" => self.slot_wma = slot,
+            "vwma" => self.slot_vwma = slot,
+            "lsma" => self.slot_lsma = slot,
+            "rsi" => self.slot_rsi = slot,
+            "macd" => self.slot_macd = slot,
+            "macd.signal" => self.slot_macd_signal = slot,
+            "macd.histogram" => self.slot_macd_histogram = slot,
+            "cci" => self.slot_cci = slot,
+            "roc" => self.slot_roc = slot,
+            "stoch" => self.slot_stoch = slot,
+            "bb.middle" => self.slot_bb_middle = slot,
+            "bb.upper" => self.slot_bb_upper = slot,
+            "bb.lower" => self.slot_bb_lower = slot,
+            "bb.bandwidth" => self.slot_bb_bandwidth = slot,
+            "kc.middle" => self.slot_kc_middle = slot,
+            "kc.upper" => self.slot_kc_upper = slot,
+            "kc.lower" => self.slot_kc_lower = slot,
+            "atr" => self.slot_atr = slot,
+            "mfi" => self.slot_mfi = slot,
+            "adx" => self.slot_adx = slot,
+            "zscore" => self.slot_zscore = slot,
+            "cvd" => self.slot_cvd = slot,
+            "pmdi" => self.slot_pmdi = slot,
+            "nmdi" => self.slot_nmdi = slot,
             "price" => self.slot_price = slot,
             "volume_delta" => self.slot_volume_delta = slot,
             "avg_trade_size" => self.slot_avg_trade_size = slot,
@@ -160,7 +237,8 @@ impl IndicatorBank {
             "bid_depth","ask_depth","depth_imbalance",
             "entry_price","unrealized_pnl",
         ] {
-            self.name_to_slot.entry(name.to_string()).or_insert_with(|| { let s = next; next += 1; s });
+            self.set_name_to_slot(name, next);
+            next += 1;
         }
     }
 
@@ -169,71 +247,70 @@ impl IndicatorBank {
         let p = trade.price;
         let v = trade.qty;
         let buy = trade.side == Side::Buy;
-        let slots = &self.name_to_slot;
 
         self.trades += 1;
         if buy { self.cum_buy += v } else { self.cum_sell += v }
 
         for ind in &mut self.indicators {
             match ind {
-                ActiveIndicator::Sma(ind) => { if let Some(val) = ind.update(p) { self.results.push((*slots.get("sma").unwrap_or(&0), val)); } }
-                ActiveIndicator::Ema(ind) => { self.results.push((*slots.get("ema").unwrap_or(&0), ind.update(p))); }
-                ActiveIndicator::Wma(ind) => { if let Some(val) = ind.update(p) { self.results.push((*slots.get("wma").unwrap_or(&0), val)); } }
-                ActiveIndicator::Vwma(ind) => { if let Some(val) = ind.update(p, v) { self.results.push((*slots.get("vwma").unwrap_or(&0), val)); } }
-                ActiveIndicator::Lsma(ind) => { if let Some(val) = ind.update(p) { self.results.push((*slots.get("lsma").unwrap_or(&0), val)); } }
-                ActiveIndicator::Rsi(ind) => { if let Some(val) = ind.update(p) { self.results.push((*slots.get("rsi").unwrap_or(&0), val)); } }
+                ActiveIndicator::Sma(ind) => { if let Some(val) = ind.update(p) { self.results.push((self.slot_sma, val)); } }
+                ActiveIndicator::Ema(ind) => { self.results.push((self.slot_ema, ind.update(p))); }
+                ActiveIndicator::Wma(ind) => { if let Some(val) = ind.update(p) { self.results.push((self.slot_wma, val)); } }
+                ActiveIndicator::Vwma(ind) => { if let Some(val) = ind.update(p, v) { self.results.push((self.slot_vwma, val)); } }
+                ActiveIndicator::Lsma(ind) => { if let Some(val) = ind.update(p) { self.results.push((self.slot_lsma, val)); } }
+                ActiveIndicator::Rsi(ind) => { if let Some(val) = ind.update(p) { self.results.push((self.slot_rsi, val)); } }
                 ActiveIndicator::Macd(ind) => {
                     if let Some(o) = ind.update(p) {
-                        self.results.push((*slots.get("macd").unwrap_or(&0), o.macd_line));
-                        self.results.push((*slots.get("macd.signal").unwrap_or(&0), o.signal_line));
-                        self.results.push((*slots.get("macd.histogram").unwrap_or(&0), o.histogram));
+                        self.results.push((self.slot_macd, o.macd_line));
+                        self.results.push((self.slot_macd_signal, o.signal_line));
+                        self.results.push((self.slot_macd_histogram, o.histogram));
                     }
                 }
-                ActiveIndicator::Cci(ind) => { if let Some(val) = ind.update(p, p, p) { self.results.push((*slots.get("cci").unwrap_or(&0), val)); } }
-                ActiveIndicator::Roc(ind) => { if let Some(val) = ind.update(p) { self.results.push((*slots.get("roc").unwrap_or(&0), val)); } }
-                ActiveIndicator::Stoch(ind) => { if let Some(val) = ind.update(p, p, p) { self.results.push((*slots.get("stoch").unwrap_or(&0), val)); } }
+                ActiveIndicator::Cci(ind) => { if let Some(val) = ind.update(p, p, p) { self.results.push((self.slot_cci, val)); } }
+                ActiveIndicator::Roc(ind) => { if let Some(val) = ind.update(p) { self.results.push((self.slot_roc, val)); } }
+                ActiveIndicator::Stoch(ind) => { if let Some(val) = ind.update(p, p, p) { self.results.push((self.slot_stoch, val)); } }
                 ActiveIndicator::Bb(ind) => {
                     if let Some(o) = ind.update(p) {
-                        self.results.push((*slots.get("bb.middle").unwrap_or(&0), o.middle));
-                        self.results.push((*slots.get("bb.upper").unwrap_or(&0), o.upper));
-                        self.results.push((*slots.get("bb.lower").unwrap_or(&0), o.lower));
-                        self.results.push((*slots.get("bb.bandwidth").unwrap_or(&0), o.bandwidth));
+                        self.results.push((self.slot_bb_middle, o.middle));
+                        self.results.push((self.slot_bb_upper, o.upper));
+                        self.results.push((self.slot_bb_lower, o.lower));
+                        self.results.push((self.slot_bb_bandwidth, o.bandwidth));
                     }
                 }
                 ActiveIndicator::Kc(ind) => {
                     if let Some(o) = ind.update(p, p, p) {
-                        self.results.push((*slots.get("kc.middle").unwrap_or(&0), o.middle));
-                        self.results.push((*slots.get("kc.upper").unwrap_or(&0), o.upper));
-                        self.results.push((*slots.get("kc.lower").unwrap_or(&0), o.lower));
+                        self.results.push((self.slot_kc_middle, o.middle));
+                        self.results.push((self.slot_kc_upper, o.upper));
+                        self.results.push((self.slot_kc_lower, o.lower));
                     }
                 }
-                ActiveIndicator::Atr(ind) => { if let Some(val) = ind.update(p, p, p) { self.results.push((*slots.get("atr").unwrap_or(&0), val)); } }
+                ActiveIndicator::Atr(ind) => { if let Some(val) = ind.update(p, p, p) { self.results.push((self.slot_atr, val)); } }
                 ActiveIndicator::Mfi(ind) => {
                     let candle = Candle::from_trade(p, v);
-                    if let Some(val) = ind.update(&candle) { self.results.push((*slots.get("mfi").unwrap_or(&0), val)); }
+                    if let Some(val) = ind.update(&candle) { self.results.push((self.slot_mfi, val)); }
                 }
                 ActiveIndicator::Adx(ind) => {
                     let candle = Candle::from_trade(p, v);
-                    if let Some(val) = ind.update(&candle) { self.results.push((*slots.get("adx").unwrap_or(&0), val)); }
+                    if let Some(val) = ind.update(&candle) { self.results.push((self.slot_adx, val)); }
                 }
-                ActiveIndicator::Zscore(ind) => { if let Some(val) = ind.update(p) { self.results.push((*slots.get("zscore").unwrap_or(&0), val)); } }
+                ActiveIndicator::Zscore(ind) => { if let Some(val) = ind.update(p) { self.results.push((self.slot_zscore, val)); } }
                 ActiveIndicator::Cvd(cum) => {
                     if buy { *cum += v } else { *cum -= v }
-                    self.results.push((*slots.get("cvd").unwrap_or(&0), *cum));
+                    self.results.push((self.slot_cvd, *cum));
                 }
                 ActiveIndicator::Pmdi { value, prev_data, has_prev } => {
                     if *has_prev {
                         if p > *prev_data { *value += value.max(1.0) * ((p + *prev_data) / *prev_data); }
                         *prev_data = p;
                     } else { *value = p; *prev_data = p; *has_prev = true; }
-                    self.results.push((*slots.get("pmdi").unwrap_or(&0), *value));
+                    self.results.push((self.slot_pmdi, *value));
                 }
                 ActiveIndicator::Nmdi { value, prev_data, has_prev } => {
                     if *has_prev {
                         if p < *prev_data { *value += value.max(1.0) * ((p + *prev_data) / *prev_data); }
                         *prev_data = p;
                     } else { *value = p; *prev_data = p; *has_prev = true; }
-                    self.results.push((*slots.get("nmdi").unwrap_or(&0), *value));
+                    self.results.push((self.slot_nmdi, *value));
                 }
             }
         }

@@ -38,12 +38,12 @@ fn main() {
             Ok(p) => p,
             Err(e) => { eprintln!("parse {path}: {e}"); continue; }
         };
-        let before = compile(&program);
-        let after = optimize(&before);
+        let mut before = compile(&program);
+        optimize(&mut before);
 
         println!("────────────────────────────────────────────");
         println!("  file: {path}");
         dump_prog("BEFORE", &before);
-        dump_prog("AFTER (optimized)", &after);
+        dump_prog("AFTER (optimized)", &before);
     }
 }

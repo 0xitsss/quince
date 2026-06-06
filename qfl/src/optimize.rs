@@ -8,17 +8,20 @@ use crate::opcodes::{InstrEncoding, Instruction, Opcode as O};
 use std::collections::HashMap;
 
 /// Run the full optimization pipeline on a compiled program.
-pub fn optimize(prog: &QfrProgram) -> QfrProgram {
-    let prog = constant_fold(prog);
-    let prog = cfg_simplify(&prog);
-    let prog = sccp(&prog);
-    let prog = common_subexpr_elim(&prog);
-    let prog = local_shadowing(&prog);
-    let prog = licm(&prog);
-    let prog = loop_unroll(&prog);
-    let prog = fused_lowering(&prog);
-    let prog = global_value_numbering(&prog);
-    dead_code_eliminate(&prog)
+pub fn optimize(prog: &mut QfrProgram) {
+    // Take ownership via replace to avoid pipeline-level re-cloning.
+    let mut p = std::mem::replace(prog, QfrProgram::new());
+    p = constant_fold(&p);
+    p = cfg_simplify(&p);
+    p = sccp(&p);
+    p = common_subexpr_elim(&p);
+    p = local_shadowing(&p);
+    p = licm(&p);
+    p = loop_unroll(&p);
+    p = fused_lowering(&p);
+    p = global_value_numbering(&p);
+    p = dead_code_eliminate(&p);
+    *prog = p;
 }
 
 /// Dead Code Elimination pass.
@@ -2196,89 +2199,89 @@ mod tests {
 
     #[test]
     fn fold_int_add() {
-        let p = make_prog(vec![
+        let mut p = make_prog(vec![
             I::rri(O::Ldi, 0, 0, 2),
             I::rri(O::Ldi, 1, 0, 3),
             I::rrr(O::Add, 2, 0, 1),
         ]);
         let opt = constant_fold(&p);
-        assert_eq!(opt.code.len(), 3);
-        assert_eq!(opt.code[2].opcode(), O::Ldi);
-        assert_eq!(opt.code[2].rd(), 2);
-        assert_eq!(opt.code[2].imm_signed(), 5);
+        assert_eq!(p.code.len(), 3);
+        assert_eq!(p.code[2].opcode(), O::Ldi);
+        assert_eq!(p.code[2].rd(), 2);
+        assert_eq!(p.code[2].imm_signed(), 5);
     }
 
     #[test]
     fn fold_int_sub() {
-        let p = make_prog(vec![
+        let mut p = make_prog(vec![
             I::rri(O::Ldi, 0, 0, 10),
             I::rri(O::Ldi, 1, 0, 3),
             I::rrr(O::Sub, 2, 0, 1),
         ]);
         let opt = constant_fold(&p);
-        assert_eq!(opt.code[2].opcode(), O::Ldi);
-        assert_eq!(opt.code[2].imm_signed(), 7);
+        assert_eq!(p.code[2].opcode(), O::Ldi);
+        assert_eq!(p.code[2].imm_signed(), 7);
     }
 
     #[test]
     fn fold_int_mul() {
-        let p = make_prog(vec![
+        let mut p = make_prog(vec![
             I::rri(O::Ldi, 0, 0, 7),
             I::rri(O::Ldi, 1, 0, 6),
             I::rrr(O::Mul, 2, 0, 1),
         ]);
         let opt = constant_fold(&p);
-        assert_eq!(opt.code[2].imm_signed(), 42);
+        assert_eq!(p.code[2].imm_signed(), 42);
     }
 
     #[test]
     fn fold_int_div() {
-        let p = make_prog(vec![
+        let mut p = make_prog(vec![
             I::rri(O::Ldi, 0, 0, 50),
             I::rri(O::Ldi, 1, 0, 5),
             I::rrr(O::Div, 2, 0, 1),
         ]);
         let opt = constant_fold(&p);
-        assert_eq!(opt.code[2].imm_signed(), 10);
+        assert_eq!(p.code[2].imm_signed(), 10);
     }
 
     #[test]
     fn fold_int_mod() {
-        let p = make_prog(vec![
+        let mut p = make_prog(vec![
             I::rri(O::Ldi, 0, 0, 10),
             I::rri(O::Ldi, 1, 0, 3),
             I::rrr(O::Mod, 2, 0, 1),
         ]);
         let opt = constant_fold(&p);
-        assert_eq!(opt.code[2].imm_signed(), 1);
+        assert_eq!(p.code[2].imm_signed(), 1);
     }
 
     #[test]
     fn fold_int_neg() {
-        let p = make_prog(vec![
+        let mut p = make_prog(vec![
             I::rri(O::Ldi, 0, 0, 42),
             I::rr(O::Neg, 1, 0),
         ]);
         let opt = constant_fold(&p);
-        assert_eq!(opt.code[1].opcode(), O::Ldi);
-        assert_eq!(opt.code[1].imm_signed(), -42);
+        assert_eq!(p.code[1].opcode(), O::Ldi);
+        assert_eq!(p.code[1].imm_signed(), -42);
     }
 
     #[test]
     fn fold_mov_propagates_lit_to_int() {
-        let p = make_prog(vec![
+        let mut p = make_prog(vec![
             I::rri(O::Ldi, 0, 0, 100),
             I::rr(O::Mov, 1, 0),
         ]);
         let opt = constant_fold(&p);
-        assert_eq!(opt.code[1].opcode(), O::Ldi);
-        assert_eq!(opt.code[1].rd(), 1);
-        assert_eq!(opt.code[1].imm_signed(), 100);
+        assert_eq!(p.code[1].opcode(), O::Ldi);
+        assert_eq!(p.code[1].rd(), 1);
+        assert_eq!(p.code[1].imm_signed(), 100);
     }
 
     #[test]
     fn fold_chained_arithmetic() {
-        let p = make_prog(vec![
+        let mut p = make_prog(vec![
             I::rri(O::Ldi, 0, 0, 2),
             I::rri(O::Ldi, 1, 0, 3),
             I::rrr(O::Add, 2, 0, 1),  // 2+3=5
@@ -2286,79 +2289,79 @@ mod tests {
             I::rrr(O::Mul, 4, 2, 3), // 5*4=20
         ]);
         let opt = constant_fold(&p);
-        assert_eq!(opt.code[2].opcode(), O::Ldi);
-        assert_eq!(opt.code[2].imm_signed(), 5);
-        assert_eq!(opt.code[4].opcode(), O::Ldi);
+        assert_eq!(p.code[2].opcode(), O::Ldi);
+        assert_eq!(p.code[2].imm_signed(), 5);
+        assert_eq!(p.code[4].opcode(), O::Ldi);
         assert_eq!(opt.code[4].rd(), 4);
-        assert_eq!(opt.code[4].imm_signed(), 20);
+        assert_eq!(p.code[4].imm_signed(), 20);
     }
 
     #[test]
     fn fold_cmp_eq() {
-        let p = make_prog(vec![
+        let mut p = make_prog(vec![
             I::rri(O::Ldi, 0, 0, 5),
             I::rri(O::Ldi, 1, 0, 5),
             I::rrr(O::Eq, 2, 0, 1),
         ]);
         let opt = constant_fold(&p);
-        assert_eq!(opt.code[2].imm_signed(), 1);
+        assert_eq!(p.code[2].imm_signed(), 1);
     }
 
     #[test]
     fn fold_cmp_gt() {
-        let p = make_prog(vec![
+        let mut p = make_prog(vec![
             I::rri(O::Ldi, 0, 0, 10),
             I::rri(O::Ldi, 1, 0, 3),
             I::rrr(O::Gt, 2, 0, 1),
         ]);
         let opt = constant_fold(&p);
-        assert_eq!(opt.code[2].imm_signed(), 1);
+        assert_eq!(p.code[2].imm_signed(), 1);
     }
 
     #[test]
     fn fold_cmp_lt_false() {
-        let p = make_prog(vec![
+        let mut p = make_prog(vec![
             I::rri(O::Ldi, 0, 0, 3),
             I::rri(O::Ldi, 1, 0, 10),
             I::rrr(O::Gt, 2, 0, 1),
         ]);
         let opt = constant_fold(&p);
-        assert_eq!(opt.code[2].imm_signed(), 0);
+        assert_eq!(p.code[2].imm_signed(), 0);
     }
 
     // ── Bitwise ──
 
     #[test]
     fn fold_bitwise_and() {
-        let p = make_prog(vec![
+        let mut p = make_prog(vec![
             I::rri(O::Ldi, 0, 0, 0xff),
             I::rri(O::Ldi, 1, 0, 0x0f),
             I::rrr(O::BitAnd, 2, 0, 1),
         ]);
         let opt = constant_fold(&p);
-        assert_eq!(opt.code[2].imm_signed(), 0x0f);
+        assert_eq!(p.code[2].imm_signed(), 0x0f);
     }
 
     #[test]
     fn fold_bitwise_or() {
-        let p = make_prog(vec![
+        let mut p = make_prog(vec![
             I::rri(O::Ldi, 0, 0, 0xf0),
             I::rri(O::Ldi, 1, 0, 0x0f),
             I::rrr(O::BitOr, 2, 0, 1),
         ]);
         let opt = constant_fold(&p);
-        assert_eq!(opt.code[2].imm_signed(), 0xff);
+        assert_eq!(p.code[2].imm_signed(), 0xff);
     }
 
     #[test]
     fn fold_shift_left() {
-        let p = make_prog(vec![
+        let mut p = make_prog(vec![
             I::rri(O::Ldi, 0, 0, 1),
             I::rri(O::Ldi, 1, 0, 8),
             I::rrr(O::Shl, 2, 0, 1),
         ]);
         let opt = constant_fold(&p);
-        assert_eq!(opt.code[2].imm_signed(), 256);
+        assert_eq!(p.code[2].imm_signed(), 256);
     }
 
     // ── Float constant folding ──
@@ -2374,11 +2377,11 @@ mod tests {
             I::rrr(O::FAdd, 194, 192, 193),
         ];
         let opt = constant_fold(&p);
-        assert_eq!(opt.code[2].opcode(), O::Ldc);
+        assert_eq!(p.code[2].opcode(), O::Ldc);
 
         // Check the folded constant pool entry
         let f_idx = opt.code[2].imm() as usize;
-        if let crate::ir::ConstEntry::F64(val) = &opt.const_pool[f_idx] {
+        if let crate::ir::ConstEntry::F64(val) = &p.const_pool[f_idx] {
             assert!((*val - 4.0).abs() < 0.0001);
         } else {
             panic!("expected F64 const entry");
@@ -2397,7 +2400,7 @@ mod tests {
         ];
         let opt = constant_fold(&p);
         let f_idx = opt.code[2].imm() as usize;
-        if let crate::ir::ConstEntry::F64(val) = &opt.const_pool[f_idx] {
+        if let crate::ir::ConstEntry::F64(val) = &p.const_pool[f_idx] {
             assert!((*val - 6.5).abs() < 0.0001);
         } else {
             panic!("expected F64");
@@ -2416,7 +2419,7 @@ mod tests {
         ];
         let opt = constant_fold(&p);
         let f_idx = opt.code[2].imm() as usize;
-        if let crate::ir::ConstEntry::F64(val) = &opt.const_pool[f_idx] {
+        if let crate::ir::ConstEntry::F64(val) = &p.const_pool[f_idx] {
             assert!((*val - 4.5).abs() < 0.0001);
         } else {
             panic!("expected F64");
@@ -2432,9 +2435,9 @@ mod tests {
             I::rr(O::FNeg, 193, 192),
         ];
         let opt = constant_fold(&p);
-        assert_eq!(opt.code[1].opcode(), O::Ldc);
+        assert_eq!(p.code[1].opcode(), O::Ldc);
         let f_idx = opt.code[1].imm() as usize;
-        if let crate::ir::ConstEntry::F64(val) = &opt.const_pool[f_idx] {
+        if let crate::ir::ConstEntry::F64(val) = &p.const_pool[f_idx] {
             assert!((*val - -3.14).abs() < 0.0001);
         } else {
             panic!("expected F64");
@@ -2445,14 +2448,14 @@ mod tests {
 
     #[test]
     fn fold_i2f() {
-        let p = make_prog(vec![
+        let mut p = make_prog(vec![
             I::rri(O::Ldi, 0, 0, 42),
             I::rr(O::I2F, 192, 0),
         ]);
         let opt = constant_fold(&p);
-        assert_eq!(opt.code[1].opcode(), O::Ldc);
+        assert_eq!(p.code[1].opcode(), O::Ldc);
         let f_idx = opt.code[1].imm() as usize;
-        if let crate::ir::ConstEntry::F64(val) = &opt.const_pool[f_idx] {
+        if let crate::ir::ConstEntry::F64(val) = &p.const_pool[f_idx] {
             assert!((*val - 42.0).abs() < 0.0001);
         } else {
             panic!("expected F64");
@@ -2468,8 +2471,8 @@ mod tests {
             I::rr(O::F2I, 1, 192),
         ];
         let opt = constant_fold(&p);
-        assert_eq!(opt.code[1].opcode(), O::Ldi);
-        assert_eq!(opt.code[1].imm_signed(), 3);
+        assert_eq!(p.code[1].opcode(), O::Ldi);
+        assert_eq!(p.code[1].imm_signed(), 3);
     }
 
     // ── Control flow boundary ──
@@ -2477,7 +2480,7 @@ mod tests {
 
     #[test]
     fn control_flow_clears_known_state() {
-        let p = make_prog(vec![
+        let mut p = make_prog(vec![
             I::rri(O::Ldi, 0, 0, 5),
             I::single(O::Ret),
             I::rri(O::Ldi, 1, 0, 10),
@@ -2485,17 +2488,17 @@ mod tests {
         ]);
         let opt = constant_fold(&p);
         // After Ret, const state cleared, so Add not folded
-        assert_eq!(opt.code[3].opcode(), O::Add);
+        assert_eq!(p.code[3].opcode(), O::Add);
     }
 
     #[test]
     fn no_fold_on_unknown_register() {
-        let p = make_prog(vec![
+        let mut p = make_prog(vec![
             I::rri(O::Ldi, 0, 0, 5),
             I::rrr(O::Add, 2, 0, 1), // r1 is unknown
         ]);
         let opt = constant_fold(&p);
-        assert_eq!(opt.code[1].opcode(), O::Add);
+        assert_eq!(p.code[1].opcode(), O::Add);
     }
 
     // ── Ldi64 folding ──
@@ -2510,9 +2513,9 @@ mod tests {
         ];
         let opt = constant_fold(&p);
         // Result doesn't fit in 32-bit or 40-bit → uses Ldc
-        assert_eq!(opt.code[2].opcode(), O::Ldc);
+        assert_eq!(p.code[2].opcode(), O::Ldc);
         let f_idx = opt.code[2].imm() as usize;
-        if let crate::ir::ConstEntry::F64(val) = &opt.const_pool[f_idx] {
+        if let crate::ir::ConstEntry::F64(val) = &p.const_pool[f_idx] {
             assert!((*val - 600_000_000_000.0).abs() < 0.5);
         } else {
             panic!("expected F64 const entry");
@@ -2531,7 +2534,7 @@ mod tests {
             I::rrr(O::FEq, 2, 192, 193),
         ];
         let opt = constant_fold(&p);
-        assert_eq!(opt.code[2].opcode(), O::Ldc);
+        assert_eq!(p.code[2].opcode(), O::Ldc);
     }
 
     #[test]
@@ -2546,7 +2549,7 @@ mod tests {
         ];
         let opt = constant_fold(&p);
         let f_idx = opt.code[2].imm() as usize;
-        if let crate::ir::ConstEntry::F64(val) = &opt.const_pool[f_idx] {
+        if let crate::ir::ConstEntry::F64(val) = &p.const_pool[f_idx] {
             assert!((*val - 1.0).abs() < 0.0001, "1.0 < 2.0 should be true (1.0)");
         } else {
             panic!("expected F64");
@@ -2560,16 +2563,16 @@ mod tests {
         let mut p = QfrProgram::new();
         p.entries.push(crate::ir::EntryPoint { name: "main".into(), code_offset: 0 });
         p.code = vec![I::single(O::Ret)];
-        let opt = optimize(&p);
-        assert_eq!(opt.code.len(), 1);
-        assert_eq!(opt.code[0].opcode(), O::Ret);
+        optimize(&mut p);
+        assert_eq!(p.code.len(), 1);
+        assert_eq!(p.code[0].opcode(), O::Ret);
     }
 
     #[test]
     fn optimize_with_no_entries_removes_all_code() {
-        let p = make_prog(vec![I::single(O::Ret)]);
-        let opt = optimize(&p);
-        assert!(opt.code.is_empty());
+        let mut p = make_prog(vec![I::single(O::Ret)]);
+        optimize(&mut p);
+        assert!(p.code.is_empty());
     }
 
     // ── Realistic strategies ──
@@ -2588,106 +2591,106 @@ mod tests {
             I::rrr(O::FMul, 195, 192, 194), // 50000 * 100 = 5_000_000
         ];
         let opt = constant_fold(&p);
-        assert_eq!(opt.code[2].opcode(), O::Ldc);
-        assert_eq!(opt.code[3].opcode(), O::Ldc);
+        assert_eq!(p.code[2].opcode(), O::Ldc);
+        assert_eq!(p.code[3].opcode(), O::Ldc);
     }
 
     #[test]
     fn control_flow_jmp_clears_state() {
-        let p = make_prog(vec![
+        let mut p = make_prog(vec![
             I::rri(O::Ldi, 0, 0, 5),
             I::ri(O::Jmp, 0, 3),     // unconditional jump
             I::rri(O::Ldi, 1, 0, 10),  // after jmp (would be unreachable)
             I::rrr(O::Add, 2, 0, 1),   // after jmp target
         ]);
         let opt = constant_fold(&p);
-        assert_eq!(opt.code.len(), 4);
+        assert_eq!(p.code.len(), 4);
     }
 
     // ── Immediate op folding ──
 
     #[test]
     fn fold_addi() {
-        let p = make_prog(vec![
+        let mut p = make_prog(vec![
             I::rri(O::Ldi, 0, 0, 10),
             I::rri(O::AddI, 1, 0, 5),
         ]);
         let opt = constant_fold(&p);
-        assert_eq!(opt.code[1].opcode(), O::Ldi);
-        assert_eq!(opt.code[1].imm_signed(), 15);
+        assert_eq!(p.code[1].opcode(), O::Ldi);
+        assert_eq!(p.code[1].imm_signed(), 15);
     }
 
     #[test]
     fn fold_subi() {
-        let p = make_prog(vec![
+        let mut p = make_prog(vec![
             I::rri(O::Ldi, 0, 0, 20),
             I::rri(O::SubI, 1, 0, 7),
         ]);
         let opt = constant_fold(&p);
-        assert_eq!(opt.code[1].imm_signed(), 13);
+        assert_eq!(p.code[1].imm_signed(), 13);
     }
 
     #[test]
     fn fold_muli() {
-        let p = make_prog(vec![
+        let mut p = make_prog(vec![
             I::rri(O::Ldi, 0, 0, 6),
             I::rri(O::MulI, 1, 0, 7),
         ]);
         let opt = constant_fold(&p);
-        assert_eq!(opt.code[1].imm_signed(), 42);
+        assert_eq!(p.code[1].imm_signed(), 42);
     }
 
     #[test]
     fn fold_divi() {
-        let p = make_prog(vec![
+        let mut p = make_prog(vec![
             I::rri(O::Ldi, 0, 0, 100),
             I::rri(O::DivI, 1, 0, 4),
         ]);
         let opt = constant_fold(&p);
-        assert_eq!(opt.code[1].imm_signed(), 25);
+        assert_eq!(p.code[1].imm_signed(), 25);
     }
 
     #[test]
     fn fold_eqi() {
-        let p = make_prog(vec![
+        let mut p = make_prog(vec![
             I::rri(O::Ldi, 0, 0, 42),
             I::rri(O::EqI, 1, 0, 42),
         ]);
         let opt = constant_fold(&p);
-        assert_eq!(opt.code[1].imm_signed(), 1);
+        assert_eq!(p.code[1].imm_signed(), 1);
     }
 
     #[test]
     fn fold_lti() {
-        let p = make_prog(vec![
+        let mut p = make_prog(vec![
             I::rri(O::Ldi, 0, 0, 3),
             I::rri(O::LtI, 1, 0, 10),
         ]);
         let opt = constant_fold(&p);
-        assert_eq!(opt.code[1].imm_signed(), 1);
+        assert_eq!(p.code[1].imm_signed(), 1);
     }
 
     #[test]
     fn fold_gti() {
-        let p = make_prog(vec![
+        let mut p = make_prog(vec![
             I::rri(O::Ldi, 0, 0, 15),
             I::rri(O::GtI, 1, 0, 10),
         ]);
         let opt = constant_fold(&p);
-        assert_eq!(opt.code[1].imm_signed(), 1);
+        assert_eq!(p.code[1].imm_signed(), 1);
     }
 
     // ── Division by zero safety ──
 
     #[test]
     fn fold_div_by_zero_returns_zero() {
-        let p = make_prog(vec![
+        let mut p = make_prog(vec![
             I::rri(O::Ldi, 0, 0, 10),
             I::rri(O::Ldi, 1, 0, 0),
             I::rrr(O::Div, 2, 0, 1),
         ]);
         let opt = constant_fold(&p);
-        assert_eq!(opt.code[2].imm_signed(), 0);
+        assert_eq!(p.code[2].imm_signed(), 0);
     }
 
     #[test]
@@ -2702,7 +2705,7 @@ mod tests {
         ];
         let opt = constant_fold(&p);
         let f_idx = opt.code[2].imm() as usize;
-        if let crate::ir::ConstEntry::F64(val) = &opt.const_pool[f_idx] {
+        if let crate::ir::ConstEntry::F64(val) = &p.const_pool[f_idx] {
             assert!((*val - 0.0).abs() < 0.0001);
         } else {
             panic!("expected F64");
@@ -2725,9 +2728,9 @@ mod tests {
             I::single(O::Ret),
         ];
         let opt = constant_fold(&p);
-        assert_eq!(opt.entries.len(), 1);
-        assert_eq!(opt.entries[0].name, "on_trade");
-        assert_eq!(opt.entries[0].code_offset, 0);
+        assert_eq!(p.entries.len(), 1);
+        assert_eq!(p.entries[0].name, "on_trade");
+        assert_eq!(p.entries[0].code_offset, 0);
     }
 
     #[test]
@@ -2736,8 +2739,8 @@ mod tests {
         let s_idx = p.intern_string("test");
         p.code = vec![I::single(O::Ret)];
         let opt = constant_fold(&p);
-        assert_eq!(opt.const_pool.len(), 1);
-        if let crate::ir::ConstEntry::String(s) = &opt.const_pool[s_idx as usize] {
+        assert_eq!(p.const_pool.len(), 1);
+        if let crate::ir::ConstEntry::String(s) = &p.const_pool[s_idx as usize] {
             assert_eq!(s, "test");
         } else {
             panic!("expected string");
@@ -2757,7 +2760,7 @@ mod tests {
             I::single(O::Ret),
         ];
         let opt = dead_code_eliminate(&p);
-        assert_eq!(opt.code.len(), 4);
+        assert_eq!(p.code.len(), 4);
     }
 
     #[test]
@@ -2775,12 +2778,12 @@ mod tests {
         // Reachable: [0], [4], [5]
         // New: 0→0, 4→1, 5→2
         let opt = dead_code_eliminate(&p);
-        assert_eq!(opt.code.len(), 3);
-        assert_eq!(opt.code[0].opcode(), O::Jmp);
+        assert_eq!(p.code.len(), 3);
+        assert_eq!(p.code[0].opcode(), O::Jmp);
         // Jmp at new[0], target old[4]→new[1]: offset = 1 - 0 - 1 = 0
-        assert_eq!(opt.code[0].imm_signed(), 0);
-        assert_eq!(opt.code[1].opcode(), O::Ldi);
-        assert_eq!(opt.code[2].opcode(), O::Ret);
+        assert_eq!(p.code[0].imm_signed(), 0);
+        assert_eq!(p.code[1].opcode(), O::Ldi);
+        assert_eq!(p.code[2].opcode(), O::Ret);
     }
 
     #[test]
@@ -2796,7 +2799,7 @@ mod tests {
             I::single(O::Ret),         // [5]
         ];
         let opt = dead_code_eliminate(&p);
-        assert_eq!(opt.code.len(), 6); // nothing removed
+        assert_eq!(p.code.len(), 6); // nothing removed
     }
 
     #[test]
@@ -2813,12 +2816,12 @@ mod tests {
             I::single(O::Ret),         // [5]
         ];
         let opt = dead_code_eliminate(&p);
-        assert_eq!(opt.code.len(), 4);
-        assert_eq!(opt.code[0].opcode(), O::Ldi);
-        assert_eq!(opt.code[1].opcode(), O::Ret);
-        assert_eq!(opt.code[2].opcode(), O::Ldi);
-        assert_eq!(opt.code[2].rd(), 3);
-        assert_eq!(opt.code[3].opcode(), O::Ret);
+        assert_eq!(p.code.len(), 4);
+        assert_eq!(p.code[0].opcode(), O::Ldi);
+        assert_eq!(p.code[1].opcode(), O::Ret);
+        assert_eq!(p.code[2].opcode(), O::Ldi);
+        assert_eq!(p.code[2].rd(), 3);
+        assert_eq!(p.code[3].opcode(), O::Ret);
     }
 
     #[test]
@@ -2838,10 +2841,10 @@ mod tests {
         // Reachable: [0][1][2][3][4][6][7], dead: [5]
         // New: 0→0, 1→1, 2→2, 3→3, 4→4, 5→removed, 6→5, 7→6
         let opt = dead_code_eliminate(&p);
-        assert_eq!(opt.code.len(), 7);
+        assert_eq!(p.code.len(), 7);
         // Jz at new[2]: target old[6]→new[5], offset = 5-2-1 = 2
-        assert_eq!(opt.code[2].opcode(), O::Jz);
-        assert_eq!(opt.code[2].imm_signed(), 2);
+        assert_eq!(p.code[2].opcode(), O::Jz);
+        assert_eq!(p.code[2].imm_signed(), 2);
     }
 
     #[test]
@@ -2860,28 +2863,28 @@ mod tests {
         // Reachable: [0][1][2][3][5][6], dead: [4]
         // New: 0→0, 1→1, 2→2, 3→3, 4→removed, 5→4, 6→5
         let opt = dead_code_eliminate(&p);
-        assert_eq!(opt.code.len(), 6);
+        assert_eq!(p.code.len(), 6);
         // Jmp at new[3]: target old[1]→new[1]: offset = 1-3-1 = -3
-        assert_eq!(opt.code[3].opcode(), O::Jmp);
-        assert_eq!(opt.code[3].imm_signed(), -3);
+        assert_eq!(p.code[3].opcode(), O::Jmp);
+        assert_eq!(p.code[3].imm_signed(), -3);
     }
 
     #[test]
     fn dce_empty_program_unchanged() {
-        let p = QfrProgram::new();
+        let mut p = QfrProgram::new();
         let opt = dead_code_eliminate(&p);
-        assert!(opt.code.is_empty());
+        assert!(p.code.is_empty());
     }
 
     #[test]
     fn dce_no_entry_points_retains_all() {
-        let p = make_prog(vec![
+        let mut p = make_prog(vec![
             I::rri(O::Ldi, 0, 0, 1),
             I::single(O::Ret),
         ]);
         // No entries → no reachable code → all removed
         let opt = dead_code_eliminate(&p);
-        assert!(opt.code.is_empty());
+        assert!(p.code.is_empty());
     }
 
     #[test]
@@ -2894,7 +2897,7 @@ mod tests {
             I::single(O::Ret),
         ];
         let opt = dead_code_eliminate(&p);
-        assert_eq!(opt.const_pool.len(), 1);
+        assert_eq!(p.const_pool.len(), 1);
         assert!(opt.const_map.contains_key("hello"));
     }
 
@@ -2904,9 +2907,9 @@ mod tests {
         p.entries.push(crate::ir::EntryPoint { name: "on_trade".into(), code_offset: 0 });
         p.code = vec![I::single(O::Ret)];
         let opt = dead_code_eliminate(&p);
-        assert_eq!(opt.entries.len(), 1);
-        assert_eq!(opt.entries[0].name, "on_trade");
-        assert_eq!(opt.entries[0].code_offset, 0);
+        assert_eq!(p.entries.len(), 1);
+        assert_eq!(p.entries[0].name, "on_trade");
+        assert_eq!(p.entries[0].code_offset, 0);
     }
 
     #[test]
@@ -2922,173 +2925,173 @@ mod tests {
             I::single(O::Ret),            // [5]
         ];
         // Reachable: [0], [1], [4], [5]
-        let opt = optimize(&p);
-        assert_eq!(opt.code.len(), 4);
+        optimize(&mut p);
+        assert_eq!(p.code.len(), 4);
     }
 
     // ── Common Subexpression Elimination ──
 
     #[test]
     fn cse_same_add_replaced_with_mov() {
-        let p = make_prog(vec![
+        let mut p = make_prog(vec![
             I::rrr(O::Add, 2, 0, 1), // r2 = r0 + r1
             I::rrr(O::Add, 3, 0, 1), // r3 = r0 + r1 → Mov r3, r2
         ]);
         let opt = common_subexpr_elim(&p);
-        assert_eq!(opt.code.len(), 2);
-        assert_eq!(opt.code[0].opcode(), O::Add);
-        assert_eq!(opt.code[1].opcode(), O::Mov);
-        assert_eq!(opt.code[1].rd(), 3);
+        assert_eq!(p.code.len(), 2);
+        assert_eq!(p.code[0].opcode(), O::Add);
+        assert_eq!(p.code[1].opcode(), O::Mov);
+        assert_eq!(p.code[1].rd(), 3);
         assert_eq!(opt.code[1].rs1(), 2);
     }
 
     #[test]
     fn cse_same_fadd_replaced() {
-        let p = make_prog(vec![
+        let mut p = make_prog(vec![
             I::rrr(O::FAdd, 194, 192, 193),
             I::rrr(O::FAdd, 195, 192, 193),
         ]);
         let opt = common_subexpr_elim(&p);
-        assert_eq!(opt.code.len(), 2);
-        assert_eq!(opt.code[1].opcode(), O::Mov);
+        assert_eq!(p.code.len(), 2);
+        assert_eq!(p.code[1].opcode(), O::Mov);
     }
 
     #[test]
     fn cse_different_op_not_eliminated() {
-        let p = make_prog(vec![
+        let mut p = make_prog(vec![
             I::rrr(O::Add, 2, 0, 1),
             I::rrr(O::Sub, 3, 0, 1), // different op → not eliminated
         ]);
         let opt = common_subexpr_elim(&p);
-        assert_eq!(opt.code.len(), 2);
-        assert_eq!(opt.code[1].opcode(), O::Sub);
+        assert_eq!(p.code.len(), 2);
+        assert_eq!(p.code[1].opcode(), O::Sub);
     }
 
     #[test]
     fn cse_different_regs_not_eliminated() {
-        let p = make_prog(vec![
+        let mut p = make_prog(vec![
             I::rrr(O::Add, 2, 0, 1),
             I::rrr(O::Add, 3, 0, 2), // different rs2 → not eliminated
         ]);
         let opt = common_subexpr_elim(&p);
-        assert_eq!(opt.code.len(), 2);
-        assert_eq!(opt.code[1].opcode(), O::Add);
+        assert_eq!(p.code.len(), 2);
+        assert_eq!(p.code[1].opcode(), O::Add);
     }
 
     #[test]
     fn cse_cleared_on_control_flow() {
-        let p = make_prog(vec![
+        let mut p = make_prog(vec![
             I::rrr(O::Add, 2, 0, 1),
             I::single(O::Ret),
             I::rrr(O::Add, 3, 0, 1), // after Ret → cache cleared → not eliminated
         ]);
         let opt = common_subexpr_elim(&p);
-        assert_eq!(opt.code.len(), 3);
-        assert_eq!(opt.code[2].opcode(), O::Add);
+        assert_eq!(p.code.len(), 3);
+        assert_eq!(p.code[2].opcode(), O::Add);
     }
 
     #[test]
     fn cse_thrice_twice_replaced() {
-        let p = make_prog(vec![
+        let mut p = make_prog(vec![
             I::rrr(O::Mul, 2, 0, 1), // cached
             I::rrr(O::Mul, 3, 0, 1), // Mov r3, r2
             I::rrr(O::Mul, 4, 0, 1), // Mov r4, r3 (cache updated to r3)
         ]);
         let opt = common_subexpr_elim(&p);
-        assert_eq!(opt.code.len(), 3);
-        assert_eq!(opt.code[0].opcode(), O::Mul);
-        assert_eq!(opt.code[1].opcode(), O::Mov);
+        assert_eq!(p.code.len(), 3);
+        assert_eq!(p.code[0].opcode(), O::Mul);
+        assert_eq!(p.code[1].opcode(), O::Mov);
         assert_eq!(opt.code[1].rs1(), 2);
-        assert_eq!(opt.code[2].opcode(), O::Mov);
+        assert_eq!(p.code[2].opcode(), O::Mov);
     }
 
     #[test]
     fn cse_addi_eliminated() {
-        let p = make_prog(vec![
+        let mut p = make_prog(vec![
             I::rri(O::AddI, 1, 0, 5),
             I::rri(O::AddI, 2, 0, 5), // same r0, imm=5 → Mov r2, r1
         ]);
         let opt = common_subexpr_elim(&p);
-        assert_eq!(opt.code.len(), 2);
-        assert_eq!(opt.code[1].opcode(), O::Mov);
+        assert_eq!(p.code.len(), 2);
+        assert_eq!(p.code[1].opcode(), O::Mov);
     }
 
     #[test]
     fn cse_muli_with_different_imm_not_eliminated() {
-        let p = make_prog(vec![
+        let mut p = make_prog(vec![
             I::rri(O::MulI, 1, 0, 5),
             I::rri(O::MulI, 2, 0, 3), // different imm → not eliminated
         ]);
         let opt = common_subexpr_elim(&p);
-        assert_eq!(opt.code.len(), 2);
-        assert_eq!(opt.code[1].opcode(), O::MulI);
+        assert_eq!(p.code.len(), 2);
+        assert_eq!(p.code[1].opcode(), O::MulI);
     }
 
     #[test]
     fn cse_neg_eliminated() {
-        let p = make_prog(vec![
+        let mut p = make_prog(vec![
             I::rr(O::Neg, 1, 0),
             I::rr(O::Neg, 2, 0), // same r0 → Mov r2, r1
         ]);
         let opt = common_subexpr_elim(&p);
-        assert_eq!(opt.code.len(), 2);
-        assert_eq!(opt.code[1].opcode(), O::Mov);
+        assert_eq!(p.code.len(), 2);
+        assert_eq!(p.code[1].opcode(), O::Mov);
     }
 
     #[test]
     fn cse_bitwise_eliminated() {
-        let p = make_prog(vec![
+        let mut p = make_prog(vec![
             I::rrr(O::BitAnd, 2, 0, 1),
             I::rrr(O::BitAnd, 3, 0, 1),
         ]);
         let opt = common_subexpr_elim(&p);
-        assert_eq!(opt.code.len(), 2);
-        assert_eq!(opt.code[1].opcode(), O::Mov);
+        assert_eq!(p.code.len(), 2);
+        assert_eq!(p.code[1].opcode(), O::Mov);
     }
 
     #[test]
     fn cse_comparison_eliminated() {
-        let p = make_prog(vec![
+        let mut p = make_prog(vec![
             I::rrr(O::Gt, 2, 0, 1),
             I::rrr(O::Gt, 3, 0, 1),
         ]);
         let opt = common_subexpr_elim(&p);
-        assert_eq!(opt.code.len(), 2);
-        assert_eq!(opt.code[1].opcode(), O::Mov);
+        assert_eq!(p.code.len(), 2);
+        assert_eq!(p.code[1].opcode(), O::Mov);
     }
 
     #[test]
     fn cse_invalidated_when_source_reg_overwritten() {
-        let p = make_prog(vec![
+        let mut p = make_prog(vec![
             I::rrr(O::Add, 2, 0, 1), // cache (Add, r0, r1) → r2
             I::rri(O::Ldi, 0, 0, 5), // r0 overwritten → invalidates cache
             I::rrr(O::Add, 3, 0, 1), // no longer matches → full computation
         ]);
         let opt = common_subexpr_elim(&p);
-        assert_eq!(opt.code.len(), 3);
-        assert_eq!(opt.code[2].opcode(), O::Add); // not Mov
+        assert_eq!(p.code.len(), 3);
+        assert_eq!(p.code[2].opcode(), O::Add); // not Mov
     }
 
     #[test]
     fn cse_invalidated_when_rs2_overwritten() {
-        let p = make_prog(vec![
+        let mut p = make_prog(vec![
             I::rrr(O::Add, 2, 0, 1), // cache (Add, r0, r1) → r2
             I::rri(O::Ldi, 1, 0, 10), // r1 overwritten → invalidates
             I::rrr(O::Add, 3, 0, 1), // no match → full Add
         ]);
         let opt = common_subexpr_elim(&p);
-        assert_eq!(opt.code[2].opcode(), O::Add);
+        assert_eq!(p.code[2].opcode(), O::Add);
     }
 
     #[test]
     fn cse_invalidated_when_cached_rd_overwritten() {
-        let p = make_prog(vec![
+        let mut p = make_prog(vec![
             I::rrr(O::Add, 2, 0, 1), // cache (Add, r0, r1) → r2
             I::rri(O::Ldi, 2, 0, 99), // r2 overwritten → cache entry invalid
             I::rrr(O::Add, 3, 0, 1), // no match → full Add (r2's value lost)
         ]);
         let opt = common_subexpr_elim(&p);
-        assert_eq!(opt.code[2].opcode(), O::Add);
+        assert_eq!(p.code[2].opcode(), O::Add);
     }
 
     #[test]
@@ -3102,48 +3105,48 @@ mod tests {
             I::single(O::Ret),
         ];
         let opt = common_subexpr_elim(&p);
-        assert_eq!(opt.entries.len(), 1);
+        assert_eq!(p.entries.len(), 1);
         assert!(opt.const_map.contains_key("test"));
-        assert_eq!(opt.code.len(), 3);
-        assert_eq!(opt.code[1].opcode(), O::Mov);
+        assert_eq!(p.code.len(), 3);
+        assert_eq!(p.code[1].opcode(), O::Mov);
     }
 
     #[test]
     fn cse_float_neg_eliminated() {
-        let p = make_prog(vec![
+        let mut p = make_prog(vec![
             I::rr(O::FNeg, 193, 192),
             I::rr(O::FNeg, 194, 192),
         ]);
         let opt = common_subexpr_elim(&p);
-        assert_eq!(opt.code[1].opcode(), O::Mov);
+        assert_eq!(p.code[1].opcode(), O::Mov);
     }
 
     #[test]
     fn cse_eq_eliminated() {
-        let p = make_prog(vec![
+        let mut p = make_prog(vec![
             I::rrr(O::Eq, 2, 0, 1),
             I::rrr(O::Eq, 3, 0, 1),
         ]);
         let opt = common_subexpr_elim(&p);
-        assert_eq!(opt.code[1].opcode(), O::Mov);
+        assert_eq!(p.code[1].opcode(), O::Mov);
     }
 
     #[test]
     fn cse_empty_program() {
-        let p = QfrProgram::new();
+        let mut p = QfrProgram::new();
         let opt = common_subexpr_elim(&p);
-        assert!(opt.code.is_empty());
+        assert!(p.code.is_empty());
     }
 
     #[test]
     fn cse_shl_eliminated() {
-        let p = make_prog(vec![
+        let mut p = make_prog(vec![
             I::rrr(O::Shl, 2, 0, 1),
             I::rrr(O::Shl, 3, 0, 1),
         ]);
         let opt = common_subexpr_elim(&p);
-        assert_eq!(opt.code.len(), 2);
-        assert_eq!(opt.code[1].opcode(), O::Mov);
+        assert_eq!(p.code.len(), 2);
+        assert_eq!(p.code[1].opcode(), O::Mov);
     }
 
     #[test]
@@ -3152,94 +3155,94 @@ mod tests {
         // Ldi r0, 5 → invalidates
         // Add r3, r0, r1 → full Add (new cache)
         // Add r4, r0, r1 → Mov r4, r3
-        let p = make_prog(vec![
+        let mut p = make_prog(vec![
             I::rrr(O::Add, 2, 0, 1),
             I::rri(O::Ldi, 0, 0, 5),
             I::rrr(O::Add, 3, 0, 1),
             I::rrr(O::Add, 4, 0, 1),
         ]);
         let opt = common_subexpr_elim(&p);
-        assert_eq!(opt.code.len(), 4);
-        assert_eq!(opt.code[0].opcode(), O::Add);
-        assert_eq!(opt.code[1].opcode(), O::Ldi);
-        assert_eq!(opt.code[2].opcode(), O::Add);
-        assert_eq!(opt.code[3].opcode(), O::Mov);
+        assert_eq!(p.code.len(), 4);
+        assert_eq!(p.code[0].opcode(), O::Add);
+        assert_eq!(p.code[1].opcode(), O::Ldi);
+        assert_eq!(p.code[2].opcode(), O::Add);
+        assert_eq!(p.code[3].opcode(), O::Mov);
     }
 
     #[test]
     fn fold_bitxor_with_constants() {
-        let p = make_prog(vec![
+        let mut p = make_prog(vec![
             I::rri(O::Ldi, 0, 0, 0b1100),
             I::rri(O::Ldi, 1, 0, 0b1010),
             I::rrr(O::BitXor, 2, 0, 1),
         ]);
         let opt = constant_fold(&p);
-        assert_eq!(opt.code[2].imm_signed(), 0b0110);
+        assert_eq!(p.code[2].imm_signed(), 0b0110);
     }
 
     #[test]
     fn fold_shr_with_constants() {
-        let p = make_prog(vec![
+        let mut p = make_prog(vec![
             I::rri(O::Ldi, 0, 0, 256),
             I::rri(O::Ldi, 1, 0, 8),
             I::rrr(O::Shr, 2, 0, 1),
         ]);
         let opt = constant_fold(&p);
-        assert_eq!(opt.code[2].imm_signed(), 1);
+        assert_eq!(p.code[2].imm_signed(), 1);
     }
 
     #[test]
     fn fold_ne_with_constants() {
-        let p = make_prog(vec![
+        let mut p = make_prog(vec![
             I::rri(O::Ldi, 0, 0, 5),
             I::rri(O::Ldi, 1, 0, 3),
             I::rrr(O::Ne, 2, 0, 1),
         ]);
         let opt = constant_fold(&p);
-        assert_eq!(opt.code[2].imm_signed(), 1);
+        assert_eq!(p.code[2].imm_signed(), 1);
     }
 
     #[test]
     fn fold_le_with_constants() {
-        let p = make_prog(vec![
+        let mut p = make_prog(vec![
             I::rri(O::Ldi, 0, 0, 3),
             I::rri(O::Ldi, 1, 0, 5),
             I::rrr(O::Le, 2, 0, 1),
         ]);
         let opt = constant_fold(&p);
-        assert_eq!(opt.code[2].imm_signed(), 1);
+        assert_eq!(p.code[2].imm_signed(), 1);
     }
 
     #[test]
     fn fold_ge_with_constants() {
-        let p = make_prog(vec![
+        let mut p = make_prog(vec![
             I::rri(O::Ldi, 0, 0, 5),
             I::rri(O::Ldi, 1, 0, 3),
             I::rrr(O::Ge, 2, 0, 1),
         ]);
         let opt = constant_fold(&p);
-        assert_eq!(opt.code[2].imm_signed(), 1);
+        assert_eq!(p.code[2].imm_signed(), 1);
     }
 
     #[test]
     fn cse_fadd_eliminated_large_regs() {
-        let p = make_prog(vec![
+        let mut p = make_prog(vec![
             I::rrr(O::FAdd, 200, 192, 193),
             I::rrr(O::FAdd, 201, 192, 193),
         ]);
         let opt = common_subexpr_elim(&p);
-        assert_eq!(opt.code.len(), 2);
-        assert_eq!(opt.code[1].opcode(), O::Mov);
+        assert_eq!(p.code.len(), 2);
+        assert_eq!(p.code[1].opcode(), O::Mov);
     }
 
     #[test]
     fn dce_no_entries_removes_all() {
-        let p = make_prog(vec![
+        let mut p = make_prog(vec![
             I::rri(O::Ldi, 0, 0, 1),
             I::single(O::Ret),
         ]);
         let opt = dead_code_eliminate(&p);
-        assert!(opt.code.is_empty());
+        assert!(p.code.is_empty());
     }
 
     // ── CFG Simplification ──
@@ -3258,14 +3261,14 @@ mod tests {
 
     #[test]
     fn cfg_simplify_empty_code() {
-        let p = QfrProgram::new();
+        let mut p = QfrProgram::new();
         let opt = cfg_simplify(&p);
-        assert!(opt.code.is_empty());
+        assert!(p.code.is_empty());
     }
 
     #[test]
     fn cfg_simplify_straight_line() {
-        let p = make_prog_entry(vec![
+        let mut p = make_prog_entry(vec![
             I::rri(O::Ldi, 0, 0, 1),
             I::rri(O::Ldi, 1, 0, 2),
             I::rrr(O::Add, 2, 0, 1),
@@ -3273,15 +3276,15 @@ mod tests {
         ], &[0]);
         let opt = cfg_simplify(&p);
         // Single block, all instructions kept
-        assert_eq!(opt.code.len(), 4);
+        assert_eq!(p.code.len(), 4);
         // Entry should still point to instruction 0
-        assert_eq!(opt.entries[0].code_offset, 0);
+        assert_eq!(p.entries[0].code_offset, 0);
     }
 
     #[test]
     fn cfg_simplify_removes_jmp_to_next() {
         // Jmp 0 = fall-through, should be removed
-        let p = make_prog_entry(vec![
+        let mut p = make_prog_entry(vec![
             I::rri(O::Ldi, 0, 0, 10),       // 0
             I::rri(O::Ldi, 1, 0, 20),       // 1
             I::rri(O::Jmp, 0, 0, 0),        // 2: Jmp to 3 (next instruction)
@@ -3289,32 +3292,32 @@ mod tests {
             I::single(O::Ret),              // 4
         ], &[0]);
         let opt = cfg_simplify(&p);
-        assert_eq!(opt.code.len(), 4); // Jmp removed
-        assert_eq!(opt.code[0].opcode(), O::Ldi);
-        assert_eq!(opt.code[2].opcode(), O::Add);
-        assert_eq!(opt.code[3].opcode(), O::Ret);
+        assert_eq!(p.code.len(), 4); // Jmp removed
+        assert_eq!(p.code[0].opcode(), O::Ldi);
+        assert_eq!(p.code[2].opcode(), O::Add);
+        assert_eq!(p.code[3].opcode(), O::Ret);
     }
 
     #[test]
     fn cfg_simplify_merges_blocks() {
         // Two blocks: [0-2) Jmp→next, [2-4). After merge: single block.
-        let p = make_prog_entry(vec![
+        let mut p = make_prog_entry(vec![
             I::rri(O::Ldi, 0, 0, 5),        // 0
             I::rri(O::Jmp, 0, 0, 0),        // 1: Jmp to 2 (next)
             I::rri(O::Ldi, 1, 0, 3),        // 2
             I::single(O::Ret),              // 3
         ], &[0]);
         let opt = cfg_simplify(&p);
-        assert_eq!(opt.code.len(), 3); // Jmp removed
-        assert_eq!(opt.code[0].opcode(), O::Ldi);
-        assert_eq!(opt.code[1].opcode(), O::Ldi);
-        assert_eq!(opt.code[2].opcode(), O::Ret);
+        assert_eq!(p.code.len(), 3); // Jmp removed
+        assert_eq!(p.code[0].opcode(), O::Ldi);
+        assert_eq!(p.code[1].opcode(), O::Ldi);
+        assert_eq!(p.code[2].opcode(), O::Ret);
     }
 
     #[test]
     fn cfg_simplify_if_else_keeps_structure() {
         // if/else: [Ldi, Ldi, Jz→else, Add(then), Jmp→end, Ldi(else), Ret(end)]
-        let p = make_prog_entry(vec![
+        let mut p = make_prog_entry(vec![
             I::rri(O::Ldi, 0, 0, 5),        // 0
             I::rri(O::Ldi, 1, 0, 10),       // 1
             I::rri(O::Jz, 0, 0, 2),         // 2: if r0==0, jump to 5 (else)
@@ -3327,11 +3330,11 @@ mod tests {
         // Blocks: [0-3), [3-5), [5-6), [6-7)
         // Block 1 (then): Jmp at 4 → target 6 (block 3). Not adjacent (block 2 in between). Jmp stays.
         // Block 2 (else): falls through to block 3. Jmp at 4 stays.
-        assert_eq!(opt.code.len(), 7); // no Jmps removed
+        assert_eq!(p.code.len(), 7); // no Jmps removed
         // Jz to else (position 5): offset = 5-2-1 = 2
-        assert_eq!(opt.code[2].imm_signed(), 2);
+        assert_eq!(p.code[2].imm_signed(), 2);
         // Jmp to end (position 6): offset = 6-4-1 = 1
-        assert_eq!(opt.code[4].imm_signed(), 1);
+        assert_eq!(p.code[4].imm_signed(), 1);
     }
 
     #[test]
@@ -3340,7 +3343,7 @@ mod tests {
 
     #[test]
     fn cfg_simplify_removes_unreachable_block() {
-        let p = make_prog_entry(vec![
+        let mut p = make_prog_entry(vec![
             I::rri(O::Ldi, 0, 0, 1),        // 0
             I::rri(O::Jmp, 0, 0, 3),        // 1: Jmp to 5
             I::rri(O::Ldi, 1, 0, 2),        // 2: never reached
@@ -3362,18 +3365,18 @@ mod tests {
         // After emission: code = [Ldi, Jmp→?, Ret]
         // Jmp now at position 1, target Ret at position 2
         // offset = 2 - 1 - 1 = 0
-        assert_eq!(opt.code.len(), 3);
-        assert_eq!(opt.code[0].opcode(), O::Ldi);
-        assert_eq!(opt.code[1].opcode(), O::Jmp);
-        assert_eq!(opt.code[1].imm_signed(), 0); // Jmp to next instruction
-        assert_eq!(opt.code[2].opcode(), O::Ret);
+        assert_eq!(p.code.len(), 3);
+        assert_eq!(p.code[0].opcode(), O::Ldi);
+        assert_eq!(p.code[1].opcode(), O::Jmp);
+        assert_eq!(p.code[1].imm_signed(), 0); // Jmp to next instruction
+        assert_eq!(p.code[2].opcode(), O::Ret);
     }
 
     #[test]
     fn cfg_simplify_jump_chain() {
         // A → B → C where A has Jmp to B, B has Jmp to C
         // A's Jmp should redirect to C directly
-        let p = make_prog_entry(vec![
+        let mut p = make_prog_entry(vec![
             I::rri(O::Ldi, 0, 0, 1),        // 0
             I::rri(O::Jmp, 0, 0, 2),        // 1: Jmp to 4
             I::rri(O::Ldi, 1, 0, 2),        // 2: intermediate
@@ -3388,7 +3391,7 @@ mod tests {
         // Actually B has Jmp to C, and C follows B, so merge.
         // Then A has Jmp to B, B is gone, so... by pred/succ remapping, A should point to C now.
         // But this depends on whether the chain simplification runs
-        assert_eq!(opt.code.len(), 4);
+        assert_eq!(p.code.len(), 4);
     }
 
     #[test]
@@ -3409,10 +3412,10 @@ mod tests {
         ];
         let opt = cfg_simplify(&p);
         // on_trade entry at 3 kept, main redirects
-        assert_eq!(opt.entries.len(), 2);
+        assert_eq!(p.entries.len(), 2);
         assert_eq!(opt.entries[1].name, "on_trade");
         // on_trade entry should still point to a valid instruction
-        assert!(opt.entries[1].code_offset < opt.code.len() as u32);
+        assert!(opt.entries[1].code_offset < p.code.len() as u32);
     }
 
     // ── Sparse Conditional Constant Propagation (SCCP) ──
@@ -3420,7 +3423,7 @@ mod tests {
     #[test]
     fn sccp_constant_jnz_always_taken() {
         // Jnz with r0=1 → always taken, then-block removed
-        let p = make_prog_entry(vec![
+        let mut p = make_prog_entry(vec![
             I::rri(O::Ldi, 0, 0, 1),        // 0
             I::rri(O::Jnz, 0, 0, 2),        // 1: r0!=0 → jump to 4
             I::rri(O::Ldi, 1, 0, 10),       // 2: then (dead)
@@ -3430,16 +3433,16 @@ mod tests {
         ], &[0]);
         let opt = sccp(&p);
         // Jnz→Jmp, then-block removed
-        assert_eq!(opt.code.len(), 4);
-        assert_eq!(opt.code[1].opcode(), O::Jmp);
-        assert_eq!(opt.code[2].opcode(), O::Ldi);
-        assert_eq!(opt.code[2].imm_signed(), 99);
+        assert_eq!(p.code.len(), 4);
+        assert_eq!(p.code[1].opcode(), O::Jmp);
+        assert_eq!(p.code[2].opcode(), O::Ldi);
+        assert_eq!(p.code[2].imm_signed(), 99);
     }
 
     #[test]
     fn sccp_constant_jz_fallthrough() {
         // Jz with r0=0 → always jumps to target, then-block removed
-        let p = make_prog_entry(vec![
+        let mut p = make_prog_entry(vec![
             I::rri(O::Ldi, 0, 0, 0),        // 0
             I::rri(O::Jz, 0, 0, 2),         // 1: r0==0 → jump to 4
             I::rri(O::Ldi, 1, 0, 10),       // 2: then (dead)
@@ -3449,16 +3452,16 @@ mod tests {
         ], &[0]);
         let opt = sccp(&p);
         // Jz→Jmp, then-block removed
-        assert_eq!(opt.code.len(), 4);
-        assert_eq!(opt.code[1].opcode(), O::Jmp);
-        assert_eq!(opt.code[2].imm_signed(), 99);
+        assert_eq!(p.code.len(), 4);
+        assert_eq!(p.code[1].opcode(), O::Jmp);
+        assert_eq!(p.code[2].imm_signed(), 99);
     }
 
     #[test]
     fn sccp_propagates_across_blocks() {
         // Block A: r0 = 10, Jmp B
         // Block B: r1 = r0 + 5  → folds to Ldi r1, 15
-        let p = make_prog_entry(vec![
+        let mut p = make_prog_entry(vec![
             I::rri(O::Ldi, 0, 0, 10),       // 0
             I::rri(O::Jmp, 0, 0, 1),        // 1: Jmp to 3
             I::single(O::Ret),              // 2: never reached
@@ -3468,15 +3471,15 @@ mod tests {
         let opt = sccp(&p);
         // After const_fold + cfg + sccp:
         // AddI folds to Ldi r1,15
-        assert_eq!(opt.code[2].opcode(), O::Ldi);
-        assert_eq!(opt.code[2].imm_signed(), 15);
+        assert_eq!(p.code[2].opcode(), O::Ldi);
+        assert_eq!(p.code[2].imm_signed(), 15);
     }
 
     #[test]
     fn sccp_pipeline_folds_known_branches() {
         // Full pipeline: if(true) { r2 = r1 + r1 } else { r2 = 0 }
         // SCCP sees r0=1 → Jz not taken → else block eliminated → r2=84 folded
-        let p = make_prog_entry(vec![
+        let mut p = make_prog_entry(vec![
             I::rri(O::Ldi, 0, 0, 1),        // 0: r0 = 1
             I::rri(O::Ldi, 1, 0, 42),       // 1: r1 = 42
             I::rri(O::Jz, 0, 0, 2),         // 2: if r0 == 0 → jump to 5 (else)
@@ -3485,11 +3488,11 @@ mod tests {
             I::rri(O::Ldi, 2, 0, 0),        // 5: else: r2 = 0
             I::single(O::Ret),              // 6: end
         ], &[0]);
-        let opt = optimize(&p);
+        optimize(&mut p);
         // After all passes: Ldi r0=1, Ldi r1=42, Ldi r2=84, Jmp(0), Ret
         // Jmp(0) is residual from if/else → end jump (no-op after else removed)
-        assert_eq!(opt.code.len(), 5);
-        assert_eq!(opt.code[2].imm_signed(), 84);
-        assert_eq!(opt.code[4].opcode(), O::Ret);
+        assert_eq!(p.code.len(), 5);
+        assert_eq!(p.code[2].imm_signed(), 84);
+        assert_eq!(p.code[4].opcode(), O::Ret);
     }
 }

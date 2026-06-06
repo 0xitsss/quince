@@ -121,6 +121,8 @@ pub struct Vm {
     pub entry_names: [u64; 8],
     pub entry_offsets: [u32; 8],
     pub entry_count: u8,
+    /// Pre-computed offsets for the 4 standard handlers (u32::MAX = not found).
+    handler_cache: [u32; 4],
 
     // ── Persist (hot-reload safe) ──
     pub persist: [PersistSlot; PERSIST_SLOTS],
@@ -153,6 +155,9 @@ pub struct Vm {
 
     // Phase 4g: fused feature states
     pub ema_states: [EmaState; MAX_EMA_STATES],
+
+    // ── Order flag (fast early-exit for flush_pending_order) ──
+    pub has_pending_order: bool,
 
     // ── Profiler / Tracer ──
     pub profiler: Option<crate::profiler::Profiler>,
@@ -198,6 +203,21 @@ impl Vm {
         let indicator_by_str = vec![u16::MAX; const_strings.len()];
         let balance_by_str = vec![u16::MAX; const_strings.len()];
 
+        // Pre-compute handler cache (no linear scan in hot path)
+        const HANDLER_LABELS: [&str; 4] = ["on_trade", "on_eval", "on_fill", "on_depth"];
+        let mut handler_cache = [u32::MAX; 4];
+        for (i, &label) in HANDLER_LABELS.iter().enumerate() {
+            let label_bytes = label.as_bytes();
+            let label_len = label_bytes.len();
+            for j in 0..entry_count as usize {
+                let stored = entry_names[j].to_le_bytes();
+                if stored[..label_len] == label_bytes[..label_len] {
+                    handler_cache[i] = entry_offsets[j];
+                    break;
+                }
+            }
+        }
+
         let mut vm = Vm {
             regs: [Register::default(); NUM_REGS],
             pc: 0,
@@ -219,6 +239,7 @@ impl Vm {
             entry_names,
             entry_offsets,
             entry_count,
+            handler_cache,
             persist: [PersistSlot::default(); PERSIST_SLOTS],
             indicators: [0.0; MAX_INDICATORS],
             indicator_map,
@@ -237,6 +258,7 @@ impl Vm {
             window_arena: vec![0.0; WINDOW_ARENA_SIZE],
             window_meta: [WindowMeta::default(); MAX_WINDOWS],
             ema_states: [EmaState::default(); MAX_EMA_STATES],
+            has_pending_order: false,
             profiler: None,
             tracer: None,
         };
@@ -280,9 +302,19 @@ impl Vm {
     // ── Entry point execution ──
 
     pub fn call(&mut self, entry_name: &str) {
-        let offset = match self.entry_offset(entry_name) {
-            Some(o) => o as usize,
-            None => return,
+        const HANDLER_LABELS: [&str; 4] = ["on_trade", "on_eval", "on_fill", "on_depth"];
+        let offset = if let Some(idx) = HANDLER_LABELS.iter().position(|&n| n == entry_name) {
+            let cached = self.handler_cache[idx];
+            if cached != u32::MAX {
+                cached as usize
+            } else {
+                return;
+            }
+        } else {
+            match self.entry_offset(entry_name) {
+                Some(o) => o as usize,
+                None => return,
+            }
         };
         if let Some(ref mut p) = self.profiler {
             p.start_handler(entry_name);
@@ -314,10 +346,6 @@ impl Vm {
         let has_tracer = self.tracer.is_some();
 
         while self.running {
-            if self.pc >= self.code_len {
-                self.running = false;
-                break;
-            }
             let instr = unsafe { *self.code_ptr.add(self.pc) };
             self.pc += 1;
 
@@ -348,10 +376,17 @@ impl Vm {
     // ── State setters ──
 
     pub fn set_balance(&mut self, asset: &str, val: f64) {
+        if let Some(&slot) = self.balance_map.get(asset) {
+            if (slot as usize) < MAX_BALANCES {
+                self.balances[slot as usize] = val;
+            }
+            return;
+        }
         let idx = self.balance_map.len() as u16;
-        let entry = self.balance_map.entry(asset.to_string()).or_insert(idx);
-        if *entry as usize >= MAX_BALANCES { return; }
-        self.balances[*entry as usize] = val;
+        if (idx as usize) < MAX_BALANCES {
+            self.balances[idx as usize] = val;
+        }
+        self.balance_map.insert(asset.to_string(), idx);
     }
 
     pub fn set_last_price(&mut self, price: f64) {
@@ -362,34 +397,45 @@ impl Vm {
         self.position_size = size;
     }
 
-    pub fn set_depth_bids(&mut self, bids: Vec<(f64, f64)>) {
+    pub fn set_depth_bids(&mut self, bids: &[quince_core::types::DepthLevel]) {
         let n = bids.len().min(MAX_DEPTH_LEVELS);
         for i in 0..n {
-            self.depth_bids_price[i] = bids[i].0;
-            self.depth_bids_qty[i] = bids[i].1;
+            self.depth_bids_price[i] = bids[i].price;
+            self.depth_bids_qty[i] = bids[i].qty;
         }
         self.depth_bids_len = n as u8;
     }
 
-    pub fn set_depth_asks(&mut self, asks: Vec<(f64, f64)>) {
+    pub fn set_depth_asks(&mut self, asks: &[quince_core::types::DepthLevel]) {
         let n = asks.len().min(MAX_DEPTH_LEVELS);
         for i in 0..n {
-            self.depth_asks_price[i] = asks[i].0;
-            self.depth_asks_qty[i] = asks[i].1;
+            self.depth_asks_price[i] = asks[i].price;
+            self.depth_asks_qty[i] = asks[i].qty;
         }
         self.depth_asks_len = n as u8;
     }
 
     pub fn set_indicator(&mut self, name: &str, val: f64) {
+        if let Some(&slot) = self.indicator_map.get(name) {
+            if (slot as usize) < MAX_INDICATORS {
+                self.indicators[slot as usize] = val;
+            }
+            return;
+        }
         let idx = self.indicator_map.len() as u16;
-        let entry = self.indicator_map.entry(name.to_string()).or_insert(idx);
-        if *entry as usize >= MAX_INDICATORS { return; }
-        self.indicators[*entry as usize] = val;
+        if (idx as usize) < MAX_INDICATORS {
+            self.indicators[idx as usize] = val;
+        }
+        self.indicator_map.insert(name.to_string(), idx);
     }
 
     pub fn ensure_indicator_slot(&mut self, name: &str) -> u16 {
+        if let Some(&slot) = self.indicator_map.get(name) {
+            return slot;
+        }
         let len = self.indicator_map.len() as u16;
-        *self.indicator_map.entry(name.to_string()).or_insert(len)
+        self.indicator_map.insert(name.to_string(), len);
+        len
     }
 
     pub fn indicator_slot(&self, name: &str) -> Option<u16> {
@@ -894,6 +940,7 @@ pub unsafe fn vm_getdepthask(vm: &mut Vm, instr: u64) {
     #[inline(always)]
 pub unsafe fn vm_sendorder(vm: &mut Vm, instr: u64) {
         let _ = instr;
+        vm.has_pending_order = true;
         let _side = vm.regs.get_unchecked(250).i;
         let _qty = vm.regs.get_unchecked(192).f;
         let _price = vm.regs.get_unchecked(193).f;
@@ -1071,6 +1118,7 @@ mod tests {
     use super::*;
     use crate::ir::EntryPoint;
     use crate::opcodes::Opcode;
+    use quince_core::types::DepthLevel;
 
     fn make_prog(code: Vec<Instruction>) -> QfrProgram {
         let mut prog = QfrProgram::new();
@@ -1699,7 +1747,7 @@ mod tests {
             Instruction::rrr(Opcode::GetDepthBid, 192, 0, 0),
             Instruction::single(Opcode::Halt),
         ]));
-        vm.set_depth_bids(vec![(100.0, 1.5)]);
+        vm.set_depth_bids(&[DepthLevel { price: 100.0, qty: 1.5 }]);
         vm.call("main");
         assert!((vm.reg_f(192) - 1.5).abs() < 0.001);
     }
@@ -1711,7 +1759,7 @@ mod tests {
             Instruction::rrr(Opcode::GetDepthAsk, 192, 0, 0),
             Instruction::single(Opcode::Halt),
         ]));
-        vm.set_depth_asks(vec![(101.0, 2.0)]);
+        vm.set_depth_asks(&[DepthLevel { price: 101.0, qty: 2.0 }]);
         vm.call("main");
         assert!((vm.reg_f(192) - 2.0).abs() < 0.001);
     }
@@ -1983,7 +2031,7 @@ mod tests {
             Instruction::rrr(Opcode::GetDepthBid, 192, 0, 0),
             Instruction::single(Opcode::Halt),
         ]));
-        vm.set_depth_bids(vec![]);
+        vm.set_depth_bids(&[]);
         vm.call("main");
         assert!((vm.reg_f(192) - 0.0).abs() < 0.001);
     }

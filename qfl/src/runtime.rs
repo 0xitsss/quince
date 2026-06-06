@@ -40,7 +40,7 @@ impl QflRuntime {
                 format!("type error in {}: {}", strategy_path, details.join("; "))
             })?;
 
-        qfr = crate::optimize::optimize(&qfr);
+        crate::optimize::optimize(&mut qfr);
 
         tracing::info!(
             "QFL VM loaded: {} ({} entry, {} instr, {} consts)",
@@ -121,10 +121,8 @@ impl QflRuntime {
     }
 
     pub fn feed_depth(&mut self, depth: Depth) {
-        let bids: Vec<(f64, f64)> = depth.bids.iter().map(|d| (d.price, d.qty)).collect();
-        let asks: Vec<(f64, f64)> = depth.asks.iter().map(|d| (d.price, d.qty)).collect();
-        self.vm.set_depth_bids(bids);
-        self.vm.set_depth_asks(asks);
+        self.vm.set_depth_bids(&depth.bids);
+        self.vm.set_depth_asks(&depth.asks);
 
         self.vm.call("on_depth");
     }
@@ -181,6 +179,10 @@ impl QflRuntime {
     }
 
     fn flush_pending_order(&mut self) {
+        if !self.vm.has_pending_order {
+            return;
+        }
+        self.vm.has_pending_order = false;
         let side_val = self.vm.int(250);
         if side_val != 0 && side_val != 1 {
             return;
@@ -1747,8 +1749,8 @@ on eval() {
         let src = std::fs::read_to_string("D:\\kokosmain\\quince\\strategies\\scalper.qfl")
             .expect("read scalper.qfl");
         let program = crate::parser::parse(&src).expect("parse scalper");
-        let qfr = crate::compiler::compile_checked(&program).expect("compile scalper");
-        let opt = crate::optimize::optimize(&qfr);
+        let mut qfr = crate::compiler::compile_checked(&program).expect("compile scalper");
+        crate::optimize::optimize(&mut qfr);
 
         let trade = quince_core::types::Trade {
             price: 100.0, qty: 1.0,
@@ -1758,7 +1760,7 @@ on eval() {
         };
 
         // Warmup
-        let mut vm = crate::vm::Vm::new(opt.clone());
+        let mut vm = crate::vm::Vm::new(qfr.clone());
         for _ in 0..100 {
             vm.set_last_price(trade.price);
             vm.set_position_size(0.0);
@@ -1786,7 +1788,7 @@ on eval() {
         let ns_per_tick = elapsed.as_nanos() / 10_000;
         println!(
             "\n═══ LOAD TEST scalper.qfl ═══\n  {} iterations in {:?}\n  {:.1} ns/tick\n  {} instrs (optimized)\n  {} entries\n",
-            10_000, elapsed, ns_per_tick, opt.code.len(), opt.entries.len()
+            10_000, elapsed, ns_per_tick, qfr.code.len(), qfr.entries.len()
         );
     }
 
@@ -1795,8 +1797,8 @@ on eval() {
         let src = std::fs::read_to_string("D:\\kokosmain\\quince\\strategies\\ema_cross.qfl")
             .expect("read ema_cross.qfl");
         let program = crate::parser::parse(&src).expect("parse ema_cross");
-        let qfr = crate::compiler::compile_checked(&program).expect("compile ema_cross");
-        let opt = crate::optimize::optimize(&qfr);
+        let mut qfr = crate::compiler::compile_checked(&program).expect("compile ema_cross");
+        crate::optimize::optimize(&mut qfr);
 
         let trade = quince_core::types::Trade {
             price: 100.0, qty: 1.0,
@@ -1805,7 +1807,7 @@ on eval() {
             trade_id: 1,
         };
 
-        let mut vm = crate::vm::Vm::new(opt.clone());
+        let mut vm = crate::vm::Vm::new(qfr.clone());
         for _ in 0..100 {
             vm.set_last_price(trade.price);
             vm.regs[0].f = trade.price;
@@ -1830,7 +1832,7 @@ on eval() {
         let ns_per_tick = elapsed.as_nanos() / 10_000;
         println!(
             "\n═══ LOAD TEST ema_cross.qfl ═══\n  {} iterations in {:?}\n  {:.1} ns/tick\n  {} instrs (optimized)\n",
-            10_000, elapsed, ns_per_tick, opt.code.len()
+            10_000, elapsed, ns_per_tick, qfr.code.len()
         );
     }
 
@@ -1839,8 +1841,8 @@ on eval() {
         let src = std::fs::read_to_string("D:\\kokosmain\\quince\\strategies\\momentum.qfl")
             .expect("read momentum.qfl");
         let program = crate::parser::parse(&src).expect("parse momentum");
-        let qfr = crate::compiler::compile_checked(&program).expect("compile momentum");
-        let opt = crate::optimize::optimize(&qfr);
+        let mut qfr = crate::compiler::compile_checked(&program).expect("compile momentum");
+        crate::optimize::optimize(&mut qfr);
 
         let trade = quince_core::types::Trade {
             price: 100.0, qty: 1.0,
@@ -1849,7 +1851,7 @@ on eval() {
             trade_id: 1,
         };
 
-        let mut vm = crate::vm::Vm::new(opt.clone());
+        let mut vm = crate::vm::Vm::new(qfr.clone());
         for _ in 0..100 {
             vm.set_last_price(trade.price);
             vm.regs[0].f = trade.price;
@@ -1874,7 +1876,7 @@ on eval() {
         let ns_per_tick = elapsed.as_nanos() / 10_000;
         println!(
             "\n═══ LOAD TEST momentum.qfl ═══\n  {} iterations in {:?}\n  {:.1} ns/tick\n  {} instrs (optimized)\n",
-            10_000, elapsed, ns_per_tick, opt.code.len()
+            10_000, elapsed, ns_per_tick, qfr.code.len()
         );
     }
 }
