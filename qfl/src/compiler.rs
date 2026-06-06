@@ -345,6 +345,8 @@ impl Compiler {
         let jz_offset = after_then - jz_to_else as u32 - 1;
         self.emit_at(jz_to_else, Instruction::rri(O::Jz, 0, cond_reg, jz_offset));
 
+        // Collect all JMP-over jumps from elseif branches to patch at the end
+        let mut elseif_jmps: Vec<(usize, u8)> = Vec::new();
         for (econd, ebody) in elseif_branches {
             let econd_reg = self.compile_cond(econd);
             let jz_to_elseif = self.current_offset() as usize;
@@ -358,15 +360,17 @@ impl Compiler {
 
             let jmp = self.current_offset() as usize;
             self.emit(Instruction::rri(O::Jmp, 0, 0, 0));
+            elseif_jmps.push((jmp, econd_reg));
 
             let after_ebody = self.current_offset();
             let jz_off = after_ebody - jz_to_elseif as u32 - 1;
             self.emit_at(jz_to_elseif, Instruction::rri(O::Jz, 0, econd_reg, jz_off));
-            // chain jmps
-            let last_jmp = jmp;
-            let after = self.current_offset();
-            let jmp_off = after - last_jmp as u32 - 1;
-            self.emit_at(last_jmp, Instruction::rri(O::Jmp, 0, 0, jmp_off));
+        }
+        // Patch all elseif JMPs to point past else/end
+        let after_elseif = self.current_offset();
+        for (jmp_pos, _) in &elseif_jmps {
+            let jmp_off = after_elseif - *jmp_pos as u32 - 1;
+            self.emit_at(*jmp_pos, Instruction::rri(O::Jmp, 0, 0, jmp_off));
         }
 
         if !else_body.is_empty() {
@@ -613,9 +617,9 @@ impl Compiler {
             // Use ri40 for large immediates (fits in 40-bit signed)
             self.emit(Instruction::ri40(O::Ldi64, r, val));
         } else {
-            // Fall back to constant pool — store as f64 (preserves i64 up to 2^53)
-            let idx = self.prog.intern_f64(val as f64);
-            self.emit(Instruction::rri(O::Ldc, r, 0, idx));
+            // Fall back to i64 const pool (no precision loss)
+            let idx = self.prog.intern_i64(val);
+            self.emit(Instruction::ri(O::LdI64, r, idx));
         }
     }
 
@@ -833,7 +837,7 @@ impl Compiler {
                 if let Some(FusedInfo::Ema { state_id }) = fused {
                     let val_r = self.alloc_float();
                     self.emit(Instruction::ri(O::GetPrice, val_r, 0));
-                    self.emit(Instruction::rrr(O::Ema, val_r, state_id, r));
+                    self.emit(Instruction::rrr(O::Ema, r, val_r, state_id));
                     return (r, true);
                 }
                 // Fallback: runtime GetInd

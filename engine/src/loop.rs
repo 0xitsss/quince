@@ -353,6 +353,9 @@ impl<E: Exchange> Engine<E> {
     }
 
     async fn check_timeouts(&mut self) {
+        if !self.order_manager.has_pending() {
+            return;
+        }
         let now = Instant::now();
         let timed_out: Vec<String> = self
             .order_manager

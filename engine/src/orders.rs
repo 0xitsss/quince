@@ -110,6 +110,13 @@ impl OrderManager {
         self.orders.get(client_id)
     }
 
+    pub fn has_pending(&self) -> bool {
+        self.orders.values().any(|po| matches!(
+            po.status,
+            PendingStatus::Waiting | PendingStatus::Placed { .. } | PendingStatus::PartiallyFilled { .. }
+        ))
+    }
+
     pub fn pending_order_ids(&self) -> Vec<String> {
         self.orders
             .iter()

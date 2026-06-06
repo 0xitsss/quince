@@ -69,6 +69,14 @@ pub struct IndicatorBank {
     indicators: Vec<ActiveIndicator>,
     results: Vec<(u16, f64)>,
     name_to_slot: std::collections::HashMap<String, u16>,
+    // Pre-cached synthetic slots (zero HashMap lookups in hot path)
+    slot_price: u16,
+    slot_volume_delta: u16,
+    slot_avg_trade_size: u16,
+    slot_trade_count: u16,
+    slot_bid_depth: u16,
+    slot_ask_depth: u16,
+    slot_depth_imbalance: u16,
     cum_buy: f64,
     cum_sell: f64,
     trades: u64,
@@ -110,6 +118,13 @@ impl IndicatorBank {
             indicators,
             results: Vec::with_capacity(64),
             name_to_slot: std::collections::HashMap::new(),
+            slot_price: 0,
+            slot_volume_delta: 0,
+            slot_avg_trade_size: 0,
+            slot_trade_count: 0,
+            slot_bid_depth: 0,
+            slot_ask_depth: 0,
+            slot_depth_imbalance: 0,
             cum_buy: 0.0,
             cum_sell: 0.0,
             trades: 0,
@@ -119,6 +134,16 @@ impl IndicatorBank {
     /// Pre-assign name→slot mapping (call once at init).
     pub fn set_name_to_slot(&mut self, name: &str, slot: u16) {
         self.name_to_slot.insert(name.to_string(), slot);
+        match name {
+            "price" => self.slot_price = slot,
+            "volume_delta" => self.slot_volume_delta = slot,
+            "avg_trade_size" => self.slot_avg_trade_size = slot,
+            "trade_count" => self.slot_trade_count = slot,
+            "bid_depth" => self.slot_bid_depth = slot,
+            "ask_depth" => self.slot_ask_depth = slot,
+            "depth_imbalance" => self.slot_depth_imbalance = slot,
+            _ => {}
+        }
     }
 
     /// Assign sequential slot indices for all known indicator names (for tests).
@@ -213,23 +238,22 @@ impl IndicatorBank {
             }
         }
 
-        self.results.push((*slots.get("price").unwrap_or(&0), p));
-        self.results.push((*slots.get("volume_delta").unwrap_or(&0), self.cum_buy - self.cum_sell));
-        self.results.push((*slots.get("avg_trade_size").unwrap_or(&0), if self.trades == 0 { 0.0 } else { (self.cum_buy + self.cum_sell) / self.trades as f64 }));
-        self.results.push((*slots.get("trade_count").unwrap_or(&0), self.trades as f64));
+        self.results.push((self.slot_price, p));
+        self.results.push((self.slot_volume_delta, self.cum_buy - self.cum_sell));
+        self.results.push((self.slot_avg_trade_size, if self.trades == 0 { 0.0 } else { (self.cum_buy + self.cum_sell) / self.trades as f64 }));
+        self.results.push((self.slot_trade_count, self.trades as f64));
 
         &self.results
     }
 
     pub fn on_depth(&mut self, depth: &Depth) -> &[(u16, f64)] {
         self.results.clear();
-        let slots = &self.name_to_slot;
         let bid_vol: f64 = depth.bids.iter().map(|l| l.qty).sum();
         let ask_vol: f64 = depth.asks.iter().map(|l| l.qty).sum();
-        self.results.push((*slots.get("bid_depth").unwrap_or(&0), bid_vol));
-        self.results.push((*slots.get("ask_depth").unwrap_or(&0), ask_vol));
+        self.results.push((self.slot_bid_depth, bid_vol));
+        self.results.push((self.slot_ask_depth, ask_vol));
         let imb = if bid_vol + ask_vol == 0.0 { 0.0 } else { (bid_vol - ask_vol) / (bid_vol + ask_vol) * 100.0 };
-        self.results.push((*slots.get("depth_imbalance").unwrap_or(&0), imb));
+        self.results.push((self.slot_depth_imbalance, imb));
         &self.results
     }
 }

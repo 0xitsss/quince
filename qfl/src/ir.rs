@@ -326,22 +326,39 @@ pub fn deserialize_binarized(data: &[u8]) -> Result<QfrProgram, String> {
     if magic != QFR_MAGIC_V2 {
         return Err("bad magic".into());
     }
-    let version = u16::from_le_bytes(data[4..6].try_into().unwrap());
+    let version = u16::from_le_bytes(
+        data[4..6].try_into().map_err(|_| "truncated version".to_string())?
+    );
     if version != 2 {
         return Err(format!("unsupported version: {}", version));
     }
-    let entry_count = u16::from_le_bytes(data[6..8].try_into().unwrap()) as usize;
-    let num_constants = u32::from_le_bytes(data[8..12].try_into().unwrap()) as usize;
-    let _num_instructions = u32::from_le_bytes(data[12..16].try_into().unwrap()) as usize;
+    let entry_count = u16::from_le_bytes(
+        data[6..8].try_into().map_err(|_| "truncated entry count".to_string())?
+    ) as usize;
+    let num_constants = u32::from_le_bytes(
+        data[8..12].try_into().map_err(|_| "truncated const count".to_string())?
+    ) as usize;
+    let _num_instructions = u32::from_le_bytes(
+        data[12..16].try_into().map_err(|_| "truncated instr count".to_string())?
+    ) as usize;
 
     // Read entries
     let mut entries = Vec::with_capacity(entry_count);
     let mut str_data_start = usize::MAX;
     for i in 0..entry_count {
         let off = 64 + i * 16;
-        let name_off = u32::from_le_bytes(data[off..off+4].try_into().unwrap()) as usize;
-        let name_len = u32::from_le_bytes(data[off+4..off+8].try_into().unwrap()) as usize;
-        let code_off = u32::from_le_bytes(data[off+8..off+12].try_into().unwrap());
+        if off + 12 > data.len() {
+            return Err("truncated entry section".into());
+        }
+        let name_off = u32::from_le_bytes(
+            data[off..off+4].try_into().map_err(|_| "truncated name_off".to_string())?
+        ) as usize;
+        let name_len = u32::from_le_bytes(
+            data[off+4..off+8].try_into().map_err(|_| "truncated name_len".to_string())?
+        ) as usize;
+        let code_off = u32::from_le_bytes(
+            data[off+8..off+12].try_into().map_err(|_| "truncated code_off".to_string())?
+        );
         if str_data_start > name_off { str_data_start = name_off; }
         let name = String::from_utf8(data[name_off..name_off+name_len].to_vec())
             .map_err(|e| format!("utf8 entry: {}", e))?;
@@ -370,9 +387,16 @@ pub fn deserialize_binarized(data: &[u8]) -> Result<QfrProgram, String> {
         const_start += 1;
     }
 
-    // Read f64 constants (we skip them since compiler has its own const_pool)
-    // For backward compat, read what we can
-    let const_pool: Vec<ConstEntry> = Vec::new();
+    // Read f64 constants
+    let mut const_pool: Vec<ConstEntry> = Vec::with_capacity(num_constants);
+    for i in 0..num_constants {
+        let off = const_start + i * 8;
+        if off + 8 > data.len() { break; }
+        let val = f64::from_le_bytes(
+            data[off..off+8].try_into().map_err(|_| "truncated const section".to_string())?
+        );
+        const_pool.push(ConstEntry::F64(val));
+    }
     let const_map = HashMap::new();
 
     // Read code (after constants)
@@ -465,14 +489,22 @@ pub fn deserialize_v1(data: &[u8]) -> Result<QfrProgram, String> {
     if magic != QFR_MAGIC_V1 {
         return Err(format!("bad magic: {:?}", magic));
     }
-    let version = u32::from_le_bytes(data[4..8].try_into().unwrap());
+    let version = u32::from_le_bytes(
+        data[4..8].try_into().map_err(|_| "truncated version".to_string())?
+    );
     if version != QFR_VERSION_V1 {
         return Err(format!("unsupported version: {}", version));
     }
 
-    let entry_count = u32::from_le_bytes(data[8..12].try_into().unwrap()) as usize;
-    let const_pool_count = u32::from_le_bytes(data[12..16].try_into().unwrap()) as usize;
-    let code_count = u32::from_le_bytes(data[16..20].try_into().unwrap()) as usize;
+    let entry_count = u32::from_le_bytes(
+        data[8..12].try_into().map_err(|_| "truncated entry count".to_string())?
+    ) as usize;
+    let const_pool_count = u32::from_le_bytes(
+        data[12..16].try_into().map_err(|_| "truncated const count".to_string())?
+    ) as usize;
+    let code_count = u32::from_le_bytes(
+        data[16..20].try_into().map_err(|_| "truncated code count".to_string())?
+    ) as usize;
 
     let mut offset: usize = 32;
     let mut entries = Vec::with_capacity(entry_count);
@@ -481,8 +513,12 @@ pub fn deserialize_v1(data: &[u8]) -> Result<QfrProgram, String> {
         if offset + 8 > data.len() {
             return Err("truncated entry points".into());
         }
-        let no = u32::from_le_bytes(data[offset..offset + 4].try_into().unwrap()) as usize;
-        let co = u32::from_le_bytes(data[offset + 4..offset + 8].try_into().unwrap());
+        let no = u32::from_le_bytes(
+            data[offset..offset + 4].try_into().map_err(|_| "truncated name_off".to_string())?
+        ) as usize;
+        let co = u32::from_le_bytes(
+            data[offset + 4..offset + 8].try_into().map_err(|_| "truncated code_off".to_string())?
+        );
         name_offs.push(no);
         entries.push(EntryPoint { name: String::new(), code_offset: co });
         offset += 8;
@@ -509,19 +545,25 @@ pub fn deserialize_v1(data: &[u8]) -> Result<QfrProgram, String> {
         match tag {
             0 => {
                 if offset + 8 > data.len() { return Err("truncated i64 const".into()); }
-                let v = i64::from_le_bytes(data[offset..offset + 8].try_into().unwrap());
+                let v = i64::from_le_bytes(
+                    data[offset..offset + 8].try_into().map_err(|_| "truncated i64".to_string())?
+                );
                 const_pool.push(ConstEntry::I64(v));
                 offset += 15;
             }
             1 => {
                 if offset + 8 > data.len() { return Err("truncated f64 const".into()); }
-                let v = f64::from_le_bytes(data[offset..offset + 8].try_into().unwrap());
+                let v = f64::from_le_bytes(
+                    data[offset..offset + 8].try_into().map_err(|_| "truncated f64".to_string())?
+                );
                 const_pool.push(ConstEntry::F64(v));
                 offset += 15;
             }
             2 => {
                 if offset + 4 > data.len() { return Err("truncated string const len".into()); }
-                let len = u32::from_le_bytes(data[offset..offset + 4].try_into().unwrap()) as usize;
+                let len = u32::from_le_bytes(
+                    data[offset..offset + 4].try_into().map_err(|_| "truncated str len".to_string())?
+                ) as usize;
                 offset += 4;
                 if offset + len > data.len() { return Err("truncated string const data".into()); }
                 let s = String::from_utf8(data[offset..offset + len].to_vec())

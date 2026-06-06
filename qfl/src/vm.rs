@@ -106,8 +106,11 @@ pub struct Vm {
     pub code_len: usize,
     pub consts_ptr: *const f64,
     pub const_count: u32,
+    pub i64_consts_ptr: *const i64,
+    pub i64_const_count: u32,
     _code_owned: Vec<u64>,
     _consts_owned: Vec<f64>,
+    _i64_consts_owned: Vec<i64>,
 
     // ── Constants pool (kept for backward compat; hot path uses consts_ptr) ──
     pub const_pool: Vec<ConstEntry>,
@@ -163,16 +166,19 @@ impl Vm {
         let code_len = _code_owned.len();
 
         let mut _consts_owned: Vec<f64> = Vec::new();
+        let mut _i64_consts_owned: Vec<i64> = Vec::new();
         let mut const_strings: Vec<String> = Vec::new();
         for entry in &program.const_pool {
             match entry {
                 ConstEntry::F64(v) => _consts_owned.push(*v),
+                ConstEntry::I64(v) => _i64_consts_owned.push(*v),
                 ConstEntry::String(s) => const_strings.push(s.clone()),
-                ConstEntry::I64(_) => {} // i64 loaded via Ldi immediate
             }
         }
         let consts_ptr = _consts_owned.as_ptr();
         let const_count = _consts_owned.len() as u32;
+        let i64_consts_ptr = _i64_consts_owned.as_ptr();
+        let i64_const_count = _i64_consts_owned.len() as u32;
 
         let mut entry_names = [0u64; 8];
         let mut entry_offsets = [0u32; 8];
@@ -202,8 +208,11 @@ impl Vm {
             code_len,
             consts_ptr,
             const_count,
+            i64_consts_ptr,
+            i64_const_count,
             _code_owned,
             _consts_owned,
+            _i64_consts_owned,
             const_pool: program.const_pool.clone(),
             const_map: program.const_map.clone(),
             const_strings,
@@ -770,16 +779,30 @@ pub unsafe fn vm_ldi64(vm: &mut Vm, instr: u64) {
         };
     }
 
+    /// Load i64 from const pool (RI: rd, index)
+    #[inline(always)]
+pub unsafe fn vm_ldi64_c(vm: &mut Vm, instr: u64) {
+        let r = rd(instr) as usize;
+        let idx = immu(instr) as usize;
+        if idx < vm.i64_const_count as usize {
+            vm.regs.get_unchecked_mut(r).i = *vm.i64_consts_ptr.add(idx);
+        }
+    }
+
     #[inline(always)]
 pub unsafe fn vm_ldc(vm: &mut Vm, instr: u64) {
         let r = rd(instr) as usize;
         let idx = immu(instr) as usize;
-        // Try f64 constants first
-        if idx < vm.const_count as usize {
+        // Layout: f64[0..const_count), i64[const_count..const_count+i64_const_count), strings after
+        let f64_end = vm.const_count as usize;
+        let i64_end = f64_end + vm.i64_const_count as usize;
+        if idx < f64_end {
             vm.regs.get_unchecked_mut(r).f = *vm.consts_ptr.add(idx);
+        } else if idx < i64_end {
+            let i64_idx = idx - f64_end;
+            vm.regs.get_unchecked_mut(r).i = *vm.i64_consts_ptr.add(i64_idx);
         } else {
-            // String constants: store the index (adjusted for f64 count)
-            let str_idx = idx - vm.const_count as usize;
+            let str_idx = idx - i64_end;
             if str_idx < vm.const_strings.len() {
                 vm.regs.get_unchecked_mut(r).i = str_idx as i64;
             }
@@ -927,8 +950,7 @@ pub unsafe fn vm_log2(vm: &mut Vm, instr: u64) {
         let str_idx = vm.regs.get_unchecked(rs1(instr) as usize).i as usize;
         let val = vm.regs.get_unchecked(rs2(instr) as usize).f;
         if str_idx < vm.const_strings.len() {
-            let msg = format!("{}: {}", vm.const_strings.get_unchecked(str_idx), val);
-            tracing::info!("QFL: {}", msg);
+            tracing::info!("QFL: {}: {}", vm.const_strings.get_unchecked(str_idx), val);
         } else {
             tracing::info!("QFL: {}", val);
         }

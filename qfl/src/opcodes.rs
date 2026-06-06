@@ -142,6 +142,8 @@ pub enum Opcode {
     Ema = 64,
     // Phase 4i: log with value
     Log2 = 65,
+    // Load i64 from const pool (for values > 40-bit signed range)
+    LdI64 = 66,
     // Sentinel — must be last, triggers exit from dispatch loop
     Sentinel = 0xFF,
 }
@@ -173,6 +175,7 @@ impl Opcode {
             61 => Opcode::WindowMin, 62 => Opcode::WindowMax, 63 => Opcode::WindowSum,
             64 => Opcode::Ema,
             65 => Opcode::Log2,
+            66 => Opcode::LdI64,
             _ => Opcode::Halt,
         }
     }
@@ -202,6 +205,8 @@ impl Opcode {
             Ema | Log2 => InstrEncoding::RRR,
 
             Ldi64 => InstrEncoding::RI40,
+
+            LdI64 => InstrEncoding::RI,
 
             Ret | Halt | SendOrder | Sentinel => InstrEncoding::Single,
         }
@@ -298,6 +303,7 @@ pub const JUMP_TABLE: [OpcodeHandler; 256] = {
     table[63] = vm_windowsum;
     table[64] = vm_ema;
     table[65] = vm_log2;
+    table[66] = vm_ldi64_c;
     table
 };
 
@@ -358,8 +364,8 @@ mod tests {
     }
 
     #[test]
-    fn all_58_opcodes_from_u8_roundtrip_correctly() {
-        for i in 0..58 {
+    fn opcodes_from_u8_roundtrip_correctly() {
+        for i in 0..67 {
             let op = Opcode::from_u8(i);
             assert_eq!(op as u8, i);
         }
