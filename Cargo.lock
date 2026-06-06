@@ -1033,6 +1033,7 @@ dependencies = [
  "quince-exchange",
  "quince-indicators",
  "quince-logger",
+ "quince-qfl",
  "quince-risk",
  "tokio",
  "tracing",

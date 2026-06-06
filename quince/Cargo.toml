@@ -8,6 +8,14 @@ license.workspace = true
 default = []
 profiling = ["puffin", "puffin_http", "quince-engine/profiling"]
 
+[[bin]]
+name = "quince"
+path = "src/main.rs"
+
+[[bin]]
+name = "dump_qfl"
+path = "src/bin/dump_qfl.rs"
+
 [dependencies]
 quince-core = { path = "../core" }
 quince-exchange = { path = "../exchange" }
@@ -15,6 +23,7 @@ quince-engine = { path = "../engine" }
 quince-risk = { path = "../risk" }
 quince-logger = { path = "../logger" }
 quince-indicators = { path = "../indicators" }
+quince-qfl = { path = "../qfl" }
 tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }
 tracing.workspace = true
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }

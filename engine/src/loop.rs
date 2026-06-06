@@ -71,20 +71,36 @@ impl<E: Exchange> Engine<E> {
     ) -> Result<Self, EngineError> {
         let (orders_tx, orders_rx) = crossbeam_channel::unbounded();
 
-        // Load QFL strategy
-        let mut qfl = QflRuntime::load(strategy_path)
-            .map_err(|e| EngineError::Strategy(e))?;
-
-        let qfr_path = strategy_path.replace(".qfl", ".qfr");
-        qfl.save_qfr(&qfr_path)
-            .map_err(|e| EngineError::Strategy(format!("save .qfr: {}", e)))?;
-        tracing::info!("optimized bytecode saved to {qfr_path}");
+        // Load QFL strategy (.qfl = compile+optimize, .qfr = pre-compiled)
+        let is_qfr = strategy_path.ends_with(".qfr");
+        let mut qfl = if is_qfr {
+            QflRuntime::load_qfr(strategy_path)
+                .map_err(|e| EngineError::Strategy(e))?
+        } else {
+            let qfl = QflRuntime::load(strategy_path)
+                .map_err(|e| EngineError::Strategy(e))?;
+            let qfr_path = strategy_path.replace(".qfl", ".qfr");
+            qfl.save_qfr(&qfr_path)
+                .map_err(|e| EngineError::Strategy(format!("save .qfr: {}", e)))?;
+            tracing::info!("optimized bytecode saved to {qfr_path}");
+            qfl
+        };
 
         tracing::info!("QFL VM loaded: {strategy_path}");
 
-        // Read source for --USING directives
-        let src = std::fs::read_to_string(strategy_path)
-            .map_err(|e| EngineError::Strategy(format!("read {}: {}", strategy_path, e)))?;
+        // Read source for --USING directives (from .qfl companion for .qfr)
+        let src_path = if is_qfr {
+            let qfl_path = strategy_path.replace(".qfr", ".qfl");
+            if std::path::Path::new(&qfl_path).exists() { qfl_path } else { String::new() }
+        } else {
+            strategy_path.to_string()
+        };
+        let src = if src_path.is_empty() {
+            String::new()
+        } else {
+            std::fs::read_to_string(&src_path)
+                .map_err(|e| EngineError::Strategy(format!("read {}: {}", src_path, e)))?
+        };
         tracing::info!("strategy loaded: {strategy_path} ({} lines)", src.lines().count());
 
         let ind_cfg = parse_using(&src);
