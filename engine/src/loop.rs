@@ -75,6 +75,11 @@ impl<E: Exchange> Engine<E> {
         let mut qfl = QflRuntime::load(strategy_path)
             .map_err(|e| EngineError::Strategy(e))?;
 
+        let qfr_path = strategy_path.replace(".qfl", ".qfr");
+        qfl.save_qfr(&qfr_path)
+            .map_err(|e| EngineError::Strategy(format!("save .qfr: {}", e)))?;
+        tracing::info!("optimized bytecode saved to {qfr_path}");
+
         tracing::info!("QFL VM loaded: {strategy_path}");
 
         // Read source for --USING directives

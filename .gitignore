@@ -28,3 +28,6 @@ qfl/docs/
 
 # Internal plans/docs (not for public)
 qfl/docs/
+
+# Compiled QFR bytecode (build artifact)
+*.qfr

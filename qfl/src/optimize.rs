@@ -11,6 +11,7 @@ use std::collections::HashMap;
 pub fn optimize(prog: &QfrProgram) -> QfrProgram {
     let prog = constant_fold(prog);
     let prog = cfg_simplify(&prog);
+    let prog = sccp(&prog);
     let prog = common_subexpr_elim(&prog);
     dead_code_eliminate(&prog)
 }
@@ -1047,6 +1048,491 @@ pub fn cfg_simplify(prog: &QfrProgram) -> QfrProgram {
 
     // Step 5: Emit optimized code from CFG
     emit_cfg(&cfg, prog)
+}
+
+// ── Sparse Conditional Constant Propagation (SCCP) ──
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum Lattice {
+    Top,
+    Int(i64),
+    Flt(f64),
+    Bottom,
+}
+
+impl Lattice {
+    fn meet(self, other: Lattice) -> Lattice {
+        match (self, other) {
+            (Lattice::Top, x) | (x, Lattice::Top) => x,
+            (Lattice::Bottom, _) | (_, Lattice::Bottom) => Lattice::Bottom,
+            (Lattice::Int(a), Lattice::Int(b)) if a == b => Lattice::Int(a),
+            (Lattice::Flt(a), Lattice::Flt(b)) if a.to_bits() == b.to_bits() => Lattice::Flt(a),
+            _ => Lattice::Bottom,
+        }
+    }
+}
+
+/// Sparse Conditional Constant Propagation.
+///
+/// Uses a lattice (Top → Constant → Bottom) per register, propagating
+/// across the CFG.  Conditional branches with constant predicates are
+/// folded: the unreachable successor is marked non-executable.
+///
+/// After convergence, known-constant expressions are replaced with
+/// Ldi/Ldi64/Ldc, and blocks gated by a folded branch are removed.
+pub fn sccp(prog: &QfrProgram) -> QfrProgram {
+    let n = prog.code.len();
+    if n == 0 { return prog.clone(); }
+
+    let code = &prog.code;
+    let cfg = build_cfg(code, &prog.entries);
+    if cfg.blocks.is_empty() { return prog.clone(); }
+
+    // Register lattice (192 int + 64 float = 256 total)
+    let mut reg: Vec<Lattice> = vec![Lattice::Top; 256];
+    let mut executable: Vec<bool> = vec![false; cfg.blocks.len()];
+    let mut worklist: Vec<usize> = Vec::new();
+
+    // Mark entry blocks as executable
+    for &eid in &cfg.entry_ids {
+        if eid < cfg.blocks.len() {
+            executable[eid] = true;
+            worklist.push(eid);
+        }
+    }
+
+    // Track per-register changes across blocks to detect fixpoint
+    let mut block_reg: Vec<Vec<Lattice>> = vec![vec![]; cfg.blocks.len()];
+    let mut changed = true;
+    while changed {
+        changed = false;
+        let mut pending: Vec<usize> = std::mem::take(&mut worklist);
+        block_reg = vec![vec![]; cfg.blocks.len()];
+
+        while let Some(bid) = pending.pop() {
+            if !executable[bid] { continue; }
+            let b = &cfg.blocks[bid];
+            // Snapshot lattice state at block entry
+            let mut local_reg = reg.clone();
+
+            for i in b.start..b.end {
+                let instr = &code[i];
+                let op = instr.opcode();
+
+                match op {
+                    O::Ldi => {
+                        let rd = instr.rd() as usize;
+                        let val = instr.imm_signed() as i64;
+                        local_reg[rd] = Lattice::Int(val);
+                    }
+                    O::Ldi64 => {
+                        let rd = instr.rd() as usize;
+                        let val = instr.imm40();
+                        local_reg[rd] = Lattice::Int(val);
+                    }
+                    O::Ldc => {
+                        let rd = instr.rd() as usize;
+                        let idx = instr.imm() as usize;
+                        if idx < prog.const_pool.len() {
+                            if let crate::ir::ConstEntry::F64(v) = &prog.const_pool[idx] {
+                                local_reg[rd] = Lattice::Flt(*v);
+                            }
+                        }
+                    }
+                    // Int RRR
+                    O::Add | O::Sub | O::Mul | O::Div | O::Mod
+                    | O::BitAnd | O::BitOr | O::BitXor
+                    | O::Shl | O::Shr
+                    | O::Eq | O::Ne | O::Lt | O::Gt | O::Le | O::Ge => {
+                        let rd = instr.rd() as usize;
+                        let rs1 = instr.rs1() as usize;
+                        let rs2 = instr.rs2() as usize;
+                        local_reg[rd] = fold_int_lattice(local_reg[rs1], local_reg[rs2], op);
+                    }
+                    // Float RRR
+                    O::FAdd | O::FSub | O::FMul | O::FDiv
+                    | O::FEq | O::FNe | O::FLt | O::FGt | O::FLe | O::FGe => {
+                        let rd = instr.rd() as usize;
+                        let rs1 = instr.rs1() as usize;
+                        let rs2 = instr.rs2() as usize;
+                        local_reg[rd] = fold_float_lattice(local_reg[rs1], local_reg[rs2], op);
+                    }
+                    // Int unary
+                    O::Neg => {
+                        let rd = instr.rd() as usize;
+                        let rs = instr.rs1() as usize;
+                        local_reg[rd] = match local_reg[rs] {
+                            Lattice::Int(v) => Lattice::Int(v.wrapping_neg()),
+                            Lattice::Top => Lattice::Top,
+                            _ => Lattice::Bottom,
+                        };
+                    }
+                    // Float unary
+                    O::FNeg => {
+                        let rd = instr.rd() as usize;
+                        let rs = instr.rs1() as usize;
+                        local_reg[rd] = match local_reg[rs] {
+                            Lattice::Flt(v) => Lattice::Flt(-v),
+                            Lattice::Top => Lattice::Top,
+                            _ => Lattice::Bottom,
+                        };
+                    }
+                    // Int immediate
+                    O::AddI => fold_int_imm_lattice(&mut local_reg, instr, |a, b| a.wrapping_add(b as i64)),
+                    O::SubI => fold_int_imm_lattice(&mut local_reg, instr, |a, b| a.wrapping_sub(b as i64)),
+                    O::MulI => fold_int_imm_lattice(&mut local_reg, instr, |a, b| a.wrapping_mul(b as i64)),
+                    O::DivI => fold_int_imm_lattice(&mut local_reg, instr, |a, b| if b == 0 { 0 } else { a / b as i64 }),
+                    // Conversions
+                    O::I2F => {
+                        let rd = instr.rd() as usize;
+                        let rs = instr.rs1() as usize;
+                        local_reg[rd] = match local_reg[rs] {
+                            Lattice::Int(v) => Lattice::Flt(v as f64),
+                            Lattice::Top => Lattice::Top,
+                            _ => Lattice::Bottom,
+                        };
+                    }
+                    O::F2I => {
+                        let rd = instr.rd() as usize;
+                        let rs = instr.rs1() as usize;
+                        local_reg[rd] = match local_reg[rs] {
+                            Lattice::Flt(v) => Lattice::Int(v as i64),
+                            Lattice::Top => Lattice::Top,
+                            _ => Lattice::Bottom,
+                        };
+                    }
+                    // Mov: propagate
+                    O::Mov => {
+                        let rd = instr.rd() as usize;
+                        let rs = instr.rs1() as usize;
+                        local_reg[rd] = local_reg[rs];
+                    }
+                    // Control flow
+                    O::Jmp => {
+                        if let Some(target_pc) = compute_target(code, i) {
+                            let target_bid = cfg.blocks.iter().position(|b2| target_pc >= b2.start && target_pc < b2.end);
+                            if let Some(tid) = target_bid {
+                                if !executable[tid] { executable[tid] = true; pending.push(tid); changed = true; }
+                            }
+                        }
+                    }
+                    O::Jz | O::Jnz => {
+                        let rs = instr.rs1() as usize;
+                        let cond = local_reg[rs];
+                        // Evaluate taken target
+                        if let Some(target_pc) = compute_target(code, i) {
+                            let target_bid = cfg.blocks.iter().position(|b2| target_pc >= b2.start && target_pc < b2.end);
+                            if let Some(tid) = target_bid {
+                                let take_branch = match (op, cond) {
+                                    (O::Jz, Lattice::Int(0)) => true,     // Jz: cond==0 → jump taken
+                                    (O::Jz, Lattice::Int(_)) => false,   // Jz: cond!=0 → fall through
+                                    (O::Jnz, Lattice::Int(0)) => false,  // Jnz: cond==0 → fall through
+                                    (O::Jnz, Lattice::Int(_)) => true,   // Jnz: cond!=0 → jump taken
+                                    _ => false,                          // Not constant → both paths
+                                };
+                                let fallthrough_bid = if bid + 1 < cfg.blocks.len() { Some(bid + 1) } else { None };
+                                if let Lattice::Int(_) = cond {
+                                    // Constant condition: only one path
+                                    if take_branch {
+                                        if !executable[tid] { executable[tid] = true; pending.push(tid); changed = true; }
+                                    } else if let Some(fid) = fallthrough_bid {
+                                        if !executable[fid] { executable[fid] = true; pending.push(fid); changed = true; }
+                                    }
+                                } else {
+                                    // Non-constant: both paths
+                                    if !executable[tid] { executable[tid] = true; pending.push(tid); changed = true; }
+                                    if let Some(fid) = fallthrough_bid {
+                                        if !executable[fid] { executable[fid] = true; pending.push(fid); changed = true; }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    O::Call => {
+                        // Call target: add to worklist
+                        if let Some(target_pc) = compute_target(code, i) {
+                            let target_bid = cfg.blocks.iter().position(|b2| target_pc >= b2.start && target_pc < b2.end);
+                            if let Some(tid) = target_bid {
+                                if !executable[tid] { executable[tid] = true; pending.push(tid); changed = true; }
+                            }
+                        }
+                        // Fall-through
+                        if bid + 1 < cfg.blocks.len() {
+                            let fid = bid + 1;
+                            if !executable[fid] { executable[fid] = true; pending.push(fid); changed = true; }
+                        }
+                    }
+                    O::Ret | O::Halt => {
+                        // Block ends here, no successors get pushed
+                    }
+                    // Side-effect / stateful: clear dest register
+                    _ => {
+                        let rd = instr.rd() as usize;
+                        local_reg[rd] = Lattice::Bottom;
+                    }
+                }
+            }
+            block_reg[bid] = local_reg;
+        }
+
+        // Meet lattice values at block boundaries and update global state
+        for bid in 0..cfg.blocks.len() {
+            if !executable[bid] { continue; }
+            if block_reg[bid].is_empty() { continue; }
+            let exit_state = &block_reg[bid];
+            let b = &cfg.blocks[bid];
+
+            // Propagate to successors: at the successor entry, meet current global with our exit state
+            for &s in &b.succ {
+                if !executable[s] { continue; }
+                let entry_reg = &mut reg;
+                for r in 0..256 {
+                    let new_val = entry_reg[r].meet(exit_state[r]);
+                    if new_val != entry_reg[r] {
+                        entry_reg[r] = new_val;
+                        changed = true;
+                        if !pending.contains(&s) { pending.push(s); }
+                    }
+                }
+            }
+        }
+        worklist = pending;
+    }
+
+    // After fixpoint, merge exit states of all executable blocks into reg
+    for bid in 0..cfg.blocks.len() {
+        if !executable[bid] { continue; }
+        if block_reg[bid].is_empty() { continue; }
+        let exit_state = &block_reg[bid];
+        for r in 0..256 {
+            reg[r] = reg[r].meet(exit_state[r]);
+        }
+    }
+
+    // ── Emit optimized code ──
+    // For each original instruction, determine if it should be replaced.
+    // Build old→new offset map.
+    let mut old_to_new: Vec<Option<usize>> = vec![None; n];
+    let mut new_code: Vec<Instruction> = Vec::new();
+
+    // Determine which blocks are still executable after SCCP
+    // Propagate execution status: if a block was executable but ended with
+    // a constant-condition Jz/Jnz that folded to fallthrough, some blocks
+    // might have been marked executable from the non-taken side. Fix: 
+    // re-check reachability from entry blocks.
+
+    for bid in 0..cfg.blocks.len() {
+        if !executable[bid] { continue; }
+        let b = &cfg.blocks[bid];
+
+        // Check if this block ends with a constant-condition branch
+        if b.end > b.start {
+            let term_pc = b.end - 1;
+            let op = code[term_pc].opcode();
+            if matches!(op, O::Jz | O::Jnz) {
+                let rs = code[term_pc].rs1() as usize;
+                if let Lattice::Int(cond_val) = reg[rs] {
+                    let take_branch = match (op, cond_val) {
+                        (O::Jz, 0) => true,
+                        (O::Jnz, 0) => false,
+                        _ => op == O::Jnz,
+                    };
+                    if !take_branch {
+                        // Branch not taken: mark target as unreachable
+                        if let Some(target_pc) = compute_target(code, term_pc) {
+                            let target_bid = cfg.blocks.iter().position(|b2| target_pc >= b2.start && target_pc < b2.end);
+                            if let Some(tid) = target_bid {
+                                executable[tid] = false;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // Emit blocks, skipping non-executable ones
+    for bid in 0..cfg.blocks.len() {
+        if !executable[bid] { continue; }
+        let b = &cfg.blocks[bid];
+
+        for i in b.start..b.end {
+            let instr = &code[i];
+            let op = instr.opcode();
+            let rd = instr.rd() as usize;
+
+            // Check if this instruction's result is a known constant
+            let can_fold = match op {
+                // Non-foldable ops (side effects, state, control flow)
+                O::Jmp | O::Jz | O::Jnz | O::Call | O::Ret | O::Halt
+                | O::SendOrder | O::Sentinel | O::Log
+                | O::PersistGet | O::PersistSet
+                | O::GetInd | O::GetPrice | O::GetPos | O::GetBal
+                | O::WindowPush | O::WindowMean | O::WindowStddev
+                | O::WindowMin | O::WindowMax | O::WindowSum => false,
+                _ => true,
+            };
+
+            if can_fold {
+                if let Lattice::Int(val) = reg[rd] {
+                    if val >= i32::MIN as i64 && val <= i32::MAX as i64 {
+                        old_to_new[i] = Some(new_code.len());
+                        new_code.push(Instruction::rri(O::Ldi, rd as u8, 0, val as u32));
+                        continue;
+                    } else if val >= -(1i64 << 39) && val < (1i64 << 39) {
+                        old_to_new[i] = Some(new_code.len());
+                        new_code.push(Instruction::ri40(O::Ldi64, rd as u8, val));
+                        continue;
+                    }
+                    // Value too large for any immediate encoding → keep original instruction
+                }
+                // Float constants: keep original instruction (avoids const_pool management)
+            }
+
+            if matches!(op, O::Jz | O::Jnz) {
+                let rs = instr.rs1() as usize;
+                // If the condition register is a known constant, fold the branch
+                if let Lattice::Int(cond_val) = reg[rs] {
+                    let take_branch = match (op, cond_val) {
+                        (O::Jz, 0) => true,
+                        (O::Jnz, 0) => false,
+                        _ => op == O::Jnz,
+                    };
+                    if take_branch {
+                        // Replace with Jmp to target
+                        let orig_imm = code[i].imm_signed();
+                        old_to_new[i] = Some(new_code.len());
+                        new_code.push(Instruction::rri(O::Jmp, 0, 0, orig_imm as u32));
+                    } else {
+                        // Branch not taken → just emit nothing (fall through)
+                        // Don't map this instruction
+                        continue;
+                    }
+                    continue;
+                }
+            }
+
+            old_to_new[i] = Some(new_code.len());
+            new_code.push(code[i]);
+        }
+    }
+
+    // Pass 2: recalculate jump offsets
+    let mut new_to_old: Vec<Option<usize>> = vec![None; new_code.len()];
+    for (old, new) in old_to_new.iter().enumerate() {
+        if let Some(n) = new {
+            new_to_old[*n] = Some(old);
+        }
+    }
+
+    for ni in 0..new_code.len() {
+        let old_i = match new_to_old[ni] { Some(v) => v, None => continue };
+        let op = new_code[ni].opcode();
+        if !is_terminator(op) { continue; }
+
+        match op {
+            O::Jmp => {
+                if let Some(old_target) = compute_target(code, old_i) {
+                    if let Some(new_target) = old_to_new[old_target] {
+                        let offset = new_target as i64 - ni as i64 - 1;
+                        new_code[ni] = Instruction::rri(O::Jmp, 0, 0, offset as u32);
+                    }
+                }
+            }
+            O::Jz | O::Jnz => {
+                if let Some(old_target) = compute_target(code, old_i) {
+                    if let Some(new_target) = old_to_new[old_target] {
+                        let offset = new_target as i64 - ni as i64 - 1;
+                        let cond_reg = code[old_i].rs1();
+                        new_code[ni] = Instruction::rri(op, 0, cond_reg, offset as u32);
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+
+    // Update entry points
+    let mut new_entries = prog.entries.clone();
+    for entry in &mut new_entries {
+        let old_off = entry.code_offset as usize;
+        if let Some(new_off) = old_to_new.get(old_off).copied().flatten() {
+            entry.code_offset = new_off as u32;
+        } else {
+            entry.code_offset = 0;
+        }
+    }
+
+    let mut out = QfrProgram::new();
+    out.entries = new_entries;
+    out.const_pool = prog.const_pool.clone();
+    out.const_map = prog.const_map.clone();
+    out.ema_alphas = prog.ema_alphas.clone();
+    out.code = new_code;
+    out
+}
+
+fn fold_int_lattice(a: Lattice, b: Lattice, op: O) -> Lattice {
+    match (a, b) {
+        (Lattice::Int(a), Lattice::Int(b)) => {
+            let result = match op {
+                O::Add => a.wrapping_add(b),
+                O::Sub => a.wrapping_sub(b),
+                O::Mul => a.wrapping_mul(b),
+                O::Div => if b == 0 { 0 } else { a.wrapping_div(b) },
+                O::Mod => if b == 0 { 0 } else { a.wrapping_rem(b) },
+                O::BitAnd => a & b,
+                O::BitOr => a | b,
+                O::BitXor => a ^ b,
+                O::Shl => a.wrapping_shl(b as u32),
+                O::Shr => a.wrapping_shr(b as u32),
+                O::Eq => if a == b { 1 } else { 0 },
+                O::Ne => if a != b { 1 } else { 0 },
+                O::Lt => if a < b { 1 } else { 0 },
+                O::Gt => if a > b { 1 } else { 0 },
+                O::Le => if a <= b { 1 } else { 0 },
+                O::Ge => if a >= b { 1 } else { 0 },
+                _ => return Lattice::Bottom,
+            };
+            Lattice::Int(result)
+        }
+        (Lattice::Top, _) | (_, Lattice::Top) => Lattice::Top,
+        _ => Lattice::Bottom,
+    }
+}
+
+fn fold_float_lattice(a: Lattice, b: Lattice, op: O) -> Lattice {
+    match (a, b) {
+        (Lattice::Flt(a), Lattice::Flt(b)) => {
+            let result = match op {
+                O::FAdd => a + b,
+                O::FSub => a - b,
+                O::FMul => a * b,
+                O::FDiv => if b == 0.0 { 0.0 } else { a / b },
+                O::FEq => if (a - b).abs() < f64::EPSILON { 1.0 } else { 0.0 },
+                O::FNe => if (a - b).abs() >= f64::EPSILON { 1.0 } else { 0.0 },
+                O::FLt => if a < b { 1.0 } else { 0.0 },
+                O::FGt => if a > b { 1.0 } else { 0.0 },
+                O::FLe => if a <= b { 1.0 } else { 0.0 },
+                O::FGe => if a >= b { 1.0 } else { 0.0 },
+                _ => return Lattice::Bottom,
+            };
+            Lattice::Flt(result)
+        }
+        (Lattice::Top, _) | (_, Lattice::Top) => Lattice::Top,
+        _ => Lattice::Bottom,
+    }
+}
+
+fn fold_int_imm_lattice(reg: &mut [Lattice], instr: &Instruction, f: fn(i64, u32) -> i64) {
+    let rd = instr.rd() as usize;
+    let rs = instr.rs1() as usize;
+    let imm = instr.imm();
+    match reg[rs] {
+        Lattice::Int(a) => reg[rd] = Lattice::Int(f(a, imm)),
+        Lattice::Top => reg[rd] = Lattice::Top,
+        _ => reg[rd] = Lattice::Bottom,
+    }
 }
 
 #[cfg(test)]
@@ -2283,5 +2769,83 @@ mod tests {
         assert_eq!(opt.entries[1].name, "on_trade");
         // on_trade entry should still point to a valid instruction
         assert!(opt.entries[1].code_offset < opt.code.len() as u32);
+    }
+
+    // ── Sparse Conditional Constant Propagation (SCCP) ──
+
+    #[test]
+    fn sccp_constant_jnz_always_taken() {
+        // Jnz with r0=1 → always taken, then-block removed
+        let p = make_prog_entry(vec![
+            I::rri(O::Ldi, 0, 0, 1),        // 0
+            I::rri(O::Jnz, 0, 0, 2),        // 1: r0!=0 → jump to 4
+            I::rri(O::Ldi, 1, 0, 10),       // 2: then (dead)
+            I::single(O::Ret),              // 3
+            I::rri(O::Ldi, 1, 0, 99),       // 4: else
+            I::single(O::Ret),              // 5
+        ], &[0]);
+        let opt = sccp(&p);
+        // Jnz→Jmp, then-block removed
+        assert_eq!(opt.code.len(), 4);
+        assert_eq!(opt.code[1].opcode(), O::Jmp);
+        assert_eq!(opt.code[2].opcode(), O::Ldi);
+        assert_eq!(opt.code[2].imm_signed(), 99);
+    }
+
+    #[test]
+    fn sccp_constant_jz_fallthrough() {
+        // Jz with r0=0 → always jumps to target, then-block removed
+        let p = make_prog_entry(vec![
+            I::rri(O::Ldi, 0, 0, 0),        // 0
+            I::rri(O::Jz, 0, 0, 2),         // 1: r0==0 → jump to 4
+            I::rri(O::Ldi, 1, 0, 10),       // 2: then (dead)
+            I::single(O::Ret),              // 3
+            I::rri(O::Ldi, 1, 0, 99),       // 4: else
+            I::single(O::Ret),              // 5
+        ], &[0]);
+        let opt = sccp(&p);
+        // Jz→Jmp, then-block removed
+        assert_eq!(opt.code.len(), 4);
+        assert_eq!(opt.code[1].opcode(), O::Jmp);
+        assert_eq!(opt.code[2].imm_signed(), 99);
+    }
+
+    #[test]
+    fn sccp_propagates_across_blocks() {
+        // Block A: r0 = 10, Jmp B
+        // Block B: r1 = r0 + 5  → folds to Ldi r1, 15
+        let p = make_prog_entry(vec![
+            I::rri(O::Ldi, 0, 0, 10),       // 0
+            I::rri(O::Jmp, 0, 0, 1),        // 1: Jmp to 3
+            I::single(O::Ret),              // 2: never reached
+            I::rri(O::AddI, 1, 0, 5),       // 3: r1 = r0 + 5 → 15
+            I::single(O::Ret),              // 4
+        ], &[0]);
+        let opt = sccp(&p);
+        // After const_fold + cfg + sccp:
+        // AddI folds to Ldi r1,15
+        assert_eq!(opt.code[2].opcode(), O::Ldi);
+        assert_eq!(opt.code[2].imm_signed(), 15);
+    }
+
+    #[test]
+    fn sccp_pipeline_folds_known_branches() {
+        // Full pipeline: if(true) { r2 = r1 + r1 } else { r2 = 0 }
+        // SCCP sees r0=1 → Jz not taken → else block eliminated → r2=84 folded
+        let p = make_prog_entry(vec![
+            I::rri(O::Ldi, 0, 0, 1),        // 0: r0 = 1
+            I::rri(O::Ldi, 1, 0, 42),       // 1: r1 = 42
+            I::rri(O::Jz, 0, 0, 2),         // 2: if r0 == 0 → jump to 5 (else)
+            I::rrr(O::Add, 2, 1, 1),        // 3: r2 = r1 + r1 = 84
+            I::rri(O::Jmp, 0, 0, 1),        // 4: Jmp to 6 (end)
+            I::rri(O::Ldi, 2, 0, 0),        // 5: else: r2 = 0
+            I::single(O::Ret),              // 6: end
+        ], &[0]);
+        let opt = optimize(&p);
+        // After all passes: Ldi r0=1, Ldi r1=42, Ldi r2=84, Jmp(0), Ret
+        // Jmp(0) is residual from if/else → end jump (no-op after else removed)
+        assert_eq!(opt.code.len(), 5);
+        assert_eq!(opt.code[2].imm_signed(), 84);
+        assert_eq!(opt.code[4].opcode(), O::Ret);
     }
 }
