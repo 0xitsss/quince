@@ -1,0 +1,31 @@
+name: "CodeQL Rust Scan on Push"
+
+
+on:
+  push:
+    branches: [ "master" ]
+
+jobs:
+  analyze:
+    name: Analyze Rust Code
+    runs-on: ubuntu-latest
+    permissions:
+      security-events: write
+      actions: read
+      contents: read
+
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
+
+
+    - name: Initialize CodeQL
+      uses: github/codeql-action/init@v3
+      with:
+        languages: rust
+        build-mode: none # disable build step since we are using cargo for Rust projects
+
+    - name: Perform CodeQL Analysis
+      uses: github/codeql-action/analyze@v3
+      with:
+        category: "/language:rust"

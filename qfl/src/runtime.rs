@@ -34,11 +34,13 @@ impl QflRuntime {
         let program = crate::parser::parse(&src)
             .map_err(|e| format!("parse {}: {}", strategy_path, e))?;
 
-        let qfr = crate::compiler::compile_checked(&program)
+        let mut qfr = crate::compiler::compile_checked(&program)
             .map_err(|errs| {
                 let details: Vec<String> = errs.iter().map(|e| e.msg.clone()).collect();
                 format!("type error in {}: {}", strategy_path, details.join("; "))
             })?;
+
+        qfr = crate::optimize::optimize(&qfr);
 
         tracing::info!(
             "QFL VM loaded: {} ({} entry, {} instr, {} consts)",

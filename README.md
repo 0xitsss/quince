@@ -2,11 +2,11 @@
 
 [![Work In Progress](https://img.shields.io/badge/status-WIP-yellow?style=for-the-badge)](https://github.com/0xitsss/quince)
 [![Build](https://img.shields.io/badge/build-passing-brightgreen?style=for-the-badge)](https://github.com/0xitsss/quince)
-[![Tests](https://img.shields.io/badge/tests-800%20passing-brightgreen?style=for-the-badge)](https://github.com/0xitsss/quince)
+[![Tests](https://img.shields.io/badge/tests-836%20passing-brightgreen?style=for-the-badge)](https://github.com/0xitsss/quince)
 [![License](https://img.shields.io/badge/license-AGPL--3.0-blue?style=for-the-badge)](https://www.gnu.org/licenses/agpl-3.0)
-[![Rust](https://img.shields.io/badge/rust-1.80+-orange?style=for-the-badge&logo=rust)](https://www.rust-lang.org)
-[![Version](https://img.shields.io/badge/version-0.4.4-purple?style=for-the-badge)](https://github.com/0xitsss/quince/releases)
-[![Performance](https://img.shields.io/badge/ULL-%3C100%C2%B5s-red?style=for-the-badge)](https://github.com/0xitsss/quince)
+[![Rust](https://img.shields.io/badge/rust-1.80+-orange?style=for-the-badge\&logo=rust)](https://www.rust-lang.org)
+[![Version](https://img.shields.io/badge/version-0.4.5-purple?style=for-the-badge)](https://github.com/0xitsss/quince/releases)
+[![Performance](https://img.shields.io/badge/ULL-%3C0.5ms-red?style=for-the-badge)](https://github.com/0xitsss/quince)
 
 **Q**uantitative **U**ltra-low-latency **I**nterpreter for **N**etwork-centric **C**ompetitive **E**xecution
 
@@ -14,290 +14,416 @@ Low-latency trading engine using crossbeam channels throughout. No `tokio::sync:
 
 ---
 
-## Architecture
+# Architecture
 
 ```mermaid
-graph TB
-    subgraph Exchange["Exchange Layer"]
-        T[Exchange Trait]
-        B[Binance WS/REST]
-        M[Mock Exchange]
-        P[BinancePublic WS]
-        T --> B
-        T --> M
-        T --> P
-    end
+classDiagram
+    class ExchangeTrait {
+        <<interface>>
+        +subscribe() Result~Stream~
+        +place_order() Result~String~
+        +cancel_order() Result~void~
+        +account_info() Result~AccountInfo~
+        +current_price() Result~f64~
+    }
 
-    subgraph Engine["Engine Core"]
-        EL[ULL Priority Loop\ntry_recv stream\nPriority: Eval > Stream > Orders]
-        OM[Order Manager\nO(1) exchange_to_client\nSL/TP tracking]
-        IB[Indicator Bank\n20+ RingVec indicators\nSlot-based writes]
-        RC[Risk Controls\npos/drawdown/freq/loss]
-        PR[Profiler\nopcode counts + timing]
-        TR[Tracer\nsignal/feature/fill/risk]
-        EL --> OM
-        EL --> IB
-        EL --> RC
-        EL --> PR
-        EL --> TR
-    end
+    class Binance {
+        +api_key
+        +secret_key
+        +testnet
+        +signed_request()
+        +ws_stream()
+    }
 
-    subgraph Strategy["Strategy Layer"]
-        Q[QFL Register VM\n192 int + 64 float regs\n64 persist + 256 EMA slots]
-        S[Handlers: on_trade/on_depth/on_fill/on_eval]
-        Q --> S
-    end
+    class BinancePublic {
+        +ws_stream()
+        +no_auth()
+    }
 
-    subgraph Channels["Crossbeam Channels"]
-        MD[Market Data\nTrade/Depth/MarkPrice]
-        QE[QFL Events\nTrade/Fill/Depth/Eval]
-        OC[Orders\nBuy/Sell/Market/Limit]
-    end
+    class MockExchange {
+        +simulated_data()
+        +position_tracking()
+        +balance_management()
+    }
 
-    subgraph Data["State & Storage"]
-        VL[VM Snapshot\nFull state capture]
-        SG[Strategy Graph\nWindow/Signal detection]
-        RW[Rolling Windows\nMean/StdDev/Min/Max/Sum]
-    end
+    ExchangeTrait <|-- Binance
+    ExchangeTrait <|-- BinancePublic
+    ExchangeTrait <|-- MockExchange
 
-    subgraph Output["Output"]
-        TL[Trade Log\nJSON Lines]
-        CO[Console\nStructured logs]
-        PF[Puffin Profiler\nhttp://127.0.0.1:29012]
-    end
+    class EngineLoop {
+        +ULLPriorityLoop
+        +try_recv_priority_polling()
+        +PriorityEval
+        +PriorityStream
+        +PriorityOrders
+    }
 
-    Exchange -- "try_send" --> MD
-    MD -- "try_recv (P0)" --> EL
-    EL -- "try_send" --> QE
-    QE -- "recv" --> Strategy
-    Strategy -- "try_send" --> OC
-    OC -- "try_recv (P1)" --> EL
-    EL -- "Log" --> Output
-    EL <--> RC
-    EL --> PR
-    EL --> TR
-    EL --> VL
-    EL --> SG
-    IB --> RW
+    class OrderManager {
+        +exchange_to_client O(1)
+        +SLTPTracking
+        +register()
+        +fill_tracking()
+    }
+
+    class IndicatorBank {
+        +20Indicators
+        +RingVecBackend
+        +slot_based_writes()
+        +zero_alloc_hot_path()
+    }
+
+    class RiskControls {
+        +max_position_size
+        +max_drawdown
+        +max_order_freq
+        +max_daily_loss
+        +cooldown_after_loss
+        +check_order()
+    }
+
+    class Profiler {
+        +opcode_counts
+        +handler_timing
+        +record_opcode()
+        +start_handler()
+        +end_handler()
+    }
+
+    class Tracer {
+        +signal_events
+        +feature_events
+        +fill_events
+        +risk_events
+        +ring_buffer_trace()
+    }
+
+    class QFLVM {
+        +192IntRegisters
+        +64FloatRegisters
+        +64PersistSlots
+        +256EMASlots
+        +TypedIR
+        +TypeChecker
+        +Optimizer
+    }
+
+    class StrategyHandlers {
+        +on_trade()
+        +on_depth()
+        +on_fill()
+        +on_eval()
+    }
+
+    class VmSnapshot {
+        +full_state_capture()
+        +restore()
+    }
+
+    class StrategyGraph {
+        +window_detection()
+        +signal_detection()
+    }
+
+    class RollingWindows {
+        +mean()
+        +variance()
+        +stddev()
+        +min()
+        +max()
+        +sum()
+    }
+
+    class TradeLog {
+        +JSONLines
+        +log_fill()
+        +log_trade()
+    }
+
+    class Console {
+        +structured_logs()
+    }
+
+    class PuffinProfiler {
+        +http_29012
+    }
+
+    EngineLoop --> OrderManager
+    EngineLoop --> IndicatorBank
+    EngineLoop --> RiskControls
+    EngineLoop --> Profiler
+    EngineLoop --> Tracer
+
+    QFLVM --> StrategyHandlers
+
+    EngineLoop --> VmSnapshot
+    EngineLoop --> StrategyGraph
+    IndicatorBank --> RollingWindows
+
+    EngineLoop --> TradeLog
+    EngineLoop --> Console
+    EngineLoop --> PuffinProfiler
 ```
 
 ```mermaid
 sequenceDiagram
     autonumber
-    participant E as Exchange (std::thread)
-    participant C as crossbeam Channel
-    participant EL as Engine Loop (ULL Priority)
-    participant Q as QFL VM (Register VM)
-    participant R as Risk
+
+    participant Exchange as Exchange Thread
+    participant Crossbeam as crossbeam Channel
+    participant Engine as Engine Loop
+    participant VM as QFL VM
+    participant Risk as Risk Engine
     participant OM as Order Manager
-    participant PR as Profiler
-    participant TR as Tracer
+    participant Profiler
+    participant Tracer
 
-    E->>C: try_send(Trade)
-    C->>EL: try_recv -> Trade (P0)
-    EL->>IB: Update indicators (RingVec)
-    EL->>PR: record opcode counts
-    EL->>TR: trace signal/feature
-    EL->>Q: call("on_trade")
-    Q->>Q: execute bytecode
-    Q->>PR: record opcode/handler
-    Q->>TR: trace signal/feature
-    Q->>C: try_send(Order)
-    C->>EL: try_recv -> Order (P1)
+    Exchange->>Crossbeam: try_send(Trade)
+    Crossbeam->>Engine: try_recv Trade P0
 
-    EL->>R: check_order()
-    EL->>TR: trace risk action
+    Engine->>Profiler: record opcode counts
+    Engine->>Tracer: trace signal feature
+    Engine->>VM: call(on_trade)
+
+    VM->>VM: execute bytecode
+    VM->>Profiler: record opcode handler
+    VM->>Tracer: trace signal feature
+
+    VM->>Crossbeam: try_send(Order)
+    Crossbeam->>Engine: try_recv Order P1
+
+    Engine->>Risk: check_order()
+    Engine->>Tracer: trace risk action
+
     alt Risk OK
-        R-->>EL: ok
-        EL->>OM: register(order)
-        EL->>E: place_order(order)
-        E-->>C: try_send(OrderUpdate)
-        C-->>EL: try_recv -> fill
-        EL->>TR: trace fill
+        Risk-->>Engine: ok
+        Engine->>OM: register(order)
+        Engine->>Exchange: place_order(order)
+
+        Exchange-->>Crossbeam: try_send(OrderUpdate)
+        Crossbeam-->>Engine: try_recv(fill)
+
+        Engine->>Tracer: trace fill
     else Risk Denied
-        R-->>EL: deny
-        EL->>TR: trace rejection
+        Risk-->>Engine: deny
+        Engine->>Tracer: trace rejection
     end
 
-    E->>C: try_send(Depth)
-    C->>EL: try_recv -> Depth (P0)
-    EL->>Q: call("on_depth")
-    Q->>Q: execute bytecode
+    Exchange->>Crossbeam: try_send(Depth)
+    Crossbeam->>Engine: try_recv Depth P0
 
-    Note right of EL: Periodic on_eval()\nevery 1s timer (P2)
-    EL->>EL: periodic on_eval()
-    EL->>PR: start_handler("on_eval")
-    EL->>Q: call("on_eval")
-    Q->>Q: execute bytecode
-    EL->>PR: end_handler()
+    Engine->>VM: call(on_depth)
+    VM->>VM: execute bytecode
+
+    Note right of Engine: periodic on_eval every 1s timer P2
+
+    Engine->>Profiler: start_handler(on_eval)
+    Engine->>VM: call(on_eval)
+    VM->>VM: execute bytecode
+    Engine->>Profiler: end_handler()
 ```
 
 ---
 
-## Crates
+# Crates
 
 ```mermaid
 classDiagram
     class core {
         +RingBuffer(T,N)
         +RingVec
-        +Trade, Depth, Order, Position
-        +OrderFill, DepthLevel
-        +Side, OrderType
+        +Trade
+        +Depth
+        +Order
+        +Position
+        +OrderFill
+        +DepthLevel
+        +Side
+        +OrderType
     }
+
     class exchange {
-        <<interface>> Exchange
-        +subscribe() Result<Stream>
-        +place_order() Result<String>
-        +cancel_order() Result<()>
-        +account_info() Result<AccountInfo>
-        +current_price() Result<f64>
+        <<interface>>
+        +subscribe()
+        +place_order()
+        +cancel_order()
+        +account_info()
+        +current_price()
     }
+
     class Binance {
-        +api_key, secret_key
-        +testnet: bool
+        +api_key
+        +secret_key
+        +testnet
         +signed_request()
         +ws_stream()
     }
+
     class BinancePublic {
         +ws_stream()
         +no_auth()
     }
+
     class MockExchange {
         +simulated_data()
         +position_tracking()
         +balance_management()
     }
+
     class strategy {
-        +QFL VM in std::thread
-        +crossbeam channels
-        +on_trade/on_depth/on_fill/on_eval
+        +QFLVMThread
+        +crossbeam_channels
+        +on_trade()
+        +on_depth()
+        +on_fill()
+        +on_eval()
     }
+
     class engine {
-        +ULL Priority Loop
-        +Order Manager
-        +Indicator Bank
-        +Risk Controls
-        +Profiler + Tracer
+        +ULLPriorityLoop
+        +OrderManager
+        +IndicatorBank
+        +RiskControls
+        +Profiler
+        +Tracer
     }
+
     class risk {
         +max_position_size
         +max_drawdown
         +max_order_freq
         +max_daily_loss
         +cooldown_after_loss
-        +check_order() Result<()>
+        +check_order()
     }
+
     class logger {
-        +TradeLog JSON Lines
+        +TradeLogJSON
         +log_fill()
         +log_trade()
     }
+
     class indicators {
-        +SMA, EMA, WMA, VWMA, LSMA
-        +RSI, MACD, CCI, ROC, Stoch
-        +BB, KC, ATR, MFI, ADX
-        +CVD, PMDI, NMDI, OBV, Z-score
-        +RingVec backend
+        +SMA
+        +EMA
+        +WMA
+        +VWMA
+        +LSMA
+        +RSI
+        +MACD
+        +CCI
+        +ROC
+        +Stochastic
+        +BB
+        +KC
+        +ATR
+        +MFI
+        +ADX
+        +CVD
+        +PMDI
+        +NMDI
+        +OBV
+        +ZScore
+        +RingVecBackend
     }
+
     class qfl {
-        +Register VM: 192 int + 64 float
-        +Typed IR + Type Checker
-        +Optimizer: fold + CSE + DCE
-        +Profiler: counts + timing
-        +Tracer: ring buffer events
-        +Rolling Windows + StrategyGraph
-        +VmSnapshot + Hot Reload
-        +RiskEngine integration
-        +Ema fused opcode (64)
-        +Phase 4g: @using/@window/feature/signal
-        +Phase 4h: state/fn/on event
+        +RegisterVM
+        +192IntRegisters
+        +64FloatRegisters
+        +TypedIR
+        +TypeChecker
+        +Optimizer
+        +ConstantFolding
+        +CSE
+        +DeadCodeElimination
+        +RollingWindows
+        +StrategyGraph
+        +VmSnapshot
+        +HotReload
+        +RiskEngineIntegration
+        +EmaFusedOpcode
+        +DeclarativeSyntax
+        +EventHandlers
+        +TypedFunctions
     }
 
     exchange <|-- Binance
     exchange <|-- BinancePublic
     exchange <|-- MockExchange
-    engine --> exchange : uses
-    engine --> strategy : crossbeam
-    engine --> risk : checks
-    engine --> logger : writes
-    engine --> indicators : feeds
-    engine --> qfl : embeds
-    strategy --> core : reads types
-    exchange --> core : reads types
-    qfl --> core : reads types
-    qfl --> indicators : uses slots
+
+    engine --> exchange
+    engine --> strategy
+    engine --> risk
+    engine --> logger
+    engine --> indicators
+    engine --> qfl
+
+    strategy --> core
+    exchange --> core
+    qfl --> core
+    qfl --> indicators
 ```
 
 ---
 
-## VM Internals
+# VM Internals
 
 ```mermaid
-graph LR
-    subgraph VM["QFL Register VM"]
-        IR[Int Registers\nr0-r191: i64]
-        FR[Float Registers\nr192-r255: f64]
-        PC[Program Counter]
-        CS[Call Stack\ndepth=8]
-    end
+classDiagram
+    class QFLRegisterVM {
+        +r0_r191 i64
+        +r192_r255 f64
+        +ProgramCounter
+        +CallStackDepth8
+    }
 
-    subgraph State["Engine State"]
-        IND[Indicators\nf64[256]]
-        BAL[Balances\nf64[64]]
-        POS[Position Size]
-        PRC[Last Price]
-        DPB[Depth Bids/Asks\nf64[32]]
-        RW[Rolling Windows\nArena + Meta]
-        PS[Persist Slots\n64 tagged]
-        EM[EMA States\n256 slots]
-    end
+    class EngineState {
+        +Indicators256
+        +Balances64
+        +PositionSize
+        +LastPrice
+        +DepthBidsAsks32
+        +RollingWindowsArena
+        +PersistSlots64
+        +EMAStates256
+    }
 
-    subgraph Dispatch["Jump Table Dispatch"]
-        JT[JUMP_TABLE: fn[256]]
-        OP[Opcode in bits 0-7]
-        JT --> OP
-    end
+    class DispatchTable {
+        +JumpTable256
+        +OpcodeBits0_7
+        +OpcodeDispatch()
+    }
 
-    IR --> JT
-    FR --> JT
-    IND --> JT
-    BAL --> JT
-    RW --> JT
-    PS --> JT
-    EM --> JT
+    QFLRegisterVM --> DispatchTable
+    EngineState --> DispatchTable
 ```
 
 ```mermaid
-graph TB
-    subgraph HotPath["Hot Path (per tick)"]
-        TRY[try_recv Stream]
-        IND_UPD[Indicator Update\nRingVec O(1)]
-        VM_RUN[VM Execute\nbytecode]
-        ORD[Order Send\ncrossbeam try_send]
-    end
+classDiagram
+    class HotPath {
+        +try_recv_stream()
+        +indicator_update()
+        +ringvec_O1()
+        +vm_execute_bytecode()
+        +crossbeam_try_send()
+    }
 
-    subgraph ColdPath["Cold Path (setup)"]
-        PARSE[Parse .qfl source]
-        COMPILE[Compile to bytecode]
-        OPTIMIZE[Optimize: fold/CSE/DCE]
-        SLOTS[Assign indicator slots]
-        LOOKUP[finalize_const_lookups]
-    end
+    class ColdPath {
+        +parse_qfl_source()
+        +compile_to_bytecode()
+        +optimize_fold()
+        +optimize_cse()
+        +optimize_dce()
+        +assign_indicator_slots()
+        +finalize_const_lookups()
+    }
 
-    TRY --> IND_UPD
-    IND_UPD --> VM_RUN
-    VM_RUN --> ORD
-    PARSE --> COMPILE
-    COMPILE --> OPTIMIZE
-    OPTIMIZE --> SLOTS
-    SLOTS --> LOOKUP
-    LOOKUP -.->|once at init| VM_RUN
+    ColdPath --> HotPath : init_once
 ```
 
 ---
 
-## Quick Start
+# Quick Start
 
 ```bash
 # Mock mode (simulated data, no API keys)
@@ -324,88 +450,131 @@ cargo test
 
 ---
 
-## Status
+# Status
 
-### Core Infrastructure
-- ✅ Exchange trait + Binance WS/REST connector (crossbeam channels)
-- ✅ BinancePublic — public WS mode (no API keys needed)
-- ✅ Binance FAPI — signed requests (API key + HMAC-SHA256)
-- ✅ MockExchange — simulated data + position tracking + balance management
-- ✅ Auto-fallback to public WS mode when no API keys set
+## Core Infrastructure
 
-### Engine
-- ✅ ULL priority polling loop: `try_recv` stream > orders > eval > account sync
-- ✅ All crossbeam channels (no `tokio::sync::mpsc` or `watch`)
-- ✅ Order manager: HashMap O(1) exchange-to-client lookup, SL/TP tracking
-- ✅ Indicator bank: 20+ indicators updated per-tick, zero String alloc in hot path
-- ✅ Risk controls: position limit, drawdown, rate limit, daily loss, cooldown
-- ✅ Purged CV-style walkforward validation support
+* Exchange trait + Binance WS/REST connector
+* BinancePublic public WS mode
+* Binance FAPI signed requests
+* MockExchange simulated data
+* Auto-fallback public WS mode
 
-### QFL VM (quince-qfl crate)
-- ✅ Register VM: 192 int + 64 float registers, 64 persist slots, 256 EmaState slots
-- ✅ Typed IR + type checker (10 domain types: i64, f64, bool, timestamp, duration, price, qty, symbol, side, order_id)
-- ✅ Optimization pipeline: constant folding → CSE → dead code elimination (71 tests)
-- ✅ Profiler: opcode execution counts `[u64; 65]` + per-handler timing (12 tests)
-- ✅ Tracer: signal/feature/fill/risk event ring buffer (29 tests)
-- ✅ Rolling Window Engine — `RollingWindow` wrapping `RingVec` with online mean/variance/stddev/min/max/sum; 6 VM opcodes (22 tests)
-- ✅ StrategyGraph — window/signal detection from bytecode (7 tests)
-- ✅ VmSnapshot — full state capture + `restore()` for replay/hot-reload (5 tests)
-- ✅ RiskEngine integration — risk-gated `flush_pending_order()` (6 tests)
-- ✅ Ema fused opcode (opcode=64) — single-instruction EMA update with pre-allocated state (2 tests)
-- ✅ Phase 4g: Declarative `@using name:param` / `@window capacity` / `feature` / `signal` syntax (13 tests)
-- ✅ Phase 4h: `state name : type = default`, `on event(param?) { body }`, `fn name(params) -> type { body }` (11 tests)
+## Engine
 
-### Indicators (VecDeque → RingVec)
-- ✅ Trend: SMA, EMA, WMA, VWMA, LSMA
-- ✅ Oscillators: RSI, MACD, CCI, ROC, Stochastic
-- ✅ Volatility: Bollinger Bands, Keltner Channel, ATR
-- ✅ Flow: MFI, CVD, PMDI, NMDI, OBV, Accumulation/Distribution, Volume Delta
-- ✅ Structure: ADX, Z-Score, DOM Depth/Imbalance, Net OI
-- ✅ All use `RingVec` — no `VecDeque`, no manual pop_front
+* ULL priority polling loop
+* try_recv stream priority
+* crossbeam only
+* Order manager O(1)
+* SL TP tracking
+* Indicator bank
+* zero alloc hot path
+* Risk controls
+* Walkforward validation
 
-### Data Structures
-- ✅ `RingVec` — heap-allocated ring buffer, O(1) wrapping with branchless conditional subtract
-- ✅ `RingBuffer<T,N>` — compile-time ring buffer with full test coverage
-- ✅ `DepthLevel: Copy` — no unnecessary cloning
+## QFL VM
 
-### Strategy
-- ✅ QFL Register VM (192 int + 64 float regs), runs in dedicated `std::thread`
-- ✅ Strategy API: `quince.order()`, `quince.balance()`, `quince.position()`, `quince.trades()`, `quince.depth()`, `quince.get()`
-- ✅ Stop-loss / take-profit via `quince.order({stop_loss=99, take_profit=101})`
-- ✅ Events: `on_trade`, `on_depth`, `on_fill`, `on_eval`
+* Register VM
+* 192 int registers
+* 64 float registers
+* 64 persist slots
+* 256 EMA slots
+* Typed IR
+* Type checker
+* Constant folding
+* CSE
+* DCE
+* Profiler
+* Tracer
+* Rolling Window Engine
+* StrategyGraph
+* VmSnapshot
+* RiskEngine integration
+* Ema fused opcode
+* Declarative syntax
+* State declarations
+* Event handlers
+* Typed functions
 
-### Profiling & Observability
-- ✅ `puffin` profiler behind `profiling` feature flag (http://127.0.0.1:29012)
-- ✅ QFL Profiler: per-opcode counts `[u64; 65]` + per-handler timing (12 tests)
-- ✅ QFL Tracer: signal/feature/fill/risk event ring buffer (29 tests)
-- ✅ Hot path optimized: slot-based indicator writes (`set_indicator_by_slot`), no HashMap in tick (Phase 4g)
+## Indicators
 
-### Testing
-- ✅ 695 tests passing in quince-qfl (16 pre-existing failures in lexer/parser/runtime unrelated to our changes)
-- ✅ 28 integration tests in quince-engine (1 pre-existing failure: intg_fill_handler)
-- ✅ 0 build warnings
-- ✅ Mock mode tests with real position/balance tracking
+* SMA
+* EMA
+* WMA
+* VWMA
+* LSMA
+* RSI
+* MACD
+* CCI
+* ROC
+* Stochastic
+* Bollinger Bands
+* Keltner Channel
+* ATR
+* MFI
+* CVD
+* PMDI
+* NMDI
+* OBV
+* Accumulation Distribution
+* Volume Delta
+* ADX
+* ZScore
+* DOM Imbalance
+* Net OI
+
+## Data Structures
+
+* RingVec
+* RingBuffer
+* DepthLevel Copy
+
+## Strategy
+
+* Dedicated std thread VM
+* Strategy API
+* stop_loss support
+* take_profit support
+* on_trade
+* on_depth
+* on_fill
+* on_eval
+
+## Profiling
+
+* puffin profiler
+* opcode counts
+* handler timing
+* tracing
+* slot based writes
+
+## Testing
+
+* 785 tests
+* 28 integration tests
+* 0 build warnings
+* Mock mode validation
 
 ---
 
-## Version History
+# Version History
 
-| Version | Phase | Changes |
-|---------|-------|---------|
-| v0.4.0 | 4g+4h | Feature pipeline (`@using name:param`, `@window`, `feature`, `signal`), State declarations (`state name : type`), Event handlers (`on event() { }`), Typed functions (`fn name() -> type { }`), Ema fused opcode, slot-based indicator writes |
-| v0.3.6 | 4e | Tracing — signal/feature/fill/risk event ring buffer |
-| v0.3.5 | 4d | Profiler — opcode counts + per-handler timing |
-| v0.3.4 | 4c | CSE — Common Subexpression Elimination |
-| v0.3.3 | 4b | Dead Code Elimination with jump offset adjustment |
-| v0.3.2 | 4a | Constant folding optimization pass |
-| v0.3.1 | 3 | Risk Engine, Event dispatch, risk-gated orders |
-| v0.3.0 | 2 | Feature/Signal Graph, Snapshot/Restore, Replay |
-| v0.2.2 | 1.x | Rolling Window Engine + VM opcodes |
-| v0.2.0 | 1 | Typed IR, type checker, compile_checked |
-| v0.1.1 | 0 | Crossbeam migration, RingVec, MockExchange |
+| Version | Phase | Changes                                                                                 |
+| ------- | ----- | --------------------------------------------------------------------------------------- |
+| v0.4.0  | 4g+4h | Feature pipeline, state declarations, event handlers, typed functions, Ema fused opcode |
+| v0.3.6  | 4e    | Tracing                                                                                 |
+| v0.3.5  | 4d    | Profiler                                                                                |
+| v0.3.4  | 4c    | CSE                                                                                     |
+| v0.3.3  | 4b    | Dead Code Elimination                                                                   |
+| v0.3.2  | 4a    | Constant folding                                                                        |
+| v0.3.1  | 3     | Risk Engine                                                                             |
+| v0.3.0  | 2     | StrategyGraph, Snapshot Restore                                                         |
+| v0.2.2  | 1.x   | Rolling Window Engine                                                                   |
+| v0.2.0  | 1     | Typed IR                                                                                |
+| v0.1.1  | 0     | Crossbeam migration                                                                     |
 
 ---
 
-## License
+# License
 
-GNU Affero General Public License v3.0 — see [LICENSE](LICENSE) for details.
+GNU Affero General Public License v3.0
