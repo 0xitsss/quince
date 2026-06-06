@@ -332,10 +332,18 @@ impl Compiler {
         }
         self.pop_scope();
 
+        let then_ended_terminal = self.prog.code.last().map_or(false, |i| {
+            let op = i.opcode();
+            op == O::Ret || op == O::Halt || op == O::Jmp
+        });
         let jmp_to_end = if !else_body.is_empty() || !elseif_branches.is_empty() {
-            let jmp = self.current_offset() as usize;
-            self.emit(Instruction::rri(O::Jmp, 0, 0, 0)); // placeholder
-            Some(jmp)
+            if then_ended_terminal {
+                None
+            } else {
+                let jmp = self.current_offset() as usize;
+                self.emit(Instruction::rri(O::Jmp, 0, 0, 0)); // placeholder
+                Some(jmp)
+            }
         } else {
             None
         };
@@ -358,9 +366,17 @@ impl Compiler {
             }
             self.pop_scope();
 
-            let jmp = self.current_offset() as usize;
-            self.emit(Instruction::rri(O::Jmp, 0, 0, 0));
-            elseif_jmps.push((jmp, econd_reg));
+            let ebody_ended_terminal = self.prog.code.last().map_or(false, |i| {
+                let op = i.opcode();
+                op == O::Ret || op == O::Halt || op == O::Jmp
+            });
+            if ebody_ended_terminal {
+                elseif_jmps.push((usize::MAX, econd_reg));
+            } else {
+                let jmp = self.current_offset() as usize;
+                self.emit(Instruction::rri(O::Jmp, 0, 0, 0));
+                elseif_jmps.push((jmp, econd_reg));
+            }
 
             let after_ebody = self.current_offset();
             let jz_off = after_ebody - jz_to_elseif as u32 - 1;
@@ -369,8 +385,10 @@ impl Compiler {
         // Patch all elseif JMPs to point past else/end
         let after_elseif = self.current_offset();
         for (jmp_pos, _) in &elseif_jmps {
-            let jmp_off = after_elseif - *jmp_pos as u32 - 1;
-            self.emit_at(*jmp_pos, Instruction::rri(O::Jmp, 0, 0, jmp_off));
+            if *jmp_pos != usize::MAX {
+                let jmp_off = after_elseif - *jmp_pos as u32 - 1;
+                self.emit_at(*jmp_pos, Instruction::rri(O::Jmp, 0, 0, jmp_off));
+            }
         }
 
         if !else_body.is_empty() {
@@ -1110,7 +1128,7 @@ mod tests {
 
     #[test]
     fn test_if_stmt() {
-        let prog = compile_str("if 1 then return 42 else return 0 end");
+        let prog = compile_str("if 1 then a = 42 else a = 0 end");
         // Should have JZ + JMP instructions
         let has_jz = prog.code.iter().any(|i| i.opcode() == O::Jz);
         let has_jmp = prog.code.iter().any(|i| i.opcode() == O::Jmp);

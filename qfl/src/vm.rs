@@ -1,6 +1,6 @@
+use std::io::Write;
 use crate::ir::{ConstEntry, QfrProgram};
-use crate::opcodes::{Instruction, JUMP_TABLE, SENTINEL_OPCODE};
-use std::collections::HashMap;
+use crate::opcodes::{Instruction, JUMP_TABLE};
 
 pub const NUM_REGS: usize = 256;
 pub const INT_REG_COUNT: u8 = 192;
@@ -114,7 +114,6 @@ pub struct Vm {
 
     // ── Constants pool (kept for backward compat; hot path uses consts_ptr) ──
     pub const_pool: Vec<ConstEntry>,
-    pub const_map: HashMap<String, u32>,
     pub const_strings: Vec<String>,
 
     // ── Entry points ──
@@ -129,13 +128,15 @@ pub struct Vm {
 
     // ── Engine state (flat arrays in hot path) ──
     pub indicators: [f64; MAX_INDICATORS],
-    pub indicator_map: HashMap<String, u16>,
+    /// Linear-search list for name→slot (N ≤ MAX_INDICATORS, faster than HashMap at this size).
+    indicator_list: Vec<(String, u16)>,
     /// Pre-computed: const_strings index → indicator slot (u16::MAX = not found).
     /// Built by finalize_const_lookups() after all indicator registrations.
     /// Hot path uses this instead of HashMap + String clone.
     pub indicator_by_str: Vec<u16>,
     pub balances: [f64; MAX_BALANCES],
-    pub balance_map: HashMap<String, u16>,
+    /// Linear-search list for name→slot (N ≤ MAX_BALANCES).
+    balance_list: Vec<(String, u16)>,
     /// Pre-computed: const_strings index → balance slot (u16::MAX = not found).
     pub balance_by_str: Vec<u16>,
     pub last_price: f64,
@@ -162,6 +163,11 @@ pub struct Vm {
     // ── Profiler / Tracer ──
     pub profiler: Option<crate::profiler::Profiler>,
     pub tracer: Option<crate::tracer::Tracer>,
+
+    // ── VM Trace (debug: logs every instruction to file) ──
+    trace_vm_enabled: bool,
+    trace_file: Option<std::io::BufWriter<std::fs::File>>,
+    trace_start: std::time::Instant,
 }
 
 impl Vm {
@@ -197,9 +203,6 @@ impl Vm {
             entry_offsets[i] = e.code_offset;
         }
 
-        let indicator_map = HashMap::new();
-        let balance_map = HashMap::new();
-
         let indicator_by_str = vec![u16::MAX; const_strings.len()];
         let balance_by_str = vec![u16::MAX; const_strings.len()];
 
@@ -234,7 +237,6 @@ impl Vm {
             _consts_owned,
             _i64_consts_owned,
             const_pool: program.const_pool.clone(),
-            const_map: program.const_map.clone(),
             const_strings,
             entry_names,
             entry_offsets,
@@ -242,10 +244,10 @@ impl Vm {
             handler_cache,
             persist: [PersistSlot::default(); PERSIST_SLOTS],
             indicators: [0.0; MAX_INDICATORS],
-            indicator_map,
+            indicator_list: Vec::new(),
             indicator_by_str,
             balances: [0.0; MAX_BALANCES],
-            balance_map,
+            balance_list: Vec::new(),
             balance_by_str,
             last_price: 0.0,
             position_size: 0.0,
@@ -261,6 +263,9 @@ impl Vm {
             has_pending_order: false,
             profiler: None,
             tracer: None,
+            trace_vm_enabled: false,
+            trace_file: None,
+            trace_start: std::time::Instant::now(),
         };
         // Initialize EMA alphas from compiled program
         for (i, alpha) in program.ema_alphas.iter().enumerate() {
@@ -341,52 +346,135 @@ impl Vm {
     }
 
     #[inline(always)]
-    fn run(&mut self) {
-        let has_profiler = self.profiler.is_some();
-        let has_tracer = self.tracer.is_some();
-
+    fn run_bare(&mut self) {
         while self.running {
             let instr = unsafe { *self.code_ptr.add(self.pc) };
             self.pc += 1;
+            unsafe {
+                let handler = *JUMP_TABLE.get_unchecked((instr & 0xFF) as usize);
+                handler(self, instr);
+            }
+        }
+    }
 
+    #[inline(never)]
+    fn run_profiled(&mut self) {
+        while self.running {
+            let instr = unsafe { *self.code_ptr.add(self.pc) };
+            self.pc += 1;
             let opcode = (instr & 0xFF) as u8;
-            if opcode == SENTINEL_OPCODE {
-                break;
+            if let Some(ref mut p) = self.profiler {
+                p.record_opcode(crate::opcodes::Opcode::from_u8(opcode));
             }
-
-            if has_profiler {
-                if let Some(ref mut p) = self.profiler {
-                    p.record_opcode(crate::opcodes::Opcode::from_u8(opcode));
-                }
-            }
-
             unsafe {
                 let handler = *JUMP_TABLE.get_unchecked(opcode as usize);
                 handler(self, instr);
             }
+        }
+    }
 
-            if has_tracer {
-                self.trace_op(opcode, instr);
+    #[inline(never)]
+    fn run_traced(&mut self) {
+        while self.running {
+            let instr = unsafe { *self.code_ptr.add(self.pc) };
+            self.pc += 1;
+            let opcode = (instr & 0xFF) as u8;
+            unsafe {
+                let handler = *JUMP_TABLE.get_unchecked(opcode as usize);
+                handler(self, instr);
             }
+            self.trace_op(opcode, instr);
+        }
+    }
+
+    #[inline(never)]
+    fn run_with_tracevm(&mut self) {
+        while self.running {
+            let instr = unsafe { *self.code_ptr.add(self.pc) };
+            self.pc += 1;
+            let opcode = (instr & 0xFF) as u8;
+            unsafe {
+                let handler = *JUMP_TABLE.get_unchecked(opcode as usize);
+                handler(self, instr);
+            }
+            self.trace_vm_instruction(opcode, instr);
+        }
+    }
+
+    #[inline(always)]
+    fn run(&mut self) {
+        let has_profiler = self.profiler.is_some();
+        let has_tracer = self.tracer.is_some();
+        if self.trace_vm_enabled {
+            self.run_with_tracevm();
+        } else if has_profiler {
+            self.run_profiled();
+        } else if has_tracer {
+            self.run_traced();
+        } else {
+            self.run_bare();
         }
     }
 
     fn trace_op(&mut self, _opcode: u8, _instr: u64) {}
 
+    fn trace_vm_instruction(&mut self, opcode: u8, instr: u64) {
+        use crate::opcodes::Opcode;
+        let dt = self.trace_start.elapsed();
+        let dt_us = dt.as_secs_f64() * 1_000_000.0;
+        let rd = ((instr >> 8) & 0xFF) as u8;
+        let rs1 = ((instr >> 16) & 0xFF) as u8;
+        let rs2 = ((instr >> 24) & 0xFF) as u8;
+        let imm = (instr >> 32) as i32;
+        let op = Opcode::from_u8(opcode);
+        let fmt_reg = |r: u8| -> String {
+            if r >= 192 {
+                format!("{:.4}", unsafe { self.regs.get_unchecked(r as usize).f })
+            } else {
+                format!("{}", unsafe { self.regs.get_unchecked(r as usize).i })
+            }
+        };
+        let rds = fmt_reg(rd);
+        let r1s = fmt_reg(rs1);
+        let r2s = fmt_reg(rs2);
+        let trace_line = format!(
+            "{:.3} PC={} {} rd={}({}) rs1={}({}) rs2={}({}) imm={}\n",
+            dt_us, self.pc - 1, op, rd, rds, rs1, r1s, rs2, r2s, imm
+        );
+        if let Some(ref mut f) = self.trace_file {
+            let _ = f.write(trace_line.as_bytes());
+        }
+    }
+
+    pub fn enable_trace_vm(&mut self, path: &str) {
+        match std::fs::File::create(path) {
+            Ok(file) => {
+                self.trace_file = Some(std::io::BufWriter::new(file));
+                self.trace_vm_enabled = true;
+                self.trace_start = std::time::Instant::now();
+            }
+            Err(e) => {
+                eprintln!("[vm] failed to open trace file '{}': {}", path, e);
+            }
+        }
+    }
+
     // ── State setters ──
 
     pub fn set_balance(&mut self, asset: &str, val: f64) {
-        if let Some(&slot) = self.balance_map.get(asset) {
-            if (slot as usize) < MAX_BALANCES {
-                self.balances[slot as usize] = val;
+        for &(ref name, slot) in &self.balance_list {
+            if name == asset {
+                if (slot as usize) < MAX_BALANCES {
+                    self.balances[slot as usize] = val;
+                }
+                return;
             }
-            return;
         }
-        let idx = self.balance_map.len() as u16;
-        if (idx as usize) < MAX_BALANCES {
-            self.balances[idx as usize] = val;
+        let slot = self.balance_list.len() as u16;
+        if (slot as usize) < MAX_BALANCES {
+            self.balances[slot as usize] = val;
         }
-        self.balance_map.insert(asset.to_string(), idx);
+        self.balance_list.push((asset.to_string(), slot));
     }
 
     pub fn set_last_price(&mut self, price: f64) {
@@ -416,30 +504,51 @@ impl Vm {
     }
 
     pub fn set_indicator(&mut self, name: &str, val: f64) {
-        if let Some(&slot) = self.indicator_map.get(name) {
-            if (slot as usize) < MAX_INDICATORS {
-                self.indicators[slot as usize] = val;
+        for &(ref n, slot) in &self.indicator_list {
+            if n == name {
+                if (slot as usize) < MAX_INDICATORS {
+                    self.indicators[slot as usize] = val;
+                }
+                return;
             }
-            return;
         }
-        let idx = self.indicator_map.len() as u16;
-        if (idx as usize) < MAX_INDICATORS {
-            self.indicators[idx as usize] = val;
+        let slot = self.indicator_list.len() as u16;
+        if (slot as usize) < MAX_INDICATORS {
+            self.indicators[slot as usize] = val;
         }
-        self.indicator_map.insert(name.to_string(), idx);
+        self.indicator_list.push((name.to_string(), slot));
     }
 
     pub fn ensure_indicator_slot(&mut self, name: &str) -> u16 {
-        if let Some(&slot) = self.indicator_map.get(name) {
-            return slot;
+        for &(ref n, slot) in &self.indicator_list {
+            if n == name {
+                return slot;
+            }
         }
-        let len = self.indicator_map.len() as u16;
-        self.indicator_map.insert(name.to_string(), len);
-        len
+        let slot = self.indicator_list.len() as u16;
+        self.indicator_list.push((name.to_string(), slot));
+        slot
     }
 
     pub fn indicator_slot(&self, name: &str) -> Option<u16> {
-        self.indicator_map.get(name).copied()
+        self.indicator_list.iter().find(|(n, _)| n == name).map(|&(_, s)| s)
+    }
+
+    pub fn ensure_balance_slot(&mut self, name: &str) -> u16 {
+        for &(ref n, slot) in &self.balance_list {
+            if n == name {
+                return slot;
+            }
+        }
+        let slot = self.balance_list.len() as u16;
+        self.balance_list.push((name.to_string(), slot));
+        slot
+    }
+
+    pub fn set_balance_by_slot(&mut self, slot: u16, val: f64) {
+        if (slot as usize) < MAX_BALANCES {
+            self.balances[slot as usize] = val;
+        }
     }
 
     pub fn set_indicator_by_slot(&mut self, slot: u16, val: f64) {
@@ -455,24 +564,30 @@ impl Vm {
         }
     }
 
-    /// Rebuild indicator_by_str / balance_by_str from the current HashMap state.
+    /// Rebuild indicator_by_str / balance_by_str from the current name→slot lists.
     /// Must be called after all indicator/balance registrations (e.g. from Engine).
     pub fn finalize_const_lookups(&mut self) {
         self.indicator_by_str.clear();
         self.indicator_by_str.resize(self.const_strings.len(), u16::MAX);
         for (str_idx, s) in self.const_strings.iter().enumerate() {
-            if let Some(&slot) = self.indicator_map.get(s) {
-                if str_idx < self.indicator_by_str.len() {
-                    self.indicator_by_str[str_idx] = slot;
+            for &(ref name, slot) in &self.indicator_list {
+                if name == s {
+                    if str_idx < self.indicator_by_str.len() {
+                        self.indicator_by_str[str_idx] = slot;
+                    }
+                    break;
                 }
             }
         }
         self.balance_by_str.clear();
         self.balance_by_str.resize(self.const_strings.len(), u16::MAX);
         for (str_idx, s) in self.const_strings.iter().enumerate() {
-            if let Some(&slot) = self.balance_map.get(s) {
-                if str_idx < self.balance_by_str.len() {
-                    self.balance_by_str[str_idx] = slot;
+            for &(ref name, slot) in &self.balance_list {
+                if name == s {
+                    if str_idx < self.balance_by_str.len() {
+                        self.balance_by_str[str_idx] = slot;
+                    }
+                    break;
                 }
             }
         }
@@ -532,8 +647,10 @@ unsafe fn imm(instr: u64) -> i32 { (instr >> 32) as i32 }
 #[inline(always)]
 unsafe fn immu(instr: u64) -> u32 { (instr >> 32) as u32 }
 
+#[inline(always)]
 fn sanitize_f(val: f64) -> f64 {
-    if val.is_nan() || val.is_infinite() { 0.0 } else { val }
+    debug_assert!(val.is_finite(), "NaN/Inf in float register");
+    val
 }
 
 pub mod handlers {

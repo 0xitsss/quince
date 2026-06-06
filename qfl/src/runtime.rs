@@ -50,8 +50,15 @@ impl QflRuntime {
             qfr.const_pool.len(),
         );
 
+        let mut vm = Vm::new(qfr);
+
+        // Auto-enable VM trace if QFL_TRACE_VM env var is set
+        if std::env::var("QFL_TRACE_VM").is_ok() {
+            vm.enable_trace_vm("qflvmtrace.log");
+        }
+
         Ok(QflRuntime {
-            vm: Vm::new(qfr),
+            vm,
             path_qfl: PathBuf::from(strategy_path),
             current_symbol: String::new(),
             orders_tx: None,
@@ -89,11 +96,20 @@ impl QflRuntime {
             let name = String::from_utf8_lossy(&name_bytes[..name_end]).to_string();
             entries.push(crate::ir::EntryPoint { name, code_offset: self.vm.entry_offsets[i] });
         }
+        let const_map = self.vm.const_pool.iter().enumerate()
+            .filter_map(|(i, e)| {
+                if let crate::ir::ConstEntry::String(s) = e {
+                    Some((s.clone(), i as u32))
+                } else {
+                    None
+                }
+            })
+            .collect();
         let prog = crate::ir::QfrProgram {
             entries,
             const_pool: self.vm.const_pool.clone(),
             code: self.vm.code_instr(),
-            const_map: self.vm.const_map.clone(),
+            const_map,
             ema_alphas: Vec::new(),
         };
         prog.save(qfr_path)
@@ -162,6 +178,14 @@ impl QflRuntime {
 
     pub fn set_balance(&mut self, asset: &str, val: f64) {
         self.vm.set_balance(asset, val);
+    }
+
+    pub fn ensure_balance_slot(&mut self, name: &str) -> u16 {
+        self.vm.ensure_balance_slot(name)
+    }
+
+    pub fn set_balance_by_slot(&mut self, slot: u16, val: f64) {
+        self.vm.set_balance_by_slot(slot, val);
     }
 
     pub fn set_position_size(&mut self, size: f64) {
@@ -374,7 +398,8 @@ function on_trade(trade) end
         let path = write_test_strategy("runtime_test_set_ind", "function on_eval() end");
         let mut rt = QflRuntime::load(&path).unwrap();
         rt.set_indicator("ema", 123.456);
-        assert!((rt.vm.indicators[(*rt.vm.indicator_map.get("ema").unwrap()) as usize] - 123.456).abs() < 0.001);
+        let slot = rt.vm.indicator_slot("ema").unwrap();
+        assert!((rt.vm.indicators[slot as usize] - 123.456).abs() < 0.001);
         let _ = std::fs::remove_file(&path);
     }
 
@@ -384,8 +409,10 @@ function on_trade(trade) end
         let mut rt = QflRuntime::load(&path).unwrap();
         rt.set_balance("USDT", 50000.0);
         rt.set_balance("BTC", 1.5);
-        assert!((rt.vm.balances[(*rt.vm.balance_map.get("USDT").unwrap()) as usize] - 50000.0).abs() < 0.001);
-        assert!((rt.vm.balances[(*rt.vm.balance_map.get("BTC").unwrap()) as usize] - 1.5).abs() < 0.001);
+        let usdt_slot = rt.vm.ensure_balance_slot("USDT");
+        let btc_slot = rt.vm.ensure_balance_slot("BTC");
+        assert!((rt.vm.balances[usdt_slot as usize] - 50000.0).abs() < 0.001);
+        assert!((rt.vm.balances[btc_slot as usize] - 1.5).abs() < 0.001);
         let _ = std::fs::remove_file(&path);
     }
 
@@ -1786,9 +1813,10 @@ on eval() {
         }
         let elapsed = start.elapsed();
         let ns_per_tick = elapsed.as_nanos() / 10_000;
+        let ops_per_ms = (10_000.0 / elapsed.as_secs_f64()) / 1000.0;
         println!(
-            "\n═══ LOAD TEST scalper.qfl ═══\n  {} iterations in {:?}\n  {:.1} ns/tick\n  {} instrs (optimized)\n  {} entries\n",
-            10_000, elapsed, ns_per_tick, qfr.code.len(), qfr.entries.len()
+            "\n═══ LOAD TEST scalper.qfl ═══\n  {} iterations in {:?}\n  {:.1} ns/tick  |  {:.0} ops/ms\n  {} instrs (optimized)\n  {} entries\n",
+            10_000, elapsed, ns_per_tick, ops_per_ms, qfr.code.len(), qfr.entries.len()
         );
     }
 
@@ -1830,9 +1858,10 @@ on eval() {
         }
         let elapsed = start.elapsed();
         let ns_per_tick = elapsed.as_nanos() / 10_000;
+        let ops_per_ms = (10_000.0 / elapsed.as_secs_f64()) / 1000.0;
         println!(
-            "\n═══ LOAD TEST ema_cross.qfl ═══\n  {} iterations in {:?}\n  {:.1} ns/tick\n  {} instrs (optimized)\n",
-            10_000, elapsed, ns_per_tick, qfr.code.len()
+            "\n═══ LOAD TEST ema_cross.qfl ═══\n  {} iterations in {:?}\n  {:.1} ns/tick  |  {:.0} ops/ms\n  {} instrs (optimized)\n",
+            10_000, elapsed, ns_per_tick, ops_per_ms, qfr.code.len()
         );
     }
 
@@ -1874,9 +1903,10 @@ on eval() {
         }
         let elapsed = start.elapsed();
         let ns_per_tick = elapsed.as_nanos() / 10_000;
+        let ops_per_ms = (10_000.0 / elapsed.as_secs_f64()) / 1000.0;
         println!(
-            "\n═══ LOAD TEST momentum.qfl ═══\n  {} iterations in {:?}\n  {:.1} ns/tick\n  {} instrs (optimized)\n",
-            10_000, elapsed, ns_per_tick, qfr.code.len()
+            "\n═══ LOAD TEST momentum.qfl ═══\n  {} iterations in {:?}\n  {:.1} ns/tick  |  {:.0} ops/ms\n  {} instrs (optimized)\n",
+            10_000, elapsed, ns_per_tick, ops_per_ms, qfr.code.len()
         );
     }
 }

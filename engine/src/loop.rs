@@ -5,7 +5,6 @@ use quince_exchange::r#trait::{Exchange, ExchangeError, StreamMsg};
 use quince_logger::TradeLog;
 use quince_qfl::runtime::QflRuntime;
 use quince_risk::RiskControls;
-use std::collections::HashMap;
 use std::time::{Duration, Instant};
 
 const IDLE_SLEEP_MS: u64 = 1;
@@ -46,8 +45,9 @@ pub struct Engine<E: Exchange> {
     peak_equity: f64,
     order_timestamps: Vec<Instant>,
 
-    // Account state for equity check
-    balances: HashMap<String, f64>,
+    // Account state for equity check (Vec + linear search, N ≤ 5)
+    balance_names: Vec<String>,
+    balance_values: Vec<f64>,
     position: Option<Position>,
 
     next_eval: Instant,
@@ -182,7 +182,8 @@ impl<E: Exchange> Engine<E> {
             daily_pnl: 0.0,
             peak_equity: 0.0,
             order_timestamps: Vec::new(),
-            balances: HashMap::new(),
+            balance_names: Vec::new(),
+            balance_values: Vec::new(),
             position: None,
             next_eval: Instant::now() + EVAL_INTERVAL,
             next_account: Instant::now() + ACCOUNT_SYNC_INTERVAL,
@@ -303,7 +304,7 @@ impl<E: Exchange> Engine<E> {
             }
             StreamMsg::AccountUpdate(info) => {
                 for b in &info.balances {
-                    self.balances.insert(b.asset.clone(), b.wallet);
+                    self.set_balance(&b.asset, b.wallet);
                     self.qfl.set_balance(&b.asset, b.wallet);
                 }
                 if let Some(pos) = info.positions.into_iter().find(|p| p.symbol == self.symbols.first().cloned().unwrap_or_default()) {
@@ -312,6 +313,16 @@ impl<E: Exchange> Engine<E> {
                 }
             }
             StreamMsg::OpenInterest { .. } | StreamMsg::ForceOrder(_) => {}
+        }
+    }
+
+    /// Vec-based balance store — linear search over N ≤ 5.
+    fn set_balance(&mut self, name: &str, val: f64) {
+        if let Some(i) = self.balance_names.iter().position(|n| n == name) {
+            self.balance_values[i] = val;
+        } else {
+            self.balance_names.push(name.to_string());
+            self.balance_values.push(val);
         }
     }
 
@@ -342,8 +353,8 @@ impl<E: Exchange> Engine<E> {
 
     async fn on_eval(&mut self) {
         // Push latest balances/position to QFL VM before eval
-        for (asset, bal) in &self.balances {
-            self.qfl.set_balance(asset, *bal);
+        for (name, bal) in self.balance_names.iter().zip(&self.balance_values) {
+            self.qfl.set_balance(name, *bal);
         }
         if let Some(pos) = &self.position {
             self.qfl.set_position_size(pos.size);
@@ -358,7 +369,7 @@ impl<E: Exchange> Engine<E> {
         match self.exchange.account_info().await {
             Ok(info) => {
                 for b in &info.balances {
-                    self.balances.insert(b.asset.clone(), b.wallet);
+                    self.set_balance(&b.asset, b.wallet);
                     self.qfl.set_balance(&b.asset, b.wallet);
                 }
                 if let Some(pos) = info.positions.into_iter().find(|p| p.symbol == self.symbols.first().cloned().unwrap_or_default()) {
@@ -462,7 +473,10 @@ impl<E: Exchange> Engine<E> {
     }
 
     fn equity_check(&mut self) {
-        let equity = self.balances.get("USDT").copied().unwrap_or(0.0)
+        let usdt = self.balance_names.iter().position(|n| n == "USDT")
+            .and_then(|i| self.balance_values.get(i).copied())
+            .unwrap_or(0.0);
+        let equity = usdt
             + self.position.as_ref().map(|p| p.unrealized_pnl).unwrap_or(0.0);
 
         if equity > self.peak_equity {
