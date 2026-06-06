@@ -25,6 +25,7 @@ struct Compiler {
     persist_slots: Vec<(String, u8)>,
     next_persist_slot: u8,
     current_fn: Option<String>,
+    handler_param: Option<String>, // param name for on_trade/on_fill/on_depth
     state_types: HashMap<String, bool>, // name → is_float
     fused_indicators: HashMap<String, FusedInfo>, // name → fused indicator info
     next_ema_state: u8,
@@ -50,6 +51,7 @@ impl Compiler {
             persist_slots: Vec::new(),
             next_persist_slot: 0,
             current_fn: None,
+            handler_param: None,
             state_types: HashMap::new(),
             fused_indicators: HashMap::new(),
             next_ema_state: 0,
@@ -206,6 +208,7 @@ impl Compiler {
                 let offset = self.prog.code.len() as u32;
                 self.prog.entries.push(ir::EntryPoint { name: name.clone(), code_offset: offset });
                 self.current_fn = Some(name.clone());
+                self.handler_param = None;
                 self.push_scope();
                 for p in params {
                     let is_float = crate::types::parse_state_type(&p.type_name).is_float();
@@ -224,8 +227,9 @@ impl Compiler {
                 let offset = self.prog.code.len() as u32;
                 self.prog.entries.push(ir::EntryPoint { name: fn_name.clone(), code_offset: offset });
                 self.current_fn = Some(fn_name);
+                self.handler_param = param.clone();
                 self.push_scope();
-                if let Some(p) = param {
+                if let Some(ref p) = param {
                     let pr = self.alloc_int();
                     self.define_var(p, pr, false);
                 }
@@ -235,6 +239,7 @@ impl Compiler {
                 self.emit(Instruction::single(O::Ret));
                 self.pop_scope();
                 self.current_fn = None;
+                self.handler_param = None;
             }
             Stmt::Feature { name, expr } => {
                 let (r, _) = self.compile_expr(expr);
@@ -538,6 +543,10 @@ impl Compiler {
             }
         }
 
+        if (name == "on_trade" || name == "on_fill" || name == "on_depth") && !params.is_empty() {
+            self.handler_param = Some(params[0].clone());
+        }
+
         for stmt in body {
             self.compile_stmt(stmt);
         }
@@ -670,7 +679,7 @@ impl Compiler {
                     }
                     "qty" => {
                         let r = self.alloc_float();
-                        self.emit(Instruction::rr(O::Mov, r, 193)); // r1 = qty
+                        self.emit(Instruction::rr(O::Mov, r, 1)); // r1 = qty
                         return (r, true);
                     }
                     "side" => {
@@ -993,43 +1002,80 @@ impl Compiler {
     }
 
     fn compile_field_access(&mut self, obj: &Expr, field: &str) -> (u8, bool) {
-        // Handle `trade.price` → GetPrice, `trade.qty` → r1, etc.
-        if let Expr::Ident(obj_name) = obj {
-            if let Some(fname) = &self.current_fn {
-                let is_handler = (fname == "on_trade" && obj_name == "trade")
-                    || (fname == "on_fill" && obj_name == "fill")
-                    || (fname == "on_depth" && obj_name == "depth");
-                if is_handler {
-                    match field {
-                        "price" => {
-                            let r = self.alloc_float();
-                            self.emit(Instruction::rr(O::Mov, r, 192)); // r0 from trade convention
-                            return (r, true);
-                        }
-                        "qty" => {
-                            let r = self.alloc_float();
-                            self.emit(Instruction::rr(O::Mov, r, 193)); // r1
-                            return (r, true);
-                        }
-                        "side" => {
-                            let r = self.alloc_int();
-                            self.emit(Instruction::rr(O::Mov, r, 2));
-                            return (r, false);
-                        }
-                        "trade_id" => {
-                            let r = self.alloc_int();
-                            self.emit(Instruction::rr(O::Mov, r, 3));
-                            return (r, false);
-                        }
-                        "time" => {
-                            let r = self.alloc_int();
-                            self.emit(Instruction::rr(O::Mov, r, 4));
-                            return (r, false);
-                        }
-                        _ => {}
+    // Handle `trade.price`, `t.qty`, `fill.price`, `depth.bids` etc.
+        if let Some(fname) = &self.current_fn {
+            let is_trade_fill = match (fname.as_str(), obj) {
+                ("on_trade" | "on_fill", Expr::Ident(n))
+                    if self.handler_param.as_ref().map_or(false, |p| p == n) => true,
+                _ => false,
+            };
+            let is_depth = match (fname.as_str(), obj) {
+                ("on_depth", Expr::Ident(n))
+                    if self.handler_param.as_ref().map_or(false, |p| p == n) => true,
+                _ => false,
+            };
+            if is_trade_fill {
+                match field {
+                    "price" => {
+                        let r = self.alloc_float();
+                        self.emit(Instruction::rr(O::Mov, r, 0));
+                        return (r, true);
                     }
+                    "qty" => {
+                        let r = self.alloc_float();
+                        self.emit(Instruction::rr(O::Mov, r, 1));
+                        return (r, true);
+                    }
+                    "side" => {
+                        let r = self.alloc_int();
+                        self.emit(Instruction::rr(O::Mov, r, 2));
+                        return (r, false);
+                    }
+                    "trade_id" => {
+                        let r = self.alloc_int();
+                        self.emit(Instruction::rr(O::Mov, r, 3));
+                        return (r, false);
+                    }
+                    "time" => {
+                        let r = self.alloc_int();
+                        self.emit(Instruction::rr(O::Mov, r, 4));
+                        return (r, false);
+                    }
+                    _ => {}
                 }
             }
+            if is_depth {
+                match field {
+                    "bids" => {
+                        let r = self.alloc_int();
+                        self.emit(Instruction::rr(O::Mov, r, 2));
+                        return (r, false);
+                    }
+                    "asks" => {
+                        let r = self.alloc_int();
+                        self.emit(Instruction::rr(O::Mov, r, 3));
+                        return (r, false);
+                    }
+                    "price" => {
+                        let r = self.alloc_float();
+                        self.emit(Instruction::rr(O::Mov, r, 0));
+                        return (r, true);
+                    }
+                    "qty" => {
+                        let r = self.alloc_float();
+                        self.emit(Instruction::rr(O::Mov, r, 1));
+                        return (r, true);
+                    }
+                    "side" | "trade_id" | "time" => {
+                        let r = self.alloc_int();
+                        self.emit(Instruction::rri(O::Ldi, r, 0, 0));
+                        return (r, false);
+                    }
+                    _ => {}
+                }
+            }
+        }
+        if let Expr::Ident(obj_name) = obj {
             // quince.xxx → builtin calls
             if obj_name == "quince" {
                 match field {

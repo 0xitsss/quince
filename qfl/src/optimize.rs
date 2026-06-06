@@ -21,6 +21,7 @@ pub fn optimize(prog: &mut QfrProgram) {
     p = fused_lowering(&p);
     p = global_value_numbering(&p);
     p = dead_code_eliminate(&p);
+    p = persist_coalesce(&p);
     *prog = p;
 }
 
@@ -2180,6 +2181,88 @@ fn fold_int_imm_lattice(reg: &mut [Lattice], instr: &Instruction, f: fn(i64, u32
         Lattice::Top => reg[rd] = Lattice::Top,
         _ => reg[rd] = Lattice::Bottom,
     }
+}
+
+/// PersistGet/Set coalescing optimization.
+///
+/// Removes redundant PersistGet when the same slot is already cached in a
+/// register, and removes redundant PersistSet when the register value hasn't
+/// changed since the last PersistGet of the same slot.
+pub fn persist_coalesce(prog: &QfrProgram) -> QfrProgram {
+    use std::collections::{HashMap, HashSet};
+    let mut out = QfrProgram {
+        entries: prog.entries.clone(),
+        const_pool: prog.const_pool.clone(),
+        code: Vec::with_capacity(prog.code.len()),
+        const_map: prog.const_map.clone(),
+        ema_alphas: prog.ema_alphas.clone(),
+    };
+
+    let entry_offsets: HashSet<u32> = prog.entries.iter().map(|e| e.code_offset).collect();
+    let mut slot_reg: HashMap<u32, u8> = HashMap::new();
+    let mut dirty: HashSet<u8> = HashSet::new();
+
+    for (i, instr) in prog.code.iter().enumerate() {
+        let off = i as u32;
+
+        if entry_offsets.contains(&off) {
+            slot_reg.clear();
+            dirty.clear();
+        }
+
+        let op = instr.opcode();
+        let rd = instr.rd();
+
+        let writes_rd = match op {
+            O::Jmp | O::Jz | O::Jnz | O::Ret | O::Halt => false,
+            O::SendOrder | O::Log => false,
+            _ => true,
+        };
+
+        match op {
+            O::PersistGet => {
+                let r = rd;
+                let slot = instr.imm();
+                if let Some(&cached_r) = slot_reg.get(&slot) {
+                    if !dirty.contains(&cached_r) {
+                        if cached_r == r {
+                            continue;
+                        }
+                        out.code.push(Instruction::rr(O::Mov, r, cached_r));
+                        slot_reg.insert(slot, r);
+                        dirty.remove(&r);
+                        continue;
+                    }
+                }
+                out.code.push(*instr);
+                slot_reg.insert(slot, r);
+                dirty.remove(&r);
+            }
+            O::PersistSet => {
+                let r = rd;
+                let slot = instr.imm();
+                if let Some(&cached_r) = slot_reg.get(&slot) {
+                    if cached_r == r && !dirty.contains(&r) {
+                        continue;
+                    }
+                }
+                out.code.push(*instr);
+                slot_reg.insert(slot, r);
+                dirty.remove(&r);
+            }
+            _ => {
+                if writes_rd {
+                    dirty.insert(rd);
+                }
+                out.code.push(*instr);
+                if is_terminator(op) {
+                    slot_reg.clear();
+                    dirty.clear();
+                }
+            }
+        }
+    }
+    out
 }
 
 #[cfg(test)]

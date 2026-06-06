@@ -62,7 +62,7 @@ impl Default for EmaState {
     fn default() -> Self { EmaState { alpha: 0.0, value: 0.0, initialized: false } }
 }
 
-#[derive(Debug, Clone, Copy, Default)]
+#[derive(Debug, Clone, Copy)]
 pub struct WindowMeta {
     pub offset: u16,
     pub capacity: u16,
@@ -72,6 +72,25 @@ pub struct WindowMeta {
     pub sum_sq: f64,
     pub min: f64,
     pub max: f64,
+    // O(1) sliding min/max via monotonic deque (indices into ring buffer)
+    pub min_deque: [u8; 64],
+    pub max_deque: [u8; 64],
+    pub min_dq_front: u8,
+    pub min_dq_back: u8,
+    pub max_dq_front: u8,
+    pub max_dq_back: u8,
+}
+
+impl Default for WindowMeta {
+    fn default() -> Self {
+        WindowMeta {
+            offset: 0, capacity: 0, head: 0, len: 0,
+            sum: 0.0, sum_sq: 0.0, min: 0.0, max: 0.0,
+            min_deque: [0u8; 64], max_deque: [0u8; 64],
+            min_dq_front: 0, min_dq_back: 0,
+            max_dq_front: 0, max_dq_back: 0,
+        }
+    }
 }
 
 impl WindowMeta {
@@ -90,8 +109,14 @@ impl WindowMeta {
 }
 
 /// Flat VM — Vec/HashMap only in setup paths, NOT in execute_tick hot path.
+///
+/// Fields are ordered hot-first: frequently accessed data sits at the top
+/// for better cache locality. Cold fields (setup, debug, ownership) are at the end.
 #[derive(Debug)]
 pub struct Vm {
+    // ════════════════════════════════════════════════════════════════
+    //  HOT PATH — accessed by almost every instruction in run()
+    // ════════════════════════════════════════════════════════════════
     // ── Register file (2048 bytes, L1) ──
     pub regs: [Register; NUM_REGS],
 
@@ -108,39 +133,16 @@ pub struct Vm {
     pub const_count: u32,
     pub i64_consts_ptr: *const i64,
     pub i64_const_count: u32,
-    _code_owned: Vec<u64>,
-    _consts_owned: Vec<f64>,
-    _i64_consts_owned: Vec<i64>,
-
-    // ── Constants pool (kept for backward compat; hot path uses consts_ptr) ──
-    pub const_pool: Vec<ConstEntry>,
-    pub const_strings: Vec<String>,
-
-    // ── Entry points ──
-    pub entry_names: [u64; 8],
-    pub entry_offsets: [u32; 8],
-    pub entry_count: u8,
-    /// Pre-computed offsets for the 4 standard handlers (u32::MAX = not found).
-    handler_cache: [u32; 4],
-
-    // ── Persist (hot-reload safe) ──
-    pub persist: [PersistSlot; PERSIST_SLOTS],
 
     // ── Engine state (flat arrays in hot path) ──
-    pub indicators: [f64; MAX_INDICATORS],
-    /// Linear-search list for name→slot (N ≤ MAX_INDICATORS, faster than HashMap at this size).
-    indicator_list: Vec<(String, u16)>,
-    /// Pre-computed: const_strings index → indicator slot (u16::MAX = not found).
-    /// Built by finalize_const_lookups() after all indicator registrations.
-    /// Hot path uses this instead of HashMap + String clone.
-    pub indicator_by_str: Vec<u16>,
-    pub balances: [f64; MAX_BALANCES],
-    /// Linear-search list for name→slot (N ≤ MAX_BALANCES).
-    balance_list: Vec<(String, u16)>,
-    /// Pre-computed: const_strings index → balance slot (u16::MAX = not found).
-    pub balance_by_str: Vec<u16>,
     pub last_price: f64,
     pub position_size: f64,
+    pub indicators: [f64; MAX_INDICATORS],
+    /// Pre-computed: const_strings index → indicator slot (u16::MAX = not found).
+    pub indicator_by_str: Vec<u16>,
+    pub balances: [f64; MAX_BALANCES],
+    /// Pre-computed: const_strings index → balance slot (u16::MAX = not found).
+    pub balance_by_str: Vec<u16>,
 
     // ── Depth book (flat arrays, no Vec) ──
     pub depth_bids_price: [f64; MAX_DEPTH_LEVELS],
@@ -150,15 +152,45 @@ pub struct Vm {
     pub depth_bids_len: u8,
     pub depth_asks_len: u8,
 
+    // ── Persist (hot-reload safe) ──
+    pub persist: [PersistSlot; PERSIST_SLOTS],
+
     // ── Rolling windows (arena-based RingVec replacement) ──
     pub window_arena: Vec<f64>,
     pub window_meta: [WindowMeta; MAX_WINDOWS],
 
-    // Phase 4g: fused feature states
+    // ── Fused feature states (Ema hot path) ──
     pub ema_states: [EmaState; MAX_EMA_STATES],
 
     // ── Order flag (fast early-exit for flush_pending_order) ──
     pub has_pending_order: bool,
+
+    // ════════════════════════════════════════════════════════════════
+    //  WARM PATH — entry lookup, called on each handler dispatch
+    // ════════════════════════════════════════════════════════════════
+    // ── Entry points ──
+    pub entry_names: [u64; 8],
+    pub entry_offsets: [u32; 8],
+    pub entry_count: u8,
+    /// Pre-computed offsets for the 4 standard handlers (u32::MAX = not found).
+    handler_cache: [u32; 4],
+
+    // ════════════════════════════════════════════════════════════════
+    //  COLD PATH — setup / finalization only
+    // ════════════════════════════════════════════════════════════════
+    // ── Ownership holders (not directly accessed in hot path) ──
+    _code_owned: Vec<u64>,
+    _consts_owned: Vec<f64>,
+    _i64_consts_owned: Vec<i64>,
+
+    // ── Constants pool (kept for backward compat; hot path uses consts_ptr) ──
+    pub const_pool: Vec<ConstEntry>,
+    pub const_strings: Vec<String>,
+
+    /// Linear-search list for name→slot (N ≤ MAX_INDICATORS, faster than HashMap at this size).
+    indicator_list: Vec<(String, u16)>,
+    /// Linear-search list for name→slot (N ≤ MAX_BALANCES).
+    balance_list: Vec<(String, u16)>,
 
     // ── Profiler / Tracer ──
     pub profiler: Option<crate::profiler::Profiler>,
@@ -1144,42 +1176,83 @@ pub unsafe fn vm_windowpush(vm: &mut Vm, instr: u64) {
                 meta.sum_sq = 0.0;
                 meta.min = val;
                 meta.max = val;
+                meta.min_dq_front = 0;
+                meta.min_dq_back = 0;
+                meta.max_dq_front = 0;
+                meta.max_dq_back = 0;
             }
             let cap = meta.capacity as usize;
             let off = meta.offset as usize;
             let head = meta.head as usize;
 
+            *vm.window_arena.get_unchecked_mut(off + head) = val;
+
+            // Min deque: pop back while back value > new value
+            {
+                let dq = &mut meta.min_deque;
+                let mut back = meta.min_dq_back;
+                while meta.min_dq_front != back {
+                    let prev = if back == 0 { 63 } else { back - 1 };
+                    let pos = dq[prev as usize] as usize;
+                    if *vm.window_arena.get_unchecked(off + pos) > val {
+                        back = prev;
+                    } else { break; }
+                }
+                dq[back as usize] = head as u8;
+                meta.min_dq_back = (back + 1) % 64;
+            }
+
+            // Max deque: pop back while back value < new value
+            {
+                let dq = &mut meta.max_deque;
+                let mut back = meta.max_dq_back;
+                while meta.max_dq_front != back {
+                    let prev = if back == 0 { 63 } else { back - 1 };
+                    let pos = dq[prev as usize] as usize;
+                    if *vm.window_arena.get_unchecked(off + pos) < val {
+                        back = prev;
+                    } else { break; }
+                }
+                dq[back as usize] = head as u8;
+                meta.max_dq_back = (back + 1) % 64;
+            }
+
             if (meta.len as usize) < cap {
-                *vm.window_arena.get_unchecked_mut(off + head) = val;
                 meta.head = ((head + 1) % cap) as u16;
                 meta.len += 1;
                 meta.sum += val;
                 meta.sum_sq += val * val;
-                if val < meta.min { meta.min = val; }
-                if val > meta.max { meta.max = val; }
             } else {
                 let old = *vm.window_arena.get_unchecked(off + head);
-                *vm.window_arena.get_unchecked_mut(off + head) = val;
                 meta.head = ((head + 1) % cap) as u16;
-
                 meta.sum = meta.sum - old + val;
                 meta.sum_sq = meta.sum_sq - old * old + val * val;
 
-                if old == meta.min || old == meta.max {
-                    let mut new_min = f64::MAX;
-                    let mut new_max = f64::MIN;
-                    for i in 0..cap {
-                        let v = *vm.window_arena.get_unchecked(off + i);
-                        if v < new_min { new_min = v; }
-                        if v > new_max { new_max = v; }
-                    }
-                    meta.min = new_min;
-                    meta.max = new_max;
-                } else {
-                    if val < meta.min { meta.min = val; }
-                    if val > meta.max { meta.max = val; }
+                // Evict from deque fronts if the evicted position matches
+                if meta.min_dq_front != meta.min_dq_back
+                    && meta.min_deque[meta.min_dq_front as usize] == head as u8 {
+                    meta.min_dq_front = (meta.min_dq_front + 1) % 64;
+                }
+                if meta.max_dq_front != meta.max_dq_back
+                    && meta.max_deque[meta.max_dq_front as usize] == head as u8 {
+                    meta.max_dq_front = (meta.max_dq_front + 1) % 64;
                 }
             }
+
+            // Read min/max from deque fronts
+            if meta.min_dq_front != meta.min_dq_back {
+                let pos = meta.min_deque[meta.min_dq_front as usize] as usize;
+                meta.min = *vm.window_arena.get_unchecked(off + pos);
+            } else {
+                meta.min = val;
+            }
+            if meta.max_dq_front != meta.max_dq_back {
+                let pos = meta.max_deque[meta.max_dq_front as usize] as usize;
+                meta.max = *vm.window_arena.get_unchecked(off + pos);
+            } else {
+                meta.max = val;
+            }
+
             vm.regs.get_unchecked_mut(r).f = val;
         }
     }

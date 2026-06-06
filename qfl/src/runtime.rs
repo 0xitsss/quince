@@ -140,6 +140,11 @@ impl QflRuntime {
         self.vm.set_depth_bids(&depth.bids);
         self.vm.set_depth_asks(&depth.asks);
 
+        self.vm.regs[0].f = depth.bids.first().map_or(0.0, |l| l.price);
+        self.vm.regs[1].f = depth.bids.first().map_or(0.0, |l| l.qty);
+        self.vm.regs[2].i = depth.bids.len() as i64;
+        self.vm.regs[3].i = depth.asks.len() as i64;
+
         self.vm.call("on_depth");
     }
 
