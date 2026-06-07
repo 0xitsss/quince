@@ -20,14 +20,14 @@ jobs:
       - uses: actions-rust-lang/setup-rust-toolchain@v1
 
       - name: cargo bench
-        run: cargo bench -p quince-qfl
+        run: cargo bench -p quince-qfl -- --output-format bencher | tee output.txt
 
       - name: Store benchmark results
         uses: benchmark-action/github-action-benchmark@v1
         with:
           name: QFL Criterion Benchmarks
-          tool: criterion
-          output-dir: target/criterion
+          tool: cargo
+          output-file-path: output.txt
           github-token: ${{ secrets.GITHUB_TOKEN }}
           auto-push: true
           alert-threshold: "200%"
