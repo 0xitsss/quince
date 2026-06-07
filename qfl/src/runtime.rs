@@ -2035,9 +2035,11 @@ on eval() {
 
     // ── Load test: full pipeline + VM execution ──
 
+    const STRATEGIES_DIR: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../strategies/");
+
     #[test]
     fn load_test_scalper_10k_ticks() {
-        let src = std::fs::read_to_string("D:\\kokosmain\\quince\\strategies\\scalper.qfl")
+        let src = std::fs::read_to_string(format!("{}scalper.qfl", STRATEGIES_DIR))
             .expect("read scalper.qfl");
         let program = crate::parser::parse(&src).expect("parse scalper");
         let mut qfr = crate::compiler::compile_checked(&program).expect("compile scalper");
@@ -2093,7 +2095,7 @@ on eval() {
 
     #[test]
     fn load_test_ema_cross_10k_ticks() {
-        let src = std::fs::read_to_string("D:\\kokosmain\\quince\\strategies\\ema_cross.qfl")
+        let src = std::fs::read_to_string(format!("{}ema_cross.qfl", STRATEGIES_DIR))
             .expect("read ema_cross.qfl");
         let program = crate::parser::parse(&src).expect("parse ema_cross");
         let mut qfr = crate::compiler::compile_checked(&program).expect("compile ema_cross");
@@ -2139,7 +2141,7 @@ on eval() {
 
     #[test]
     fn load_test_momentum_10k_ticks() {
-        let src = std::fs::read_to_string("D:\\kokosmain\\quince\\strategies\\momentum.qfl")
+        let src = std::fs::read_to_string(format!("{}momentum.qfl", STRATEGIES_DIR))
             .expect("read momentum.qfl");
         let program = crate::parser::parse(&src).expect("parse momentum");
         let mut qfr = crate::compiler::compile_checked(&program).expect("compile momentum");
@@ -2185,14 +2187,14 @@ on eval() {
 
     #[test]
     fn load_test_heavy_100k_events() {
-        let path = "D:\\kokosmain\\quince\\strategies\\heavy_test.qfl";
-        let src = std::fs::read_to_string(path).expect("read heavy_test.qfl");
+        let path = format!("{}heavy_test.qfl", STRATEGIES_DIR);
+        let src = std::fs::read_to_string(&path).expect("read heavy_test.qfl");
         let program = crate::parser::parse(&src).expect("parse heavy_test");
         let mut qfr = crate::compiler::compile_checked(&program).expect("compile heavy_test");
         crate::optimize::optimize(&mut qfr);
         let instr_count = qfr.code.len();
 
-        let mut rt = QflRuntime::load(path).expect("load heavy_test.qfl");
+        let mut rt = QflRuntime::load(&path).expect("load heavy_test.qfl");
         rt.set_symbol("BTCUSDT");
         rt.set_balance("USDT", 10000.0);
         rt.set_position_size(0.0);
