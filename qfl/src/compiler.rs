@@ -1,7 +1,7 @@
 // --- Imports ---
 
 use crate::ast::*;
-use crate::ir::{self, QfrProgram};
+use crate::ir::QfrProgram;
 use crate::opcodes::{Instruction, Opcode as O};
 use crate::vm::{REG_SEND_PRICE, REG_SEND_QTY, REG_SEND_REDUCE, REG_SEND_SIDE, REG_SEND_TYPE};
 use std::collections::HashMap;
@@ -681,7 +681,9 @@ impl Compiler {
 
     /// Compile a numeric for loop:
     ///   for var = from, to, step do body end
-    /// Translated to: var = from; while var <= to: body; var += step
+    /// Translated to: var = from; while cond(i): body; i += step
+    /// For positive step: cond = i <= to (exit when i > to)
+    /// For negative step: cond = i >= to (exit when i < to)
     fn compile_for_num(
         &mut self,
         var: &str,
@@ -693,6 +695,25 @@ impl Compiler {
         // Evaluate from, to, step expressions
         let (from_r, _) = self.compile_expr(from);
         let (to_r, _) = self.compile_expr(to);
+
+        // Detect if step is a compile-time known negative constant
+        let step_is_neg = |e: &Expr| -> bool {
+            match e {
+                Expr::Literal(Literal::I64(n)) => *n < 0,
+                Expr::Literal(Literal::F64(n)) => *n < 0.0,
+                Expr::Unary {
+                    op: UnaryOp::Neg,
+                    expr: inner,
+                } => match inner.as_ref() {
+                    Expr::Literal(Literal::I64(n)) => *n > 0,
+                    Expr::Literal(Literal::F64(n)) => *n > 0.0,
+                    _ => false,
+                },
+                _ => false,
+            }
+        };
+        let is_neg_step = step.as_ref().map_or(false, |s| step_is_neg(s));
+
         let step_r = if let Some(s) = step {
             let (r, _) = self.compile_expr(s);
             r
@@ -709,11 +730,12 @@ impl Compiler {
         self.define_var(var, i_reg, false);
 
         let loop_start = self.current_offset();
-        // Check condition: i <= to? If i > to, exit
+        // Check condition: for positive step exit when i > to; for negative exit when i < to
         let cmp = self.alloc_int();
-        self.emit(Instruction::rrr(O::Gt, cmp, i_reg, to_r));
+        let exit_op = if is_neg_step { O::Lt } else { O::Gt };
+        self.emit(Instruction::rrr(exit_op, cmp, i_reg, to_r));
         let jz_exit = self.current_offset() as usize;
-        self.emit(Instruction::rri(O::Jz, 0, cmp, 0)); // placeholder: jumps if i > to is false (i <= to)
+        self.emit(Instruction::rri(O::Jnz, 0, cmp, 0)); // placeholder: jumps if exit condition met
 
         // Body in inner scope
         self.push_inner_scope();
@@ -735,7 +757,7 @@ impl Compiler {
         // Patch the exit jump
         let after_loop = self.current_offset();
         let jz_off = after_loop - jz_exit as u32 - 1;
-        self.emit_at(jz_exit, Instruction::rri(O::Jz, 0, cmp, jz_off));
+        self.emit_at(jz_exit, Instruction::rri(O::Jnz, 0, cmp, jz_off));
     }
 
     // --- Section: For-In Loop Compilation (Stub) ---
@@ -1345,30 +1367,60 @@ impl Compiler {
     fn compile_send_order(&mut self, args: &[Expr]) {
         // Arg 0: side (int) → REG_SEND_SIDE
         if let Some(arg) = args.get(0) {
-            let (r, _) = self.compile_expr(arg);
-            self.emit(Instruction::rr(O::Mov, REG_SEND_SIDE, r));
+            let (r, is_float) = self.compile_expr(arg);
+            if is_float {
+                let tmp = self.alloc_int();
+                self.emit(Instruction::rr(O::F2I, tmp, r));
+                self.emit(Instruction::rr(O::Mov, REG_SEND_SIDE, tmp));
+            } else {
+                self.emit(Instruction::rr(O::Mov, REG_SEND_SIDE, r));
+            }
         }
         // Arg 1: quantity (float) → REG_SEND_QTY
         if let Some(arg) = args.get(1) {
-            let (r, _) = self.compile_expr(arg);
-            self.emit(Instruction::rr(O::Mov, REG_SEND_QTY, r));
+            let (r, is_float) = self.compile_expr(arg);
+            if is_float {
+                self.emit(Instruction::rr(O::Mov, REG_SEND_QTY, r));
+            } else {
+                let tmp = self.alloc_float();
+                self.emit(Instruction::rr(O::I2F, tmp, r));
+                self.emit(Instruction::rr(O::Mov, REG_SEND_QTY, tmp));
+            }
         }
         // Arg 2: price (float) → REG_SEND_PRICE
         if let Some(arg) = args.get(2) {
-            let (r, _) = self.compile_expr(arg);
-            self.emit(Instruction::rr(O::Mov, REG_SEND_PRICE, r));
+            let (r, is_float) = self.compile_expr(arg);
+            if is_float {
+                self.emit(Instruction::rr(O::Mov, REG_SEND_PRICE, r));
+            } else {
+                let tmp = self.alloc_float();
+                self.emit(Instruction::rr(O::I2F, tmp, r));
+                self.emit(Instruction::rr(O::Mov, REG_SEND_PRICE, tmp));
+            }
         }
         // Arg 3: order type (int, optional) → REG_SEND_TYPE, defaults to 0
         if let Some(arg) = args.get(3) {
-            let (r, _) = self.compile_expr(arg);
-            self.emit(Instruction::rr(O::Mov, REG_SEND_TYPE, r));
+            let (r, is_float) = self.compile_expr(arg);
+            if is_float {
+                let tmp = self.alloc_int();
+                self.emit(Instruction::rr(O::F2I, tmp, r));
+                self.emit(Instruction::rr(O::Mov, REG_SEND_TYPE, tmp));
+            } else {
+                self.emit(Instruction::rr(O::Mov, REG_SEND_TYPE, r));
+            }
         } else {
             self.emit(Instruction::rri(O::Ldi, REG_SEND_TYPE, 0, 0));
         }
         // Arg 4: reduce_only (int, optional) → REG_SEND_REDUCE, defaults to 0
         if let Some(arg) = args.get(4) {
-            let (r, _) = self.compile_expr(arg);
-            self.emit(Instruction::rr(O::Mov, REG_SEND_REDUCE, r));
+            let (r, is_float) = self.compile_expr(arg);
+            if is_float {
+                let tmp = self.alloc_int();
+                self.emit(Instruction::rr(O::F2I, tmp, r));
+                self.emit(Instruction::rr(O::Mov, REG_SEND_REDUCE, tmp));
+            } else {
+                self.emit(Instruction::rr(O::Mov, REG_SEND_REDUCE, r));
+            }
         } else {
             self.emit(Instruction::rri(O::Ldi, REG_SEND_REDUCE, 0, 0));
         }
@@ -1661,7 +1713,25 @@ end
             instructions.contains(&O::Add),
             "for must emit Add (i += step)"
         );
-        assert!(instructions.contains(&O::Gt), "for must emit Gt (i <= to)");
+        assert!(
+            instructions.contains(&O::Gt),
+            "for must emit Gt (exit when i > to)"
+        );
+        assert!(
+            instructions.contains(&O::Jnz),
+            "for must emit Jnz (jump if exit condition met)"
+        );
+    }
+
+    #[test]
+    fn test_for_num_negative_step() {
+        let prog = compile_str("for i = 10, 1, -1 do end");
+        let instructions = prog.code.iter().map(|i| i.opcode()).collect::<Vec<_>>();
+        assert!(
+            instructions.contains(&O::Lt),
+            "for negative step must emit Lt (exit when i < to)"
+        );
+        assert!(instructions.contains(&O::Jnz), "for must emit Jnz");
     }
 
     #[test]

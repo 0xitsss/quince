@@ -148,7 +148,11 @@ impl OrderManager {
                         | PendingStatus::Placed { .. }
                         | PendingStatus::PartiallyFilled { .. }
                 );
-                if !keep { Some(id.clone()) } else { None }
+                if !keep {
+                    Some(id.clone())
+                } else {
+                    None
+                }
             })
             .collect();
         for id in &removed {
@@ -185,6 +189,7 @@ impl OrderManager {
 
             if po.filled_qty >= po.order.qty - 1e-12 {
                 po.status = PendingStatus::Filled;
+                self.remove_client_exchange_mapping(client_id);
                 return true;
             }
             if let PendingStatus::Placed { order_id } = &po.status {

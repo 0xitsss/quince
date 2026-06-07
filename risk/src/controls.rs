@@ -33,12 +33,7 @@ impl RiskControls {
         }
     }
 
-    pub fn check_order(
-        &mut self,
-        order: &Order,
-        current_pnl: f64,
-        current_equity: f64,
-    ) -> Result<(), String> {
+    pub fn check_order(&mut self, order: &Order, current_equity: f64) -> Result<(), String> {
         if self.in_cooldown {
             if Instant::now() < self.cooldown_end {
                 return Err("in cooldown after loss".into());
@@ -65,10 +60,10 @@ impl RiskControls {
             }
         }
 
-        if current_pnl < -self.max_daily_loss {
+        if self.daily_loss > self.max_daily_loss {
             return Err(format!(
                 "daily loss {:.2} exceeds limit {:.2}",
-                -current_pnl, self.max_daily_loss
+                self.daily_loss, self.max_daily_loss
             ));
         }
 
@@ -135,13 +130,13 @@ mod tests {
     #[test]
     fn check_order_ok() {
         let mut r = risk();
-        assert!(r.check_order(&make_order(1.0), 0.0, 10000.0).is_ok());
+        assert!(r.check_order(&make_order(1.0), 10000.0).is_ok());
     }
 
     #[test]
     fn check_order_exceeds_max_position() {
         let mut r = risk();
-        let result = r.check_order(&make_order(20.0), 0.0, 10000.0);
+        let result = r.check_order(&make_order(20.0), 10000.0);
         assert!(result.is_err());
         assert!(result.unwrap_err().contains("exceeds max"));
     }
@@ -150,8 +145,8 @@ mod tests {
     fn check_order_drawdown_exceeded() {
         let mut r = risk();
         // peak_equity 10000, current equity 8000 → drawdown 20% > 10%
-        assert!(r.check_order(&make_order(1.0), 0.0, 10000.0).is_ok());
-        let result = r.check_order(&make_order(1.0), 0.0, 8000.0);
+        assert!(r.check_order(&make_order(1.0), 10000.0).is_ok());
+        let result = r.check_order(&make_order(1.0), 8000.0);
         assert!(result.is_err());
         assert!(result.unwrap_err().contains("drawdown"));
     }
@@ -159,7 +154,8 @@ mod tests {
     #[test]
     fn check_order_daily_loss_exceeded() {
         let mut r = risk();
-        let result = r.check_order(&make_order(1.0), -2000.0, 10000.0);
+        r.record_loss(1500.0);
+        let result = r.check_order(&make_order(1.0), 10000.0);
         assert!(result.is_err());
         assert!(result.unwrap_err().contains("daily loss"));
     }
@@ -169,10 +165,10 @@ mod tests {
         let mut r = risk();
         r.window_start = Instant::now();
         for _ in 0..5 {
-            assert!(r.check_order(&make_order(1.0), 0.0, 10000.0).is_ok());
+            assert!(r.check_order(&make_order(1.0), 10000.0).is_ok());
             r.record_trade();
         }
-        let result = r.check_order(&make_order(1.0), 0.0, 10000.0);
+        let result = r.check_order(&make_order(1.0), 10000.0);
         assert!(result.is_err());
         assert!(result.unwrap_err().contains("rate limit"));
     }
@@ -182,7 +178,7 @@ mod tests {
         let mut r = risk();
         r.in_cooldown = true;
         r.cooldown_end = Instant::now() + Duration::from_secs(3600);
-        let result = r.check_order(&make_order(1.0), 0.0, 10000.0);
+        let result = r.check_order(&make_order(1.0), 10000.0);
         assert!(result.is_err());
         assert!(result.unwrap_err().contains("cooldown"));
     }
@@ -192,7 +188,7 @@ mod tests {
         let mut r = risk();
         r.in_cooldown = true;
         r.cooldown_end = Instant::now() - Duration::from_secs(1);
-        assert!(r.check_order(&make_order(1.0), 0.0, 10000.0).is_ok());
+        assert!(r.check_order(&make_order(1.0), 10000.0).is_ok());
         assert!(!r.in_cooldown);
     }
 
@@ -234,18 +230,18 @@ mod tests {
     #[test]
     fn peak_equity_tracking() {
         let mut r = risk();
-        r.check_order(&make_order(1.0), 0.0, 5000.0).ok();
+        r.check_order(&make_order(1.0), 5000.0).ok();
         assert_eq!(r.peak_equity, 5000.0);
-        r.check_order(&make_order(1.0), 0.0, 6000.0).ok();
+        r.check_order(&make_order(1.0), 6000.0).ok();
         assert_eq!(r.peak_equity, 6000.0);
-        r.check_order(&make_order(1.0), 0.0, 4000.0).ok();
+        r.check_order(&make_order(1.0), 4000.0).ok();
         assert_eq!(r.peak_equity, 6000.0);
     }
 
     #[test]
     fn zero_peak_equity_skips_drawdown() {
         let mut r = risk();
-        assert!(r.check_order(&make_order(1.0), 0.0, 0.0).is_ok());
+        assert!(r.check_order(&make_order(1.0), 0.0).is_ok());
     }
 
     #[test]
@@ -253,7 +249,7 @@ mod tests {
         let mut r = risk();
         r.window_start = Instant::now() - Duration::from_secs(2);
         r.order_count = 10;
-        assert!(r.check_order(&make_order(1.0), 0.0, 10000.0).is_ok());
+        assert!(r.check_order(&make_order(1.0), 10000.0).is_ok());
         assert_eq!(r.order_count, 0);
         r.record_trade();
         assert_eq!(r.order_count, 1);

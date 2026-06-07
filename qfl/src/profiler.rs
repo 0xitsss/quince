@@ -1,15 +1,30 @@
 /// Perf profiler for QFL VM execution.
 ///
-/// Tracks opcode execution counts and per-handler timing.
+/// Tracks opcode execution counts, per-opcode RDTSC cycles, and per-handler timing.
 /// Zero-allocation in the hot path when disabled (None).
 use crate::opcodes::Opcode;
 use std::time::Instant;
+
+/// Read the x86_64 timestamp counter (RDTSC) for cycle-accurate profiling.
+/// Returns 0 on non-x86 platforms (no cycle data available).
+#[inline]
+pub fn rdtsc() -> u64 {
+    #[cfg(all(target_arch = "x86_64", feature = "profiling"))]
+    {
+        unsafe { std::arch::x86_64::_rdtsc() }
+    }
+    #[cfg(not(all(target_arch = "x86_64", feature = "profiling")))]
+    {
+        0
+    }
+}
 
 /// Opcode execution profile for a single run.
 #[derive(Debug, Clone)]
 pub struct OpcodeProfile {
     pub opcode: Opcode,
     pub count: u64,
+    pub cycles: u64,
 }
 
 /// Per-handler timing sample.
@@ -24,6 +39,7 @@ pub struct HandlerSample {
 #[derive(Debug, Clone)]
 pub struct Profiler {
     pub(crate) opcode_counts: [u64; 65], // 0..=MaxOpcode (64)
+    pub(crate) opcode_cycles: [u64; 65], // accumulated RDTSC cycles per opcode
     pub(crate) handler_samples: Vec<HandlerSample>,
     pub(crate) current_handler: Option<String>,
     pub(crate) handler_start: Option<Instant>,
@@ -36,6 +52,7 @@ impl Profiler {
     pub fn new() -> Self {
         Profiler {
             opcode_counts: [0u64; 65],
+            opcode_cycles: [0u64; 65],
             handler_samples: Vec::new(),
             current_handler: None,
             handler_start: None,
@@ -48,6 +65,15 @@ impl Profiler {
     #[inline]
     pub fn record_opcode(&mut self, op: Opcode) {
         self.opcode_counts[op as u8 as usize] += 1;
+        self.total_instructions += 1;
+    }
+
+    /// Record one executed opcode with RDTSC cycle delta.
+    #[inline]
+    pub fn record_opcode_tsc(&mut self, op: Opcode, cycles: u64) {
+        let idx = op as u8 as usize;
+        self.opcode_counts[idx] += 1;
+        self.opcode_cycles[idx] += cycles;
         self.total_instructions += 1;
     }
 
@@ -72,7 +98,7 @@ impl Profiler {
         }
     }
 
-    /// Get per-opcode execution counts (sorted descending by count).
+    /// Get per-opcode execution counts and cycles (sorted descending by count).
     pub fn opcode_profile(&self) -> Vec<OpcodeProfile> {
         let mut profiles: Vec<OpcodeProfile> = self
             .opcode_counts
@@ -82,6 +108,7 @@ impl Profiler {
             .map(|(i, &count)| OpcodeProfile {
                 opcode: Opcode::from_u8(i as u8),
                 count,
+                cycles: self.opcode_cycles[i],
             })
             .collect();
         profiles.sort_by(|a, b| b.count.cmp(&a.count));
@@ -110,6 +137,7 @@ impl Profiler {
     /// Reset all counters.
     pub fn reset(&mut self) {
         self.opcode_counts = [0u64; 65];
+        self.opcode_cycles = [0u64; 65];
         self.handler_samples.clear();
         self.current_handler = None;
         self.handler_start = None;

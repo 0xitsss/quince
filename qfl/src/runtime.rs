@@ -9,10 +9,10 @@ use std::sync::Arc;
 // Each variant triggers a different handler in the VM.
 #[derive(Debug, Clone)]
 pub enum Event {
-    Trade(Trade),       // Market trade tick
-    Depth(Depth),       // Order book snapshot
-    Fill(OrderFill),    // Order fill notification
-    Eval,               // Periodic evaluation tick
+    Trade(Trade),    // Market trade tick
+    Depth(Depth),    // Order book snapshot
+    Fill(OrderFill), // Order fill notification
+    Eval,            // Periodic evaluation tick
 }
 
 // --- Section: QflRuntime struct ---
@@ -20,13 +20,13 @@ pub enum Event {
 // an order-sending channel, and a risk engine.
 #[derive(Debug)]
 pub struct QflRuntime {
-    vm: Vm,                                      // The QFL bytecode VM instance
+    vm: Vm, // The QFL bytecode VM instance
     #[allow(dead_code)]
-    path_qfl: PathBuf,                            // Path to the .qfl or .qfr source file
+    path_qfl: PathBuf, // Path to the .qfl or .qfr source file
     #[allow(dead_code)]
-    current_symbol: Arc<str>,                       // Trading symbol currently being processed
-    orders_tx: Option<crossbeam_channel::Sender<quince_core::types::Order>>,  // Channel to send orders to the exchange adapter
-    pub risk_engine: crate::risk::RiskEngine,     // Risk limits and checking
+    current_symbol: Arc<str>, // Trading symbol currently being processed
+    orders_tx: Option<crossbeam_channel::Sender<quince_core::types::Order>>, // Channel to send orders to the exchange adapter
+    pub risk_engine: crate::risk::RiskEngine, // Risk limits and checking
 }
 
 // --- Section: QflRuntime implementation ---
@@ -147,7 +147,7 @@ impl QflRuntime {
             const_pool: self.vm.cold.const_pool.clone(),
             code: self.vm.code_instr(),
             const_map,
-            ema_alphas: Vec::new(),  // Not serialized from VM; recalculated on load
+            ema_alphas: Vec::new(), // Not serialized from VM; recalculated on load
             // Extract f64, i64, and string constants into separate vectors
             f64_consts: self
                 .vm
@@ -206,23 +206,21 @@ impl QflRuntime {
     // updates last_price and resets position_size to 0,
     // then calls the user-defined on_trade handler and flushes any pending order.
     pub fn feed_trade(&mut self, trade: Trade) {
-        // Update VM state with trade data
+        #[cfg(feature = "profiling")]
+        puffin::profile_scope!("feed_trade");
         self.vm.set_last_price(trade.price);
-        self.vm.set_position_size(0.0); // Reset position each trade
+        self.vm.set_position_size(0.0);
 
-        // Load trade fields into fixed VM registers for the handler
-        self.vm.regs[0].f = trade.price;                          // reg0 = price
-        self.vm.regs[1].f = trade.qty;                            // reg1 = qty
-        self.vm.regs[2].i = match trade.side {                    // reg2 = side (0=buy, 1=sell)
+        self.vm.regs[0].f = trade.price;
+        self.vm.regs[1].f = trade.qty;
+        self.vm.regs[2].i = match trade.side {
             Side::Buy => 0,
             Side::Sell => 1,
         };
-        self.vm.regs[3].i = trade.trade_id as i64;                // reg3 = trade_id
-        self.vm.regs[4].i = trade.time.timestamp_nanos_opt().unwrap_or(0);  // reg4 = timestamp
+        self.vm.regs[3].i = trade.trade_id as i64;
+        self.vm.regs[4].i = trade.time.timestamp_nanos_opt().unwrap_or(0);
 
-        // Dispatch to the user's on_trade handler
         self.vm.call("on_trade");
-        // Send any order that was placed during the handler
         self.flush_pending_order();
     }
 
@@ -230,19 +228,17 @@ impl QflRuntime {
     // Sets up depth data in the VM, loads top bid into registers,
     // then calls the on_depth handler.
     pub fn feed_depth(&mut self, depth: Depth) {
-        // Store full bid/ask arrays in VM for quince.bid()/quince.ask() lookups
+        #[cfg(feature = "profiling")]
+        puffin::profile_scope!("feed_depth");
         self.vm.set_depth_bids(&depth.bids);
         self.vm.set_depth_asks(&depth.asks);
 
-        // Load top-of-book info into registers for convenience
-        self.vm.regs[0].f = depth.bids.first().map_or(0.0, |l| l.price);  // reg0 = best bid price
-        self.vm.regs[1].f = depth.bids.first().map_or(0.0, |l| l.qty);    // reg1 = best bid qty
-        self.vm.regs[2].i = depth.bids.len() as i64;                       // reg2 = bid levels count
-        self.vm.regs[3].i = depth.asks.len() as i64;                       // reg3 = ask levels count
+        self.vm.regs[0].f = depth.bids.first().map_or(0.0, |l| l.price);
+        self.vm.regs[1].f = depth.bids.first().map_or(0.0, |l| l.qty);
+        self.vm.regs[2].i = depth.bids.len() as i64;
+        self.vm.regs[3].i = depth.asks.len() as i64;
 
-        // Dispatch to the user's on_depth handler
         self.vm.call("on_depth");
-        // Send any order that was placed during the handler
         self.flush_pending_order();
     }
 
@@ -250,33 +246,31 @@ impl QflRuntime {
     // Sets up registers with fill data, records trace if enabled,
     // then calls on_fill handler.
     pub fn feed_fill(&mut self, fill: OrderFill) {
-        // Update last_price from the fill
+        #[cfg(feature = "profiling")]
+        puffin::profile_scope!("feed_fill");
         self.vm.set_last_price(fill.price);
-        // Load fill fields into VM registers
-        self.vm.regs[0].f = fill.price;                          // reg0 = fill price
-        self.vm.regs[1].f = fill.qty;                            // reg1 = fill qty
-        self.vm.regs[2].i = match fill.side {                    // reg2 = side (0=buy, 1=sell)
+        self.vm.regs[0].f = fill.price;
+        self.vm.regs[1].f = fill.qty;
+        self.vm.regs[2].i = match fill.side {
             Side::Buy => 0,
             Side::Sell => 1,
         };
-        // OrderFill has no trade_id; fill.trade_id would read 0
         self.vm.regs[3].i = 0;
-        self.vm.regs[4].i = fill.time.timestamp_nanos_opt().unwrap_or(0);  // reg4 = timestamp
+        self.vm.regs[4].i = fill.time.timestamp_nanos_opt().unwrap_or(0);
 
-        // Record fill in the tracer if one is attached
         if let Some(ref mut t) = self.vm.cold.tracer {
             t.record_fill(fill.price, fill.qty, &format!("{:?}", fill.side));
         }
 
-        // Dispatch to the user's on_fill handler
         self.vm.call("on_fill");
-        // Send any order that was placed during the handler
         self.flush_pending_order();
     }
 
     // Feed a periodic evaluation tick.
     // Calls the on_eval handler and flushes any pending order.
     pub fn feed_eval(&mut self) {
+        #[cfg(feature = "profiling")]
+        puffin::profile_scope!("feed_eval");
         self.vm.call("on_eval");
         self.flush_pending_order();
     }
@@ -336,13 +330,24 @@ impl QflRuntime {
         self.vm.finalize_const_lookups();
     }
 
+    // Drain the debug-only VM log ring buffer and return all captured log messages.
+    // In release builds this always returns an empty vec (zero overhead).
+    pub fn dump_vm_logs(&mut self) -> Vec<String> {
+        #[cfg(debug_assertions)]
+        if let Some(ref mut buf) = self.vm.cold.log_buffer {
+            return buf.drain().collect();
+        }
+        Vec::new()
+    }
+
     // --- Section: Order flushing ---
 
     // Check if the user's handler placed a pending order (via quince.order()).
     // If so, read the order parameters from VM registers, perform a risk check,
     // and send the order through the channel if allowed.
     fn flush_pending_order(&mut self) {
-        // Early exit if no order was placed
+        #[cfg(feature = "profiling")]
+        puffin::profile_scope!("flush_pending_order");
         if !self.vm.has_pending_order {
             return;
         }
@@ -360,19 +365,19 @@ impl QflRuntime {
 
         // Decode order fields from VM reserved registers
         let side = if side_val == 0 { Side::Buy } else { Side::Sell };
-        let qty = self.vm.float(192);                    // qty register
-        let price_f64 = self.vm.float(193);              // price register
+        let qty = self.vm.float(192); // qty register
+        let price_f64 = self.vm.float(193); // price register
         let price = if price_f64 > 0.0 {
-            Some(price_f64)                              // Price > 0 means limit order
+            Some(price_f64) // Price > 0 means limit order
         } else {
-            None                                         // Zero price means market order
+            None // Zero price means market order
         };
         let order_type = if self.vm.int(253) == 0 {
             quince_core::types::OrderType::Market
         } else {
             quince_core::types::OrderType::Limit
         };
-        let reduce_only = self.vm.int(254) != 0;         // reduce-only flag
+        let reduce_only = self.vm.int(254) != 0; // reduce-only flag
 
         // Assemble the full order struct
         let order = quince_core::types::Order {
@@ -409,7 +414,7 @@ impl QflRuntime {
     // Unified feed — accepts any Event variant and dispatches to the correct handler.
     // Starts a new risk cycle (resets per-cycle counters) before dispatching.
     pub fn feed_event(&mut self, event: Event) {
-        self.risk_engine.new_cycle();   // Reset per-cycle risk counters
+        self.risk_engine.new_cycle(); // Reset per-cycle risk counters
         match event {
             Event::Trade(trade) => self.feed_trade(trade),
             Event::Depth(depth) => self.feed_depth(depth),

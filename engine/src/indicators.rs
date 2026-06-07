@@ -317,6 +317,8 @@ impl IndicatorBank {
     }
 
     pub fn on_trade(&mut self, trade: &Trade) -> &[(u16, f64)] {
+        #[cfg(feature = "profiling")]
+        puffin::profile_scope!("IndicatorBank::on_trade");
         self.results.clear();
         let p = trade.price;
         let v = trade.qty;
@@ -481,6 +483,8 @@ impl IndicatorBank {
     }
 
     pub fn on_depth(&mut self, depth: &Depth) -> &[(u16, f64)] {
+        #[cfg(feature = "profiling")]
+        puffin::profile_scope!("IndicatorBank::on_depth");
         self.results.clear();
         let bid_vol: f64 = depth.bids.iter().map(|l| l.qty).sum();
         let ask_vol: f64 = depth.asks.iter().map(|l| l.qty).sum();

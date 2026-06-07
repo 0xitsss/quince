@@ -18,8 +18,8 @@ pub const QFR_VERSION_V2: u16 = 2;
 /// Legacy entry point (compiler side)
 #[derive(Debug, Clone)]
 pub struct EntryPoint {
-    pub name: String,        // symbol name of the entry function
-    pub code_offset: u32,    // byte offset into the code section
+    pub name: String,     // symbol name of the entry function
+    pub code_offset: u32, // byte offset into the code section
 }
 
 // --- Section: Constant pool entries ---
@@ -27,9 +27,9 @@ pub struct EntryPoint {
 /// Legacy const pool entry (compiler side)
 #[derive(Debug, Clone)]
 pub enum ConstEntry {
-    I64(i64),           // signed 64-bit integer constant
-    F64(f64),           // double-precision float constant
-    String(String),     // interned string constant (e.g. symbol names)
+    I64(i64),       // signed 64-bit integer constant
+    F64(f64),       // double-precision float constant
+    String(String), // interned string constant (e.g. symbol names)
 }
 
 // --- Section: QfrProgram — the full compiler IR ---
@@ -37,15 +37,15 @@ pub enum ConstEntry {
 /// Legacy program representation used by the compiler
 #[derive(Debug, Clone)]
 pub struct QfrProgram {
-    pub entries: Vec<EntryPoint>,          // function entry points
-    pub const_pool: Vec<ConstEntry>,       // unified constant pool (mixed types)
-    pub code: Vec<Instruction>,            // bytecode instructions
-    pub const_map: HashMap<String, u32>,   // maps string literal -> index in string_consts
-    pub ema_alphas: Vec<f64>,              // pre-computed EMA alpha factors
+    pub entries: Vec<EntryPoint>,        // function entry points
+    pub const_pool: Vec<ConstEntry>,     // unified constant pool (mixed types)
+    pub code: Vec<Instruction>,          // bytecode instructions
+    pub const_map: HashMap<String, u32>, // maps string literal -> index in string_consts
+    pub ema_alphas: Vec<f64>,            // pre-computed EMA alpha factors
     /// Separate typed constant pools (for split LdcF64/LdcStr opcodes)
-    pub f64_consts: Vec<f64>,              // f64 constants only
-    pub i64_consts: Vec<i64>,              // i64 constants only
-    pub string_consts: Vec<String>,        // string constants only
+    pub f64_consts: Vec<f64>, // f64 constants only
+    pub i64_consts: Vec<i64>,            // i64 constants only
+    pub string_consts: Vec<String>,      // string constants only
 }
 
 impl QfrProgram {
@@ -159,13 +159,13 @@ pub struct QfrEntry {
 
 /// Zero-copy loader — memory-maps a .qfr file and exposes raw pointers.
 pub struct Loader {
-    _mmap: memmap2::Mmap,                    // the mmap itself (kept alive)
-    pub header: NonNull<QfrBinarized>,       // pointer to the 64-byte header
-    pub constants_ptr: *const f64,           // pointer to start of f64 constant array
-    pub instructions_ptr: *const u64,        // pointer to start of u64 instruction array
-    pub entry_count: u16,                    // cached from header
-    pub const_count: u32,                    // cached from header
-    pub instr_count: u32,                    // cached from header
+    _mmap: memmap2::Mmap,              // the mmap itself (kept alive)
+    pub header: NonNull<QfrBinarized>, // pointer to the 64-byte header
+    pub constants_ptr: *const f64,     // pointer to start of f64 constant array
+    pub instructions_ptr: *const u64,  // pointer to start of u64 instruction array
+    pub entry_count: u16,              // cached from header
+    pub const_count: u32,              // cached from header
+    pub instr_count: u32,              // cached from header
 }
 
 impl Loader {
@@ -338,7 +338,7 @@ pub fn serialize_binarized(prog: &QfrProgram) -> Vec<u8> {
         buf.extend_from_slice(&(bytes.len() as u32).to_le_bytes()); // name_len
         buf.extend_from_slice(&entry.code_offset.to_le_bytes()); // code_offset
         buf.extend_from_slice(&0u32.to_le_bytes()); // pad
-                                                     // Collect name bytes for later append
+                                                    // Collect name bytes for later append
         string_data.extend_from_slice(bytes);
         string_data.push(0); // null terminator
     }
@@ -460,7 +460,7 @@ pub fn deserialize_binarized(data: &[u8]) -> Result<QfrProgram, String> {
         const_start += 1;
     }
     const_start += 1; // skip null
-                       // scan remaining strings
+                      // scan remaining strings
     let mut string_count = 1;
     while string_count < entry_count && const_start < data.len() {
         while const_start < data.len() && data[const_start] != 0 {
@@ -542,7 +542,7 @@ pub fn serialize_v1(prog: &QfrProgram) -> Vec<u8> {
 
     // --- Header: 32 bytes ---
 
-    buf.extend_from_slice(QFR_MAGIC_V1);     // 4 bytes
+    buf.extend_from_slice(QFR_MAGIC_V1); // 4 bytes
     buf.extend_from_slice(&QFR_VERSION_V1.to_le_bytes()); // 4 bytes
     buf.extend_from_slice(&(prog.entries.len() as u32).to_le_bytes()); // 4 bytes
     buf.extend_from_slice(&(prog.const_pool.len() as u32).to_le_bytes()); // 4 bytes
@@ -707,7 +707,7 @@ pub fn deserialize_v1(data: &[u8]) -> Result<QfrProgram, String> {
         string_end += 1;
     }
     offset = string_end + 1; // skip null terminator
-                              // Align to 8 bytes
+                             // Align to 8 bytes
     while offset % 8 != 0 {
         offset += 1;
     }
@@ -722,7 +722,8 @@ pub fn deserialize_v1(data: &[u8]) -> Result<QfrProgram, String> {
         let tag = data[offset];
         offset += 1;
         match tag {
-            0 => { // i64 constant
+            0 => {
+                // i64 constant
                 if offset + 8 > data.len() {
                     return Err("truncated i64 const".into());
                 }
@@ -734,7 +735,8 @@ pub fn deserialize_v1(data: &[u8]) -> Result<QfrProgram, String> {
                 const_pool.push(ConstEntry::I64(v));
                 offset += 15; // skip remaining padding (total 16 bytes: 1 tag + 8 value + 7 pad)
             }
-            1 => { // f64 constant
+            1 => {
+                // f64 constant
                 if offset + 8 > data.len() {
                     return Err("truncated f64 const".into());
                 }
@@ -746,7 +748,8 @@ pub fn deserialize_v1(data: &[u8]) -> Result<QfrProgram, String> {
                 const_pool.push(ConstEntry::F64(v));
                 offset += 15; // skip padding
             }
-            2 => { // string constant
+            2 => {
+                // string constant
                 if offset + 4 > data.len() {
                     return Err("truncated string const len".into());
                 }

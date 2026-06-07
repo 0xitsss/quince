@@ -129,11 +129,12 @@ pub struct RingVec {
 
 impl RingVec {
     pub fn new(capacity: usize) -> Self {
+        let cap = capacity.max(1);
         Self {
-            data: Vec::with_capacity(capacity),
+            data: Vec::with_capacity(cap),
             head: 0,
             len: 0,
-            cap: capacity,
+            cap,
         }
     }
 
@@ -322,6 +323,14 @@ mod tests {
             rv.push(v);
         }
         assert!((rv.iter().sum::<f64>() - 10.0).abs() < 1e-10);
+    }
+
+    #[test]
+    fn ringvec_zero_capacity_does_not_panic() {
+        let mut rv = RingVec::new(0);
+        assert_eq!(rv.capacity(), 1);
+        assert_eq!(rv.push(42.0), None);
+        assert_eq!(rv.get(0), Some(42.0));
     }
 
     #[test]

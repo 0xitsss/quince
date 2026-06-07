@@ -22,11 +22,13 @@
 //! | [`risk`] | Risk limits and order validation |
 //! | [`profiler`] | Opcode counts and handler timing |
 //! | [`tracer`] | Event ring buffer (signals, fills, risk) |
+//! | [`log_buffer`] | Debug-only ring buffer for strategy logs |
 
 pub mod ast;
 pub mod compiler;
 pub mod ir;
 pub mod lexer;
+pub mod log_buffer;
 pub mod opcodes;
 pub mod optimize;
 pub mod parser;

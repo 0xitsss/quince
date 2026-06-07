@@ -1016,7 +1016,6 @@ fn loop_unroll(prog: &QfrProgram) -> QfrProgram {
         let mut cnt_reg = 0u8;
         let mut bound_reg = 0u8;
         let mut step = 0i64;
-        let mut jz_offset = 0usize;
         let mut body_start = 0usize;
         let mut body_end = 0usize;
 
@@ -1035,7 +1034,6 @@ fn loop_unroll(prog: &QfrProgram) -> QfrProgram {
                                 found_jz = true;
                                 cnt_reg = ri.rs1();
                                 bound_reg = ri.rs2();
-                                jz_offset = i + 1;
                                 body_start = i + 2;
                             }
                         }
@@ -1089,7 +1087,6 @@ fn loop_unroll(prog: &QfrProgram) -> QfrProgram {
         if step == 0 {
             continue;
         }
-        let abs_step = step.unsigned_abs();
         let iter_count = if bound >= init {
             ((bound - init) / step.abs() + 1) as usize
         } else {
@@ -1418,14 +1415,42 @@ fn global_value_numbering(prog: &QfrProgram) -> QfrProgram {
 
             // Check if this opcode is eligible for CSE
             let is_cse_candidate = match op {
-                O::Add | O::Sub | O::Mul | O::Div | O::Mod
-                | O::FAdd | O::FSub | O::FMul | O::FDiv
-                | O::Eq | O::Ne | O::Lt | O::Gt | O::Le | O::Ge
-                | O::FEq | O::FNe | O::FLt | O::FGt | O::FLe | O::FGe
-                | O::BitAnd | O::BitOr | O::BitXor | O::Shl | O::Shr
-                | O::AddI | O::SubI | O::MulI | O::DivI
-                | O::EqI | O::LtI | O::GtI
-                | O::Neg | O::FNeg | O::BitNot => true,
+                O::Add
+                | O::Sub
+                | O::Mul
+                | O::Div
+                | O::Mod
+                | O::FAdd
+                | O::FSub
+                | O::FMul
+                | O::FDiv
+                | O::Eq
+                | O::Ne
+                | O::Lt
+                | O::Gt
+                | O::Le
+                | O::Ge
+                | O::FEq
+                | O::FNe
+                | O::FLt
+                | O::FGt
+                | O::FLe
+                | O::FGe
+                | O::BitAnd
+                | O::BitOr
+                | O::BitXor
+                | O::Shl
+                | O::Shr
+                | O::AddI
+                | O::SubI
+                | O::MulI
+                | O::DivI
+                | O::EqI
+                | O::LtI
+                | O::GtI
+                | O::Neg
+                | O::FNeg
+                | O::BitNot => true,
                 _ => false,
             };
 
@@ -2601,7 +2626,7 @@ pub fn sccp(prog: &QfrProgram) -> QfrProgram {
                                     (O::Jz, Lattice::Int(_)) => false,  // Jz: cond!=0 → fall
                                     (O::Jnz, Lattice::Int(0)) => false, // Jnz: cond==0 → fall
                                     (O::Jnz, Lattice::Int(_)) => true,  // Jnz: cond!=0 → taken
-                                    _ => false,  // Not constant → both paths are possible
+                                    _ => false, // Not constant → both paths are possible
                                 };
                                 let fallthrough_bid = if bid + 1 < cfg.blocks.len() {
                                     Some(bid + 1)
@@ -2781,10 +2806,27 @@ pub fn sccp(prog: &QfrProgram) -> QfrProgram {
 
             // Skip non-foldable ops (side effects, state access, control flow)
             let can_fold = match op {
-                O::Jmp | O::Jz | O::Jnz | O::Call | O::Ret | O::Halt | O::SendOrder
-                | O::Sentinel | O::Log | O::PersistGet | O::PersistSet | O::GetInd
-                | O::GetPrice | O::GetPos | O::GetBal | O::WindowPush | O::WindowMean
-                | O::WindowStddev | O::WindowMin | O::WindowMax | O::WindowSum => false,
+                O::Jmp
+                | O::Jz
+                | O::Jnz
+                | O::Call
+                | O::Ret
+                | O::Halt
+                | O::SendOrder
+                | O::Sentinel
+                | O::Log
+                | O::PersistGet
+                | O::PersistSet
+                | O::GetInd
+                | O::GetPrice
+                | O::GetPos
+                | O::GetBal
+                | O::WindowPush
+                | O::WindowMean
+                | O::WindowStddev
+                | O::WindowMin
+                | O::WindowMax
+                | O::WindowSum => false,
                 _ => true,
             };
 

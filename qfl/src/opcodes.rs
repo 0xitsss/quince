@@ -181,93 +181,93 @@ pub enum InstrEncoding {
 #[repr(u8)]
 pub enum Opcode {
     // Int arithmetic
-    Add = 0,    // rd = rs1 + rs2 (i64)
-    Sub = 1,    // rd = rs1 - rs2 (i64)
-    Mul = 2,    // rd = rs1 * rs2 (i64)
-    Div = 3,    // rd = rs1 / rs2 (i64, integer division)
-    Mod = 4,    // rd = rs1 % rs2 (i64)
-    Neg = 5,    // rd = -rs1 (i64)
-    AddI = 6,   // rd = rs1 + imm (i64)
-    SubI = 7,   // rd = rs1 - imm (i64)
-    MulI = 8,   // rd = rs1 * imm (i64)
-    DivI = 9,   // rd = rs1 / imm (i64)
+    Add = 0,  // rd = rs1 + rs2 (i64)
+    Sub = 1,  // rd = rs1 - rs2 (i64)
+    Mul = 2,  // rd = rs1 * rs2 (i64)
+    Div = 3,  // rd = rs1 / rs2 (i64, integer division)
+    Mod = 4,  // rd = rs1 % rs2 (i64)
+    Neg = 5,  // rd = -rs1 (i64)
+    AddI = 6, // rd = rs1 + imm (i64)
+    SubI = 7, // rd = rs1 - imm (i64)
+    MulI = 8, // rd = rs1 * imm (i64)
+    DivI = 9, // rd = rs1 / imm (i64)
     // Float arithmetic
-    FAdd = 10,  // rd = rs1 + rs2 (f64)
-    FSub = 11,  // rd = rs1 - rs2 (f64)
-    FMul = 12,  // rd = rs1 * rs2 (f64)
-    FDiv = 13,  // rd = rs1 / rs2 (f64)
-    FNeg = 14,  // rd = -rs1 (f64)
+    FAdd = 10, // rd = rs1 + rs2 (f64)
+    FSub = 11, // rd = rs1 - rs2 (f64)
+    FMul = 12, // rd = rs1 * rs2 (f64)
+    FDiv = 13, // rd = rs1 / rs2 (f64)
+    FNeg = 14, // rd = -rs1 (f64)
     // Int comparison
-    Eq = 15,    // rd = (rs1 == rs2) ? 1 : 0 (i64)
-    Ne = 16,    // rd = (rs1 != rs2) ? 1 : 0 (i64)
-    Lt = 17,    // rd = (rs1 < rs2) ? 1 : 0 (i64)
-    Gt = 18,    // rd = (rs1 > rs2) ? 1 : 0 (i64)
-    Le = 19,    // rd = (rs1 <= rs2) ? 1 : 0 (i64)
-    Ge = 20,    // rd = (rs1 >= rs2) ? 1 : 0 (i64)
+    Eq = 15, // rd = (rs1 == rs2) ? 1 : 0 (i64)
+    Ne = 16, // rd = (rs1 != rs2) ? 1 : 0 (i64)
+    Lt = 17, // rd = (rs1 < rs2) ? 1 : 0 (i64)
+    Gt = 18, // rd = (rs1 > rs2) ? 1 : 0 (i64)
+    Le = 19, // rd = (rs1 <= rs2) ? 1 : 0 (i64)
+    Ge = 20, // rd = (rs1 >= rs2) ? 1 : 0 (i64)
     // Float comparison
-    FEq = 21,   // rd = (rs1 == rs2) ? 1 : 0 (f64)
-    FNe = 22,   // rd = (rs1 != rs2) ? 1 : 0 (f64)
-    FLt = 23,   // rd = (rs1 < rs2) ? 1 : 0 (f64)
-    FGt = 24,   // rd = (rs1 > rs2) ? 1 : 0 (f64)
-    FLe = 25,   // rd = (rs1 <= rs2) ? 1 : 0 (f64)
-    FGe = 26,   // rd = (rs1 >= rs2) ? 1 : 0 (f64)
+    FEq = 21, // rd = (rs1 == rs2) ? 1 : 0 (f64)
+    FNe = 22, // rd = (rs1 != rs2) ? 1 : 0 (f64)
+    FLt = 23, // rd = (rs1 < rs2) ? 1 : 0 (f64)
+    FGt = 24, // rd = (rs1 > rs2) ? 1 : 0 (f64)
+    FLe = 25, // rd = (rs1 <= rs2) ? 1 : 0 (f64)
+    FGe = 26, // rd = (rs1 >= rs2) ? 1 : 0 (f64)
     // Immediate comparison
-    EqI = 27,   // rd = (rs1 == imm) ? 1 : 0 (i64)
-    LtI = 28,   // rd = (rs1 < imm) ? 1 : 0 (i64)
-    GtI = 29,   // rd = (rs1 > imm) ? 1 : 0 (i64)
+    EqI = 27, // rd = (rs1 == imm) ? 1 : 0 (i64)
+    LtI = 28, // rd = (rs1 < imm) ? 1 : 0 (i64)
+    GtI = 29, // rd = (rs1 > imm) ? 1 : 0 (i64)
     // Bitwise
-    BitAnd = 30,    // rd = rs1 & rs2
-    BitOr = 31,     // rd = rs1 | rs2
-    BitXor = 32,    // rd = rs1 ^ rs2
-    BitNot = 33,    // rd = ~rs1
-    Shl = 34,       // rd = rs1 << rs2
-    Shr = 35,       // rd = rs1 >> rs2 (arithmetic, sign-extending)
+    BitAnd = 30, // rd = rs1 & rs2
+    BitOr = 31,  // rd = rs1 | rs2
+    BitXor = 32, // rd = rs1 ^ rs2
+    BitNot = 33, // rd = ~rs1
+    Shl = 34,    // rd = rs1 << rs2
+    Shr = 35,    // rd = rs1 >> rs2 (arithmetic, sign-extending)
     // Control flow
-    Jmp = 36,       // unconditional jump to PC + imm
-    Jz = 37,        // jump to PC + imm if rs1 == 0
-    Jnz = 38,       // jump to PC + imm if rs1 != 0
-    Call = 39,      // call subroutine at PC + imm (pushes return address)
-    Ret = 40,       // return from subroutine (pops return address)
+    Jmp = 36,  // unconditional jump to PC + imm
+    Jz = 37,   // jump to PC + imm if rs1 == 0
+    Jnz = 38,  // jump to PC + imm if rs1 != 0
+    Call = 39, // call subroutine at PC + imm (pushes return address)
+    Ret = 40,  // return from subroutine (pops return address)
     // Data movement
-    Mov = 41,       // rd = rs1 (register-to-register copy)
-    Ldi = 42,       // rd = imm (load 32-bit signed immediate, sign-extended)
-    Ldi64 = 43,     // rd = imm40 (load 40-bit signed immediate, sign-extended)
-    LdcF64 = 44,    // rd = const_pool[index] (load f64 from constant pool by index)
+    Mov = 41,    // rd = rs1 (register-to-register copy)
+    Ldi = 42,    // rd = imm (load 32-bit signed immediate, sign-extended)
+    Ldi64 = 43,  // rd = imm40 (load 40-bit signed immediate, sign-extended)
+    LdcF64 = 44, // rd = const_pool[index] (load f64 from constant pool by index)
     // Type conversion
-    I2F = 45,       // rd = (f64)rs1 (i64 to f64 conversion)
-    F2I = 46,       // rd = (i64)rs1 (f64 to i64 truncation)
+    I2F = 45, // rd = (f64)rs1 (i64 to f64 conversion)
+    F2I = 46, // rd = (i64)rs1 (f64 to i64 truncation)
     // Engine builtins
-    GetInd = 47,        // rd = quince.get(symbol_index) — get indicator value by symbol index
-    GetPrice = 48,      // rd = current market price
-    GetPos = 49,        // rd = current position
-    GetBal = 50,        // rd = current balance (with symbol index in rs1)
-    GetDepthBid = 51,   // rd = best bid price at level (rs1, rs2)
-    GetDepthAsk = 52,   // rd = best ask price at level (rs1, rs2)
-    SendOrder = 53,     // place order (args from registers), returns order ID
-    PersistGet = 54,    // rd = persistent variable[index] (load from hot-reload state)
-    PersistSet = 55,    // persistent variable[index] = rs1 (store to hot-reload state)
-    Log = 56,           // log string from symbol table at index imm
-    Halt = 57,          // stop VM execution
+    GetInd = 47,   // rd = quince.get(symbol_index) — get indicator value by symbol index
+    GetPrice = 48, // rd = current market price
+    GetPos = 49,   // rd = current position
+    GetBal = 50,   // rd = current balance (with symbol index in rs1)
+    GetDepthBid = 51, // rd = best bid price at level (rs1, rs2)
+    GetDepthAsk = 52, // rd = best ask price at level (rs1, rs2)
+    SendOrder = 53, // place order (args from registers), returns order ID
+    PersistGet = 54, // rd = persistent variable[index] (load from hot-reload state)
+    PersistSet = 55, // persistent variable[index] = rs1 (store to hot-reload state)
+    Log = 56,      // log string from symbol table at index imm
+    Halt = 57,     // stop VM execution
     // Rolling Window opcodes
-    WindowPush = 58,    // push value rs1 onto window identified by imm
-    WindowMean = 59,    // rd = mean of window imm
-    WindowStddev = 60,  // rd = standard deviation of window imm
-    WindowMin = 61,     // rd = minimum of window imm
-    WindowMax = 62,     // rd = maximum of window imm
-    WindowSum = 63,     // rd = sum of window imm
+    WindowPush = 58,   // push value rs1 onto window identified by imm
+    WindowMean = 59,   // rd = mean of window imm
+    WindowStddev = 60, // rd = standard deviation of window imm
+    WindowMin = 61,    // rd = minimum of window imm
+    WindowMax = 62,    // rd = maximum of window imm
+    WindowSum = 63,    // rd = sum of window imm
     // Phase 4g: fused feature opcodes
-    Ema = 64,           // rd = EMA(rs1, rs2) — exponential moving average (alpha in rs2)
+    Ema = 64, // rd = EMA(rs1, rs2) — exponential moving average (alpha in rs2)
     // Phase 4i: log with value
-    Log2 = 65,          // log string with an associated f64 value
+    Log2 = 65, // log string with an associated f64 value
     // Load i64 from const pool (for values > 40-bit signed range)
-    LdI64 = 66,         // rd = i64_consts[index] — load arbitrary i64 from constant pool
+    LdI64 = 66, // rd = i64_consts[index] — load arbitrary i64 from constant pool
     // Split Ldc opcodes (eliminate runtime branch)
-    LdcStr = 67,        // rd = string_consts[index] — load string constant address
+    LdcStr = 67, // rd = string_consts[index] — load string constant address
     // Power operations
-    Pow = 68,           // rd = rs1 ^ rs2 (integer power)
-    FPow = 69,          // rd = rs1 ^ rs2 (float power)
+    Pow = 68,  // rd = rs1 ^ rs2 (integer power)
+    FPow = 69, // rd = rs1 ^ rs2 (float power)
     // Sentinel — must be last, triggers exit from dispatch loop
-    Sentinel = 0xFF,    // marks end of instruction stream, not a real opcode
+    Sentinel = 0xFF, // marks end of instruction stream, not a real opcode
 }
 
 impl Opcode {

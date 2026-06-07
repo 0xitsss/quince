@@ -159,9 +159,9 @@ impl fmt::Display for Token {
 /// An error produced during lexing with source position information.
 #[derive(Debug, Clone)]
 pub struct LexerError {
-    pub msg: String,   // Human-readable error description
-    pub line: usize,   // 1-based line number where the error occurred
-    pub col: usize,    // 1-based column number where the error occurred
+    pub msg: String, // Human-readable error description
+    pub line: usize, // 1-based line number where the error occurred
+    pub col: usize,  // 1-based column number where the error occurred
 }
 
 impl fmt::Display for LexerError {

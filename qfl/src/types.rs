@@ -16,16 +16,16 @@ use std::fmt;
 /// Strongly-typed domain value.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum QflType {
-    I64,        // raw 64-bit signed integer
-    F64,        // raw double-precision float
-    Bool,       // boolean (true/false)
-    Timestamp,  // nanosecond-precision time point
-    Duration,   // time interval (nanoseconds)
-    Price,      // asset price (float-like, domain-typed)
-    Qty,        // asset quantity (float-like, domain-typed)
-    Symbol,     // string symbol (e.g. "btcusdt")
-    Side,       // order side (buy/sell, stored as i64)
-    OrderId,    // order identifier (stored as i64)
+    I64,       // raw 64-bit signed integer
+    F64,       // raw double-precision float
+    Bool,      // boolean (true/false)
+    Timestamp, // nanosecond-precision time point
+    Duration,  // time interval (nanoseconds)
+    Price,     // asset price (float-like, domain-typed)
+    Qty,       // asset quantity (float-like, domain-typed)
+    Symbol,    // string symbol (e.g. "btcusdt")
+    Side,      // order side (buy/sell, stored as i64)
+    OrderId,   // order identifier (stored as i64)
 }
 
 impl QflType {
@@ -247,12 +247,12 @@ fn is_qty_compat(t: QflType) -> bool {
 // --- Section: TypeChecker — walks the AST and validates types ---
 
 struct TypeChecker {
-    scopes: Vec<Scope>,  // stack of lexical scopes (innermost last)
+    scopes: Vec<Scope>, // stack of lexical scopes (innermost last)
     errors: Vec<TypeError>,
 }
 
 struct Scope {
-    vars: Vec<(String, QflType)>,  // variable name -> type mapping
+    vars: Vec<(String, QflType)>, // variable name -> type mapping
 }
 
 impl TypeChecker {

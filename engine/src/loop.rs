@@ -221,6 +221,12 @@ impl<E: Exchange> Engine<E> {
         let stream = self.exchange.subscribe(&self.symbols).await?;
         let rx = stream.rx;
 
+        let (shutdown_tx, mut shutdown_rx) = tokio::sync::oneshot::channel::<()>();
+        tokio::spawn(async move {
+            let _ = tokio::signal::ctrl_c().await;
+            let _ = shutdown_tx.send(());
+        });
+
         tracing::info!(
             "engine loop starting — {} symbol(s) subscribed, {} stream(s) active",
             self.symbols.len(),
@@ -228,6 +234,12 @@ impl<E: Exchange> Engine<E> {
         );
 
         loop {
+            if shutdown_rx.try_recv().is_ok() {
+                tracing::info!("Ctrl-C received — graceful shutdown, draining VM logs");
+                self.dump_vm_logs();
+                return Ok(());
+            }
+
             #[cfg(feature = "profiling")]
             {
                 puffin::GlobalProfiler::lock().new_frame();
@@ -299,6 +311,8 @@ impl<E: Exchange> Engine<E> {
     async fn on_stream_msg(&mut self, msg: StreamMsg) {
         match msg {
             StreamMsg::Trade(trade) => {
+                #[cfg(feature = "profiling")]
+                puffin::profile_scope!("StreamMsg::Trade");
                 self.last_price = trade.price;
                 for &(slot, v) in self.indicators.on_trade(&trade) {
                     self.qfl.set_indicator_by_slot(slot, v);
@@ -306,15 +320,21 @@ impl<E: Exchange> Engine<E> {
                 self.qfl.feed_trade(trade);
             }
             StreamMsg::Depth(depth) => {
+                #[cfg(feature = "profiling")]
+                puffin::profile_scope!("StreamMsg::Depth");
                 for &(slot, v) in self.indicators.on_depth(&depth) {
                     self.qfl.set_indicator_by_slot(slot, v);
                 }
                 self.qfl.feed_depth(depth);
             }
             StreamMsg::MarkPrice { price, .. } => {
+                #[cfg(feature = "profiling")]
+                puffin::profile_scope!("StreamMsg::MarkPrice");
                 self.last_price = price;
             }
             StreamMsg::OrderUpdate(fill) => {
+                #[cfg(feature = "profiling")]
+                puffin::profile_scope!("StreamMsg::OrderUpdate");
                 let cid = self
                     .order_manager
                     .find_client_by_exchange_id(&fill.order_id);
@@ -323,10 +343,25 @@ impl<E: Exchange> Engine<E> {
                     self.order_manager.update_fill(&cid, fill.qty, fill.price);
                     self.logger.log_fill(&fill);
                     self.daily_pnl -= fill.fee;
+                    if let Some(pos) = self.position.as_ref() {
+                        match (pos.side, fill.side) {
+                            (PositionSide::Long, Side::Sell) | (PositionSide::Short, Side::Buy) => {
+                                let reducing_qty = fill.qty.min(pos.size);
+                                let price_diff = match pos.side {
+                                    PositionSide::Long => fill.price - pos.entry_price,
+                                    _ => pos.entry_price - fill.price,
+                                };
+                                self.daily_pnl += price_diff * reducing_qty;
+                            }
+                            _ => {}
+                        }
+                    }
                     self.qfl.feed_fill(fill);
                 }
             }
             StreamMsg::AccountUpdate(info) => {
+                #[cfg(feature = "profiling")]
+                puffin::profile_scope!("StreamMsg::AccountUpdate");
                 for b in &info.balances {
                     self.set_balance(&b.asset, b.wallet);
                     self.qfl.set_balance(&b.asset, b.wallet);
@@ -340,7 +375,14 @@ impl<E: Exchange> Engine<E> {
                     self.qfl.set_position_size(pos.size);
                 }
             }
-            StreamMsg::OpenInterest { .. } | StreamMsg::ForceOrder(_) => {}
+            StreamMsg::OpenInterest { .. } => {
+                #[cfg(feature = "profiling")]
+                puffin::profile_scope!("StreamMsg::OpenInterest");
+            }
+            StreamMsg::ForceOrder(_) => {
+                #[cfg(feature = "profiling")]
+                puffin::profile_scope!("StreamMsg::ForceOrder");
+            }
         }
     }
 
@@ -355,10 +397,7 @@ impl<E: Exchange> Engine<E> {
     }
 
     async fn on_strategy_order(&mut self, order: Order) {
-        if let Err(reason) = self
-            .risk
-            .check_order(&order, self.daily_pnl, self.peak_equity)
-        {
+        if let Err(reason) = self.risk.check_order(&order, self.peak_equity) {
             tracing::warn!("risk rejected order: {}", reason);
             return;
         }
@@ -394,6 +433,8 @@ impl<E: Exchange> Engine<E> {
     }
 
     async fn sync_account(&mut self) {
+        #[cfg(feature = "profiling")]
+        puffin::profile_scope!("sync_account");
         match self.exchange.account_info().await {
             Ok(info) => {
                 for b in &info.balances {
@@ -447,7 +488,7 @@ impl<E: Exchange> Engine<E> {
 
     async fn check_sl_tp(&mut self) {
         let price = self.last_price;
-        if price <= 0.0 {
+        if !price.is_finite() || price <= 0.0 {
             return;
         }
 
@@ -485,7 +526,11 @@ impl<E: Exchange> Engine<E> {
 
         for (cid, side, qty) in triggered {
             let close = Order {
-                symbol: self.symbols.first().map(|s| Arc::<str>::from(s.as_str())).unwrap_or_else(|| Arc::from("")),
+                symbol: self
+                    .symbols
+                    .first()
+                    .map(|s| Arc::<str>::from(s.as_str()))
+                    .unwrap_or_else(|| Arc::from("")),
                 side,
                 qty,
                 price: None,
@@ -532,6 +577,23 @@ impl<E: Exchange> Engine<E> {
                     drawdown * 100.0,
                     self.risk.max_drawdown * 100.0
                 );
+            }
+        }
+    }
+
+    // Drain the VM log ring buffer into qflvm.log (debug builds only).
+    pub fn dump_vm_logs(&mut self) {
+        let logs = self.qfl.dump_vm_logs();
+        if !logs.is_empty() {
+            if let Ok(mut file) = std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open("qflvm.log")
+            {
+                use std::io::Write;
+                for log in &logs {
+                    let _ = writeln!(file, "{log}");
+                }
             }
         }
     }

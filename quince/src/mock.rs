@@ -114,6 +114,7 @@ impl Exchange for MockExchange {
                     side,
                     trade_id: tick,
                 };
+                tracing::debug!(target: "mock", "StreamMsg::Trade price={price} qty={qty} id={tick}");
                 let _ = tx.try_send(StreamMsg::Trade(trade));
 
                 if depth_tick % 5 == 0 {
@@ -130,6 +131,7 @@ impl Exchange for MockExchange {
                             qty: 1.0 - i as f64 * 0.1,
                         })
                         .collect();
+                    tracing::debug!(target: "mock", "StreamMsg::Depth bids={} asks={}", bids.len(), asks.len());
                     let _ = tx.try_send(StreamMsg::Depth(Depth { bids, asks }));
                 }
 
@@ -182,6 +184,7 @@ impl Exchange for MockExchange {
         }
 
         if let Some(tx) = state.stream_tx.as_ref() {
+            tracing::debug!(target: "mock", "StreamMsg::OrderUpdate id={} price={} qty={}", fill.order_id, fill.price, fill.qty);
             let _ = tx.try_send(StreamMsg::OrderUpdate(fill.clone()));
         }
 
@@ -195,20 +198,24 @@ impl Exchange for MockExchange {
                 .iter_mut()
                 .find(|p| p.symbol == order.symbol.as_ref());
             if let Some(p) = existing {
-                let old_qty = p.size;
-                p.size = (p.size + order.qty).max(0.0);
-                if p.size > 0.0 && old_qty > 0.0 {
-                    p.entry_price = (p.entry_price * old_qty + fill_price * order.qty) / p.size
-                } else if p.size > 0.0 {
-                    p.entry_price = fill_price;
-                }
-                p.side = if p.size > 0.0 {
-                    pos_side
+                if p.side == PositionSide::None || p.side == pos_side {
+                    let old_qty = p.size;
+                    p.size += order.qty;
+                    p.entry_price = (p.entry_price * old_qty + fill_price * order.qty) / p.size;
+                    p.side = pos_side;
                 } else {
-                    PositionSide::None
-                };
-                if p.size <= 0.0 {
-                    p.entry_price = 0.0;
+                    let new_size = p.size - order.qty;
+                    if new_size > 0.0 {
+                        p.size = new_size;
+                    } else if new_size < 0.0 {
+                        p.size = -new_size;
+                        p.side = pos_side;
+                        p.entry_price = fill_price;
+                    } else {
+                        p.size = 0.0;
+                        p.side = PositionSide::None;
+                        p.entry_price = 0.0;
+                    }
                 }
             } else {
                 state.positions.push(Position {
@@ -237,6 +244,7 @@ impl Exchange for MockExchange {
                 balances: state.balances.clone(),
                 positions: state.positions.clone(),
             };
+            tracing::debug!(target: "mock", "StreamMsg::AccountUpdate {} balances, {} positions", info.balances.len(), info.positions.len());
             let _ = tx.try_send(StreamMsg::AccountUpdate(info));
         }
 

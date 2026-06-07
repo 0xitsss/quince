@@ -4,12 +4,17 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 
+[features]
+default = []
+profiling = ["puffin"]
+
 [dependencies]
 quince-core = { path = "../core" }
 tracing.workspace = true
 crossbeam-channel.workspace = true
 thiserror.workspace = true
 memmap2 = "0.9"
+puffin = { workspace = true, optional = true }
 
 [dev-dependencies]
 chrono.workspace = true

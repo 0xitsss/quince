@@ -8,23 +8,23 @@ use std::io::Write;
 
 // --- Architectural constants ---
 
-pub const NUM_REGS: usize = 256;            // Total register file slots (2048 bytes)
-pub const INT_REG_COUNT: u8 = 192;          // Regs 0-191 are integer-typed; 192-255 are float-typed
-pub const PERSIST_SLOTS: usize = 64;        // Number of persist slots for hot-reload-safe state
-pub const MAX_CALL_DEPTH: usize = 64;       // Max nested call/return depth
-pub const MAX_INDICATORS: usize = 1024;     // Max number of named indicator slots
-pub const MAX_BALANCES: usize = 128;       // Max number of named balance slots
-pub const MAX_WINDOWS: usize = 64;          // Max number of rolling windows
+pub const NUM_REGS: usize = 256; // Total register file slots (2048 bytes)
+pub const INT_REG_COUNT: u8 = 192; // Regs 0-191 are integer-typed; 192-255 are float-typed
+pub const PERSIST_SLOTS: usize = 64; // Number of persist slots for hot-reload-safe state
+pub const MAX_CALL_DEPTH: usize = 64; // Max nested call/return depth
+pub const MAX_INDICATORS: usize = 1024; // Max number of named indicator slots
+pub const MAX_BALANCES: usize = 128; // Max number of named balance slots
+pub const MAX_WINDOWS: usize = 64; // Max number of rolling windows
 pub const WINDOW_ARENA_SIZE: usize = 65536; // Total ring-buffer elements across all windows
-pub const MAX_DEPTH_LEVELS: usize = 64;     // Max order-book depth levels per side
-pub const MAX_EMA_STATES: usize = 256;      // Max number of EMA state slots
+pub const MAX_DEPTH_LEVELS: usize = 64; // Max order-book depth levels per side
+pub const MAX_EMA_STATES: usize = 256; // Max number of EMA state slots
 
 // --- SendOrder register convention ---
 // When issuing a SEND_ORDER instruction, the VM reads these fixed registers:
-pub const REG_SEND_SIDE: u8 = 250;   // Order side (i64: 0=buy, 1=sell)
-pub const REG_SEND_QTY: u8 = 192;    // Order quantity (f64)
-pub const REG_SEND_PRICE: u8 = 193;  // Order price (f64)
-pub const REG_SEND_TYPE: u8 = 253;   // Order type (i64: e.g. market/limit)
+pub const REG_SEND_SIDE: u8 = 250; // Order side (i64: 0=buy, 1=sell)
+pub const REG_SEND_QTY: u8 = 192; // Order quantity (f64)
+pub const REG_SEND_PRICE: u8 = 193; // Order price (f64)
+pub const REG_SEND_TYPE: u8 = 253; // Order type (i64: e.g. market/limit)
 pub const REG_SEND_REDUCE: u8 = 254; // Reduce-only flag (i64)
 
 // --- Register File ---
@@ -69,7 +69,7 @@ impl Default for Register {
 
 #[derive(Debug, Clone, Copy)]
 pub struct PersistSlot {
-    pub tag: u8,          // 0=int, 1=float — determines which field the reader uses
+    pub tag: u8, // 0=int, 1=float — determines which field the reader uses
     pub int_val: i64,
     pub float_val: f64,
 }
@@ -89,9 +89,9 @@ impl Default for PersistSlot {
 
 #[derive(Debug, Clone, Copy)]
 pub struct EmaState {
-    pub alpha: f64,          // Smoothing factor (set at compile time from program.ema_alphas)
-    pub value: f64,          // Current EMA value
-    pub initialized: bool,   // False until first value pushed (seeds with raw value)
+    pub alpha: f64, // Smoothing factor (set at compile time from program.ema_alphas)
+    pub value: f64, // Current EMA value
+    pub initialized: bool, // False until first value pushed (seeds with raw value)
 }
 
 impl Default for EmaState {
@@ -110,21 +110,21 @@ impl Default for EmaState {
 
 #[derive(Debug, Clone, Copy)]
 pub struct WindowMeta {
-    pub offset: u16,     // Start index into window_arena for this window
-    pub capacity: u16,   // Ring buffer capacity (typically 64)
-    pub head: u16,       // Current write position (ring index)
-    pub len: u16,        // Number of elements currently in window
-    pub sum: f64,        // Running sum (for O(1) mean)
-    pub sum_sq: f64,     // Running sum of squares (for O(1) variance/stddev)
-    pub min: f64,        // Current minimum value in window
-    pub max: f64,        // Current maximum value in window
+    pub offset: u16,   // Start index into window_arena for this window
+    pub capacity: u16, // Ring buffer capacity (typically 64)
+    pub head: u16,     // Current write position (ring index)
+    pub len: u16,      // Number of elements currently in window
+    pub sum: f64,      // Running sum (for O(1) mean)
+    pub sum_sq: f64,   // Running sum of squares (for O(1) variance/stddev)
+    pub min: f64,      // Current minimum value in window
+    pub max: f64,      // Current maximum value in window
     // O(1) sliding min/max via monotonic deque (indices into ring buffer)
-    pub min_deque: [u8; 64],  // Fixed-size deque tracking indices of increasing minima
-    pub max_deque: [u8; 64],  // Fixed-size deque tracking indices of decreasing maxima
-    pub min_dq_front: u8,     // Front pointer for min deque (circular buffer in [0,64))
-    pub min_dq_back: u8,      // Back pointer for min deque
-    pub max_dq_front: u8,     // Front pointer for max deque
-    pub max_dq_back: u8,      // Back pointer for max deque
+    pub min_deque: [u8; 64], // Fixed-size deque tracking indices of increasing minima
+    pub max_deque: [u8; 64], // Fixed-size deque tracking indices of decreasing maxima
+    pub min_dq_front: u8,    // Front pointer for min deque (circular buffer in [0,64))
+    pub min_dq_back: u8,     // Back pointer for min deque
+    pub max_dq_front: u8,    // Front pointer for max deque
+    pub max_dq_back: u8,     // Back pointer for max deque
 }
 
 impl Default for WindowMeta {
@@ -201,28 +201,28 @@ impl WindowMeta {
 #[repr(C)]
 pub struct ColdVm {
     // Large flat arrays (pushed out of L1, behind Box)
-    pub indicators: [f64; MAX_INDICATORS],           // Named indicator values by slot
-    pub indicator_by_str: Vec<u16>,                   // String constant index → indicator slot
-    pub balances: [f64; MAX_BALANCES],                // Named balance values by slot
-    pub balance_by_str: Vec<u16>,                     // String constant index → balance slot
+    pub indicators: [f64; MAX_INDICATORS], // Named indicator values by slot
+    pub indicator_by_str: Vec<u16>,        // String constant index → indicator slot
+    pub balances: [f64; MAX_BALANCES],     // Named balance values by slot
+    pub balance_by_str: Vec<u16>,          // String constant index → balance slot
 
     // Depth book (order book snapshots)
-    pub depth_bids_price: [f64; MAX_DEPTH_LEVELS],    // Bid prices per level
-    pub depth_bids_qty: [f64; MAX_DEPTH_LEVELS],      // Bid quantities per level
-    pub depth_asks_price: [f64; MAX_DEPTH_LEVELS],    // Ask prices per level
-    pub depth_asks_qty: [f64; MAX_DEPTH_LEVELS],      // Ask quantities per level
-    pub depth_bids_len: u8,                           // Number of valid bid levels
-    pub depth_asks_len: u8,                           // Number of valid ask levels
+    pub depth_bids_price: [f64; MAX_DEPTH_LEVELS], // Bid prices per level
+    pub depth_bids_qty: [f64; MAX_DEPTH_LEVELS],   // Bid quantities per level
+    pub depth_asks_price: [f64; MAX_DEPTH_LEVELS], // Ask prices per level
+    pub depth_asks_qty: [f64; MAX_DEPTH_LEVELS],   // Ask quantities per level
+    pub depth_bids_len: u8,                        // Number of valid bid levels
+    pub depth_asks_len: u8,                        // Number of valid ask levels
 
     // Persist (hot-reload safe state, snapshot/restore)
     pub persist: [PersistSlot; PERSIST_SLOTS],
 
     // Rolling windows (ring-buffer arena + per-window metadata)
-    pub window_arena: Vec<f64>,                       // Flat ring-buffer storage for all windows
-    pub window_meta: [WindowMeta; MAX_WINDOWS],       // Metadata for each window
+    pub window_arena: Vec<f64>, // Flat ring-buffer storage for all windows
+    pub window_meta: [WindowMeta; MAX_WINDOWS], // Metadata for each window
 
     // Fused feature states
-    pub ema_states: [EmaState; MAX_EMA_STATES],       // EMA state slots
+    pub ema_states: [EmaState; MAX_EMA_STATES], // EMA state slots
 
     // Ownership holders — backing allocations for raw pointers held in hot Vm.
     // These Vecs must NOT be modified after Vm construction (raw pointers into them).
@@ -246,6 +246,10 @@ pub struct ColdVm {
     pub trace_vm_enabled: bool,
     pub trace_file: Option<std::io::BufWriter<std::fs::File>>,
     pub trace_start: std::time::Instant,
+
+    // Debug-only ring buffer for strategy log messages
+    #[cfg(debug_assertions)]
+    pub log_buffer: Option<crate::log_buffer::LogBuffer>,
 }
 
 // --- Hot VM Data ---
@@ -262,30 +266,30 @@ pub struct Vm {
     pub regs: [Register; NUM_REGS],
 
     // Execution state
-    pub pc: usize,                                    // Program counter (index into code_ptr)
-    pub running: bool,                                // True while dispatch loop should continue
-    pub call_stack: [usize; MAX_CALL_DEPTH],           // Return addresses for CALL/RET
-    pub call_depth: u8,                               // Current call depth
+    pub pc: usize,                           // Program counter (index into code_ptr)
+    pub running: bool,                       // True while dispatch loop should continue
+    pub call_stack: [usize; MAX_CALL_DEPTH], // Return addresses for CALL/RET
+    pub call_depth: u8,                      // Current call depth
 
     // Code + constants — raw pointers into owned backing in ColdVm
     // Used in lieu of Vec indexing to avoid bounds checks in hot path.
-    pub code_ptr: *const u64,            // Pointer to program bytecode (u64 instructions)
-    pub code_len: usize,                 // Number of instructions
-    pub consts_ptr: *const f64,          // Pointer to f64 constant pool
-    pub const_count: u32,                // Number of f64 constants
-    pub i64_consts_ptr: *const i64,      // Pointer to i64 constant pool
-    pub i64_const_count: u32,            // Number of i64 constants
+    pub code_ptr: *const u64, // Pointer to program bytecode (u64 instructions)
+    pub code_len: usize,      // Number of instructions
+    pub consts_ptr: *const f64, // Pointer to f64 constant pool
+    pub const_count: u32,     // Number of f64 constants
+    pub i64_consts_ptr: *const i64, // Pointer to i64 constant pool
+    pub i64_const_count: u32, // Number of i64 constants
 
     // Scalar engine state (hot — updated by external engine each tick)
-    pub last_price: f64,                 // Most recent price
-    pub position_size: f64,              // Current position size
-    pub has_pending_order: bool,         // Set true by SEND_ORDER; cleared by engine
+    pub last_price: f64,         // Most recent price
+    pub position_size: f64,      // Current position size
+    pub has_pending_order: bool, // Set true by SEND_ORDER; cleared by engine
 
     // Entry points (warm, but small — ~72 bytes)
-    pub entry_names: [u64; 8],          // Entry point names (packed as u64, up to 8 chars)
-    pub entry_offsets: [u32; 8],        // Corresponding code offsets
-    pub entry_count: u8,                // Number of registered entry points
-    handler_cache: [u32; 4],            // Cached offsets for 4 standard handlers (no linear scan)
+    pub entry_names: [u64; 8], // Entry point names (packed as u64, up to 8 chars)
+    pub entry_offsets: [u32; 8], // Corresponding code offsets
+    pub entry_count: u8,       // Number of registered entry points
+    handler_cache: [u32; 4],   // Cached offsets for 4 standard handlers (no linear scan)
 
     // Cold data (behind pointer, ~30+ KB out of hot cache line)
     pub cold: Box<ColdVm>,
@@ -394,6 +398,8 @@ impl Vm {
                 trace_vm_enabled: false,
                 trace_file: None,
                 trace_start: std::time::Instant::now(),
+                #[cfg(debug_assertions)]
+                log_buffer: Some(crate::log_buffer::LogBuffer::new(256)),
             }),
         };
         // Initialize EMA alphas from the compiled program
@@ -448,28 +454,49 @@ impl Vm {
 
     pub fn call(&mut self, entry_name: &str) {
         const HANDLER_LABELS: [&str; 4] = ["on_trade", "on_eval", "on_fill", "on_depth"];
-        // Check handler cache first (fast path for standard handlers)
         let offset = if let Some(idx) = HANDLER_LABELS.iter().position(|&n| n == entry_name) {
             let cached = self.handler_cache[idx];
             if cached != u32::MAX {
                 cached as usize
             } else {
-                return; // Handler not found — nothing to execute
+                return;
             }
         } else {
-            // Fall back to linear scan of all entry points
             match self.entry_offset(entry_name) {
                 Some(o) => o as usize,
                 None => return,
             }
         };
-        // Profiler: record handler entry
         if let Some(ref mut p) = self.cold.profiler {
             p.start_handler(entry_name);
         }
         self.pc = offset;
         self.running = true;
         self.call_depth = 0;
+        #[cfg(feature = "profiling")]
+        match entry_name {
+            "on_trade" => {
+                puffin::profile_scope!("vm::call(on_trade)");
+                self.run();
+            }
+            "on_eval" => {
+                puffin::profile_scope!("vm::call(on_eval)");
+                self.run();
+            }
+            "on_fill" => {
+                puffin::profile_scope!("vm::call(on_fill)");
+                self.run();
+            }
+            "on_depth" => {
+                puffin::profile_scope!("vm::call(on_depth)");
+                self.run();
+            }
+            _ => {
+                puffin::profile_scope!("vm::call(?)");
+                self.run();
+            }
+        }
+        #[cfg(not(feature = "profiling"))]
         self.run();
         if let Some(ref mut p) = self.cold.profiler {
             p.end_handler();
@@ -511,10 +538,19 @@ impl Vm {
     #[inline(never)]
     fn run_profiled(&mut self) {
         while self.running {
+            #[cfg(feature = "profiling")]
+            let tsc_start = crate::profiler::rdtsc();
             let instr = unsafe { *self.code_ptr.add(self.pc) };
             self.pc += 1;
             let opcode = (instr & 0xFF) as u8;
             if let Some(ref mut p) = self.cold.profiler {
+                #[cfg(feature = "profiling")]
+                {
+                    let tsc_end = crate::profiler::rdtsc();
+                    let cycles = tsc_end.wrapping_sub(tsc_start);
+                    p.record_opcode_tsc(crate::opcodes::Opcode::from_u8(opcode), cycles);
+                }
+                #[cfg(not(feature = "profiling"))]
                 p.record_opcode(crate::opcodes::Opcode::from_u8(opcode));
             }
             unsafe {
@@ -831,23 +867,23 @@ pub struct VmSnapshot {
 
 #[inline(always)]
 unsafe fn rd(instr: u64) -> u8 {
-    ((instr >> 8) & 0xFF) as u8  // Destination register
+    ((instr >> 8) & 0xFF) as u8 // Destination register
 }
 #[inline(always)]
 unsafe fn rs1(instr: u64) -> u8 {
-    ((instr >> 16) & 0xFF) as u8  // First source register
+    ((instr >> 16) & 0xFF) as u8 // First source register
 }
 #[inline(always)]
 unsafe fn rs2(instr: u64) -> u8 {
-    ((instr >> 24) & 0xFF) as u8  // Second source register (or extra data)
+    ((instr >> 24) & 0xFF) as u8 // Second source register (or extra data)
 }
 #[inline(always)]
 unsafe fn imm(instr: u64) -> i32 {
-    (instr >> 32) as i32  // Signed 32-bit immediate
+    (instr >> 32) as i32 // Signed 32-bit immediate
 }
 #[inline(always)]
 unsafe fn immu(instr: u64) -> u32 {
-    (instr >> 32) as u32  // Unsigned 32-bit immediate
+    (instr >> 32) as u32 // Unsigned 32-bit immediate
 }
 
 // NaN/Inf sanitizer — debug-only assertion that float values are finite.
@@ -1016,9 +1052,9 @@ pub unsafe fn $name(vm: &mut Vm, instr: u64) {
         };
     }
 
-    float_binop!(vm_fadd, +);  // rd = rs1 + rs2 (float)
-    float_binop!(vm_fsub, -);  // rd = rs1 - rs2 (float)
-    float_binop!(vm_fmul, *);  // rd = rs1 * rs2 (float)
+    float_binop!(vm_fadd, +); // rd = rs1 + rs2 (float)
+    float_binop!(vm_fsub, -); // rd = rs1 - rs2 (float)
+    float_binop!(vm_fmul, *); // rd = rs1 * rs2 (float)
 
     // rd = rs1 / rs2 (float, returns 0.0 on division by zero)
     #[inline(always)]
@@ -1057,12 +1093,12 @@ pub unsafe fn $name(vm: &mut Vm, instr: u64) {
         };
     }
 
-    int_cmp!(vm_eq, ==);   // rd = (rs1 == rs2) ? 1 : 0
-    int_cmp!(vm_ne, !=);   // rd = (rs1 != rs2) ? 1 : 0
-    int_cmp!(vm_lt, <);    // rd = (rs1 <  rs2) ? 1 : 0
-    int_cmp!(vm_gt, >);    // rd = (rs1 >  rs2) ? 1 : 0
-    int_cmp!(vm_le, <=);   // rd = (rs1 <= rs2) ? 1 : 0
-    int_cmp!(vm_ge, >=);   // rd = (rs1 >= rs2) ? 1 : 0
+    int_cmp!(vm_eq, ==); // rd = (rs1 == rs2) ? 1 : 0
+    int_cmp!(vm_ne, !=); // rd = (rs1 != rs2) ? 1 : 0
+    int_cmp!(vm_lt, <); // rd = (rs1 <  rs2) ? 1 : 0
+    int_cmp!(vm_gt, >); // rd = (rs1 >  rs2) ? 1 : 0
+    int_cmp!(vm_le, <=); // rd = (rs1 <= rs2) ? 1 : 0
+    int_cmp!(vm_ge, >=); // rd = (rs1 >= rs2) ? 1 : 0
 
     // ── Float comparison ──
     // Sets rd = 1 if comparison is true, 0 otherwise. Result is i64.
@@ -1082,12 +1118,12 @@ pub unsafe fn $name(vm: &mut Vm, instr: u64) {
         };
     }
 
-    float_cmp!(vm_feq, ==);   // rd = (rs1 == rs2) ? 1 : 0 (float)
-    float_cmp!(vm_fne, !=);   // rd = (rs1 != rs2) ? 1 : 0 (float)
-    float_cmp!(vm_flt, <);    // rd = (rs1 <  rs2) ? 1 : 0 (float)
-    float_cmp!(vm_fgt, >);    // rd = (rs1 >  rs2) ? 1 : 0 (float)
-    float_cmp!(vm_fle, <=);   // rd = (rs1 <= rs2) ? 1 : 0 (float)
-    float_cmp!(vm_fge, >=);   // rd = (rs1 >= rs2) ? 1 : 0 (float)
+    float_cmp!(vm_feq, ==); // rd = (rs1 == rs2) ? 1 : 0 (float)
+    float_cmp!(vm_fne, !=); // rd = (rs1 != rs2) ? 1 : 0 (float)
+    float_cmp!(vm_flt, <); // rd = (rs1 <  rs2) ? 1 : 0 (float)
+    float_cmp!(vm_fgt, >); // rd = (rs1 >  rs2) ? 1 : 0 (float)
+    float_cmp!(vm_fle, <=); // rd = (rs1 <= rs2) ? 1 : 0 (float)
+    float_cmp!(vm_fge, >=); // rd = (rs1 >= rs2) ? 1 : 0 (float)
 
     // ── Immediate comparison ──
 
@@ -1133,9 +1169,9 @@ pub unsafe fn $name(vm: &mut Vm, instr: u64) {
         };
     }
 
-    bitwise_binop!(vm_bitand, &);   // rd = rs1 & rs2
-    bitwise_binop!(vm_bitor, |);    // rd = rs1 | rs2
-    bitwise_binop!(vm_bitxor, ^);   // rd = rs1 ^ rs2
+    bitwise_binop!(vm_bitand, &); // rd = rs1 & rs2
+    bitwise_binop!(vm_bitor, |); // rd = rs1 | rs2
+    bitwise_binop!(vm_bitxor, ^); // rd = rs1 ^ rs2
 
     // rd = ~rs1 (bitwise NOT)
     #[inline(always)]
@@ -1408,16 +1444,14 @@ pub unsafe fn $name(vm: &mut Vm, instr: u64) {
         debug_assert!((REG_SEND_TYPE as usize) < NUM_REGS);
         debug_assert!((REG_SEND_REDUCE as usize) < NUM_REGS);
         vm.has_pending_order = true;
-        if tracing::enabled!(tracing::Level::INFO) {
-            tracing::info!(
-                "QFL: SEND_ORDER side={} qty={} price={} type={} reduce={}",
-                vm.regs.get_unchecked(REG_SEND_SIDE as usize).i,
-                vm.regs.get_unchecked(REG_SEND_QTY as usize).f,
-                vm.regs.get_unchecked(REG_SEND_PRICE as usize).f,
-                vm.regs.get_unchecked(REG_SEND_TYPE as usize).i,
-                vm.regs.get_unchecked(REG_SEND_REDUCE as usize).i,
-            );
-        }
+        tracing::debug!(
+            "QFL: SEND_ORDER side={} qty={} price={} type={} reduce={}",
+            vm.regs.get_unchecked(REG_SEND_SIDE as usize).i,
+            vm.regs.get_unchecked(REG_SEND_QTY as usize).f,
+            vm.regs.get_unchecked(REG_SEND_PRICE as usize).f,
+            vm.regs.get_unchecked(REG_SEND_TYPE as usize).i,
+            vm.regs.get_unchecked(REG_SEND_REDUCE as usize).i,
+        );
     }
 
     // ── Persist operations ──
@@ -1456,31 +1490,55 @@ pub unsafe fn $name(vm: &mut Vm, instr: u64) {
 
     // ── Logging ──
 
-    // Log message from string constant at rs1 (no value)
+    // Log message from string constant at rs1 (no value).
+    // Pushes to ring buffer in debug builds; dumped to qflvm.log on graceful shutdown.
+    // No-op in release builds (the ColdVm struct omits log_buffer when cfg(not(debug_assertions))).
     #[inline(always)]
     pub unsafe fn vm_log(vm: &mut Vm, instr: u64) {
-        let str_idx = vm.regs.get_unchecked(rs1(instr) as usize).i as usize;
-        let msg = if str_idx < vm.cold.const_strings.len() {
-            vm.cold.const_strings.get_unchecked(str_idx).as_str()
-        } else {
-            ""
-        };
-        tracing::info!("QFL: {}", msg);
+        #[cfg(debug_assertions)]
+        {
+            let str_idx = vm.regs.get_unchecked(rs1(instr) as usize).i as usize;
+            let msg = if str_idx < vm.cold.const_strings.len() {
+                vm.cold.const_strings.get_unchecked(str_idx).as_str()
+            } else {
+                ""
+            };
+            if let Some(ref mut buf) = vm.cold.log_buffer {
+                buf.push(format!("QFL: {}", msg));
+            }
+        }
+        #[cfg(not(debug_assertions))]
+        {
+            let _ = vm;
+            let _ = instr;
+        }
     }
 
-    // Log message from string constant at rs1 with f64 value from rs2
+    // Log message from string constant at rs1 with f64 value from rs2.
+    // Pushes to ring buffer in debug builds; dumped to qflvm.log on graceful shutdown.
+    // No-op in release builds (the ColdVm struct omits log_buffer when cfg(not(debug_assertions))).
     #[inline(always)]
     pub unsafe fn vm_log2(vm: &mut Vm, instr: u64) {
-        let str_idx = vm.regs.get_unchecked(rs1(instr) as usize).i as usize;
-        let val = vm.regs.get_unchecked(rs2(instr) as usize).f;
-        if str_idx < vm.cold.const_strings.len() {
-            tracing::info!(
-                "QFL: {}: {}",
-                vm.cold.const_strings.get_unchecked(str_idx),
-                val
-            );
-        } else {
-            tracing::info!("QFL: {}", val);
+        #[cfg(debug_assertions)]
+        {
+            let str_idx = vm.regs.get_unchecked(rs1(instr) as usize).i as usize;
+            let val = vm.regs.get_unchecked(rs2(instr) as usize).f;
+            if let Some(ref mut buf) = vm.cold.log_buffer {
+                if str_idx < vm.cold.const_strings.len() {
+                    buf.push(format!(
+                        "QFL: {}: {}",
+                        vm.cold.const_strings.get_unchecked(str_idx),
+                        val
+                    ));
+                } else {
+                    buf.push(format!("QFL: {}", val));
+                }
+            }
+        }
+        #[cfg(not(debug_assertions))]
+        {
+            let _ = vm;
+            let _ = instr;
         }
     }
 
@@ -1505,103 +1563,103 @@ pub unsafe fn $name(vm: &mut Vm, instr: u64) {
         let r = rd(instr) as usize;
         debug_assert!(wid < MAX_WINDOWS);
         let meta = vm.cold.window_meta.get_unchecked_mut(wid);
-            // Auto-initialize on first push
-            if meta.capacity == 0 {
-                meta.capacity = 64;
-                meta.offset = (wid as u16) * 64;
-                meta.head = 0;
-                meta.len = 0;
-                meta.sum = 0.0;
-                meta.sum_sq = 0.0;
-                meta.min = val;
-                meta.max = val;
-                meta.min_dq_front = 0;
-                meta.min_dq_back = 0;
-                meta.max_dq_front = 0;
-                meta.max_dq_back = 0;
+        // Auto-initialize on first push
+        if meta.capacity == 0 {
+            meta.capacity = 64;
+            meta.offset = (wid as u16) * 64;
+            meta.head = 0;
+            meta.len = 0;
+            meta.sum = 0.0;
+            meta.sum_sq = 0.0;
+            meta.min = val;
+            meta.max = val;
+            meta.min_dq_front = 0;
+            meta.min_dq_back = 0;
+            meta.max_dq_front = 0;
+            meta.max_dq_back = 0;
+        }
+        let cap = meta.capacity as usize;
+        let off = meta.offset as usize;
+        let head = meta.head as usize;
+
+        // Write value to ring buffer head position
+        *vm.cold.window_arena.get_unchecked_mut(off + head) = val;
+
+        // Min deque: pop back while back value > new value (maintains increasing monotonic order)
+        {
+            let dq = &mut meta.min_deque;
+            let mut back = meta.min_dq_back;
+            while meta.min_dq_front != back {
+                let prev = back.wrapping_sub(1) & 63;
+                let pos = dq[prev as usize] as usize;
+                if *vm.cold.window_arena.get_unchecked(off + pos) > val {
+                    back = prev;
+                } else {
+                    break;
+                }
             }
-            let cap = meta.capacity as usize;
-            let off = meta.offset as usize;
-            let head = meta.head as usize;
+            dq[back as usize] = head as u8;
+            meta.min_dq_back = back.wrapping_add(1) & 63;
+        }
 
-            // Write value to ring buffer head position
-            *vm.cold.window_arena.get_unchecked_mut(off + head) = val;
+        // Max deque: pop back while back value < new value (maintains decreasing monotonic order)
+        {
+            let dq = &mut meta.max_deque;
+            let mut back = meta.max_dq_back;
+            while meta.max_dq_front != back {
+                let prev = back.wrapping_sub(1) & 63;
+                let pos = dq[prev as usize] as usize;
+                if *vm.cold.window_arena.get_unchecked(off + pos) < val {
+                    back = prev;
+                } else {
+                    break;
+                }
+            }
+            dq[back as usize] = head as u8;
+            meta.max_dq_back = back.wrapping_add(1) & 63;
+        }
 
-            // Min deque: pop back while back value > new value (maintains increasing monotonic order)
+        if (meta.len as usize) < cap {
+            // Window not yet full: just advance head
+            meta.head = ((head + 1) % cap) as u16;
+            meta.len += 1;
+            meta.sum += val;
+            meta.sum_sq += val * val;
+        } else {
+            // Window full: overwrite oldest value, update running aggregates
+            let old = *vm.cold.window_arena.get_unchecked(off + head);
+            meta.head = ((head + 1) % cap) as u16;
+            meta.sum = meta.sum - old + val;
+            meta.sum_sq = meta.sum_sq - old * old + val * val;
+
+            // Evict from deque fronts if the evicted position matches
+            if meta.min_dq_front != meta.min_dq_back
+                && meta.min_deque[meta.min_dq_front as usize] == head as u8
             {
-                let dq = &mut meta.min_deque;
-                let mut back = meta.min_dq_back;
-                while meta.min_dq_front != back {
-                    let prev = back.wrapping_sub(1) & 63;
-                    let pos = dq[prev as usize] as usize;
-                    if *vm.cold.window_arena.get_unchecked(off + pos) > val {
-                        back = prev;
-                    } else {
-                        break;
-                    }
-                }
-                dq[back as usize] = head as u8;
-                meta.min_dq_back = back.wrapping_add(1) & 63;
+                meta.min_dq_front = meta.min_dq_front.wrapping_add(1) & 63;
             }
-
-            // Max deque: pop back while back value < new value (maintains decreasing monotonic order)
+            if meta.max_dq_front != meta.max_dq_back
+                && meta.max_deque[meta.max_dq_front as usize] == head as u8
             {
-                let dq = &mut meta.max_deque;
-                let mut back = meta.max_dq_back;
-                while meta.max_dq_front != back {
-                    let prev = back.wrapping_sub(1) & 63;
-                    let pos = dq[prev as usize] as usize;
-                    if *vm.cold.window_arena.get_unchecked(off + pos) < val {
-                        back = prev;
-                    } else {
-                        break;
-                    }
-                }
-                dq[back as usize] = head as u8;
-                meta.max_dq_back = back.wrapping_add(1) & 63;
+                meta.max_dq_front = meta.max_dq_front.wrapping_add(1) & 63;
             }
+        }
 
-            if (meta.len as usize) < cap {
-                // Window not yet full: just advance head
-                meta.head = ((head + 1) % cap) as u16;
-                meta.len += 1;
-                meta.sum += val;
-                meta.sum_sq += val * val;
-            } else {
-                // Window full: overwrite oldest value, update running aggregates
-                let old = *vm.cold.window_arena.get_unchecked(off + head);
-                meta.head = ((head + 1) % cap) as u16;
-                meta.sum = meta.sum - old + val;
-                meta.sum_sq = meta.sum_sq - old * old + val * val;
+        // Read min/max from deque fronts (O(1))
+        if meta.min_dq_front != meta.min_dq_back {
+            let pos = meta.min_deque[meta.min_dq_front as usize] as usize;
+            meta.min = *vm.cold.window_arena.get_unchecked(off + pos);
+        } else {
+            meta.min = val;
+        }
+        if meta.max_dq_front != meta.max_dq_back {
+            let pos = meta.max_deque[meta.max_dq_front as usize] as usize;
+            meta.max = *vm.cold.window_arena.get_unchecked(off + pos);
+        } else {
+            meta.max = val;
+        }
 
-                // Evict from deque fronts if the evicted position matches
-                if meta.min_dq_front != meta.min_dq_back
-                    && meta.min_deque[meta.min_dq_front as usize] == head as u8
-                {
-                    meta.min_dq_front = meta.min_dq_front.wrapping_add(1) & 63;
-                }
-                if meta.max_dq_front != meta.max_dq_back
-                    && meta.max_deque[meta.max_dq_front as usize] == head as u8
-                {
-                    meta.max_dq_front = meta.max_dq_front.wrapping_add(1) & 63;
-                }
-            }
-
-            // Read min/max from deque fronts (O(1))
-            if meta.min_dq_front != meta.min_dq_back {
-                let pos = meta.min_deque[meta.min_dq_front as usize] as usize;
-                meta.min = *vm.cold.window_arena.get_unchecked(off + pos);
-            } else {
-                meta.min = val;
-            }
-            if meta.max_dq_front != meta.max_dq_back {
-                let pos = meta.max_deque[meta.max_dq_front as usize] as usize;
-                meta.max = *vm.cold.window_arena.get_unchecked(off + pos);
-            } else {
-                meta.max = val;
-            }
-
-            vm.regs.get_unchecked_mut(r).f = val;
+        vm.regs.get_unchecked_mut(r).f = val;
     }
 
     // Macro generating window unary query handlers (mean, stddev, min, max, sum).
@@ -1622,11 +1680,11 @@ pub unsafe fn $name(vm: &mut Vm, instr: u64) {
         };
     }
 
-    window_unary!(vm_windowmean, mean);     // rd = mean of window wid
+    window_unary!(vm_windowmean, mean); // rd = mean of window wid
     window_unary!(vm_windowstddev, stddev); // rd = stddev of window wid
-    window_unary!(vm_windowmin, min);       // rd = min of window wid
-    window_unary!(vm_windowmax, max);       // rd = max of window wid
-    window_unary!(vm_windowsum, sum);       // rd = sum of window wid
+    window_unary!(vm_windowmin, min); // rd = min of window wid
+    window_unary!(vm_windowmax, max); // rd = max of window wid
+    window_unary!(vm_windowsum, sum); // rd = sum of window wid
 
     // ── Phase 4g: fused feature opcodes ──
 
@@ -1641,13 +1699,13 @@ pub unsafe fn $name(vm: &mut Vm, instr: u64) {
         let sid = rs2(instr) as usize;
         debug_assert!(sid < MAX_EMA_STATES);
         let st = vm.cold.ema_states.get_unchecked_mut(sid);
-            if st.initialized {
-                st.value = st.alpha * val + (1.0 - st.alpha) * st.value;
-            } else {
-                st.value = val;
-                st.initialized = true;
-            }
-            vm.regs.get_unchecked_mut(r).f = sanitize_f(st.value);
+        if st.initialized {
+            st.value = st.alpha * val + (1.0 - st.alpha) * st.value;
+        } else {
+            st.value = val;
+            st.initialized = true;
+        }
+        vm.regs.get_unchecked_mut(r).f = sanitize_f(st.value);
     }
 
     // ── Power operations ──

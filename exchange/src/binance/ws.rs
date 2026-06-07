@@ -109,11 +109,14 @@ impl BinanceWs {
             Value::Array(streams.into_iter().map(Value::String).collect()),
         );
         subscribe.insert("id".into(), Value::Number(0.into()));
-        let _ = writer
+        writer
             .send(tokio_tungstenite::tungstenite::Message::Text(
                 serde_json::to_string(&subscribe).unwrap(),
             ))
-            .await;
+            .await
+            .map_err(|e| ExchangeError::Ws(e.to_string()))?;
+
+        let (subscribe_resp_tx, subscribe_resp_rx) = oneshot::channel();
 
         let api_key = self.api_key.clone();
         let secret_key = self.secret_key.clone();
@@ -121,6 +124,7 @@ impl BinanceWs {
         tokio::spawn(async move {
             let mut pending: HashMap<u64, oneshot::Sender<Result<Value>>> =
                 HashMap::with_capacity(MAX_PENDING);
+            pending.insert(0, subscribe_resp_tx);
             let next_id: AtomicU64 = AtomicU64::new(1);
             let mut reader_alive = true;
 
@@ -199,6 +203,16 @@ impl BinanceWs {
                 }
             }
         });
+
+        match tokio::time::timeout(std::time::Duration::from_secs(5), subscribe_resp_rx).await {
+            Ok(Ok(_)) => {}
+            Ok(Err(_)) => {
+                return Err(ExchangeError::Ws(
+                    "subscribe response channel closed".into(),
+                ))
+            }
+            Err(_) => return Err(ExchangeError::Ws("subscribe response timeout".into())),
+        }
 
         Ok((WsClient { req_tx }, market_rx))
     }
