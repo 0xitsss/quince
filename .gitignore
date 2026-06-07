@@ -19,10 +19,11 @@ Thumbs.db
 # Logs
 *.log
 
-# Planning docs — must not leak to remote
+# Planning docs
 AGENTS.md
 QUINCE_BUGS.md
-qfl/docs/
+QFL_BUGS.md
+bench_results.txt
 *.tmp
 *.bak
 

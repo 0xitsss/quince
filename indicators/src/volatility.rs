@@ -22,7 +22,13 @@ pub struct Atr {
 impl Atr {
     pub fn new(period: usize) -> Self {
         assert!(period > 0, "ATR period must be > 0");
-        Self { period, atr: None, prev_close: None, count: 0, initial_tr: RingVec::new(period) }
+        Self {
+            period,
+            atr: None,
+            prev_close: None,
+            count: 0,
+            initial_tr: RingVec::new(period),
+        }
     }
 
     pub fn update(&mut self, high: f64, low: f64, close: f64) -> Option<f64> {
@@ -40,12 +46,18 @@ impl Atr {
             }
             None
         } else {
-            self.atr = Some((self.atr.unwrap() * (self.period as f64 - 1.0) + tr) / self.period as f64);
+            self.atr =
+                Some((self.atr.unwrap() * (self.period as f64 - 1.0) + tr) / self.period as f64);
             self.atr
         }
     }
 
-    pub fn reset(&mut self) { self.atr = None; self.prev_close = None; self.count = 0; self.initial_tr.clear(); }
+    pub fn reset(&mut self) {
+        self.atr = None;
+        self.prev_close = None;
+        self.count = 0;
+        self.initial_tr.clear();
+    }
 }
 
 pub struct BollingerBands {
@@ -58,27 +70,44 @@ pub struct BollingerBands {
 impl BollingerBands {
     pub fn new(period: usize, multiplier: f64) -> Self {
         assert!(period > 0 && multiplier > 0.0);
-        Self { period, multiplier, sma: super::ma::Sma::new(period), buffer: RingVec::new(period) }
+        Self {
+            period,
+            multiplier,
+            sma: super::ma::Sma::new(period),
+            buffer: RingVec::new(period),
+        }
     }
 
     pub fn update(&mut self, price: f64) -> Option<BollingerOutput> {
         self.buffer.push(price);
         let middle = self.sma.update(price)?;
         if self.buffer.len() == self.period {
-            let variance: f64 = self.buffer.iter().map(|v| (v - middle).powi(2)).sum::<f64>() / self.period as f64;
+            let variance: f64 = self
+                .buffer
+                .iter()
+                .map(|v| (v - middle).powi(2))
+                .sum::<f64>()
+                / self.period as f64;
             let stddev = variance.sqrt();
             Some(BollingerOutput {
                 middle,
                 upper: middle + self.multiplier * stddev,
                 lower: middle - self.multiplier * stddev,
-                bandwidth: if middle == 0.0 { 0.0 } else { stddev * 2.0 * self.multiplier / middle * 100.0 },
+                bandwidth: if middle == 0.0 {
+                    0.0
+                } else {
+                    stddev * 2.0 * self.multiplier / middle * 100.0
+                },
             })
         } else {
             None
         }
     }
 
-    pub fn reset(&mut self) { self.sma.reset(); self.buffer.clear(); }
+    pub fn reset(&mut self) {
+        self.sma.reset();
+        self.buffer.clear();
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -98,7 +127,11 @@ pub struct KeltnerChannel {
 impl KeltnerChannel {
     pub fn new(period: usize, multiplier: f64) -> Self {
         assert!(period > 0 && multiplier > 0.0);
-        Self { multiplier, ema: super::ma::Ema::new(period), atr: Atr::new(period) }
+        Self {
+            multiplier,
+            ema: super::ma::Ema::new(period),
+            atr: Atr::new(period),
+        }
     }
 
     pub fn update(&mut self, high: f64, low: f64, close: f64) -> Option<KeltnerOutput> {
@@ -115,7 +148,10 @@ impl KeltnerChannel {
         }
     }
 
-    pub fn reset(&mut self) { self.ema.reset(); self.atr.reset(); }
+    pub fn reset(&mut self) {
+        self.ema.reset();
+        self.atr.reset();
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -165,7 +201,9 @@ mod tests {
     #[test]
     fn atr_constant_range() {
         let mut atr = Atr::new(3);
-        for _ in 0..3 { atr.update(10.0, 9.0, 9.5); }
+        for _ in 0..3 {
+            atr.update(10.0, 9.0, 9.5);
+        }
         let v = atr.update(10.0, 9.0, 9.5).unwrap();
         assert!((v - 1.0).abs() < 1e-10);
     }
@@ -173,14 +211,18 @@ mod tests {
     #[test]
     fn atr_reset() {
         let mut atr = Atr::new(3);
-        for _ in 0..5 { atr.update(1.0, 1.0, 1.0); }
+        for _ in 0..5 {
+            atr.update(1.0, 1.0, 1.0);
+        }
         atr.reset();
         assert_eq!(atr.update(1.0, 1.0, 1.0), None);
     }
 
     #[test]
     #[should_panic]
-    fn atr_zero_period_panics() { Atr::new(0); }
+    fn atr_zero_period_panics() {
+        Atr::new(0);
+    }
 
     #[test]
     fn bb_known_values() {
@@ -196,7 +238,8 @@ mod tests {
     #[test]
     fn bb_spread() {
         let mut bb = BollingerBands::new(3, 2.0);
-        bb.update(10.0); bb.update(12.0);
+        bb.update(10.0);
+        bb.update(12.0);
         let o = bb.update(14.0).unwrap();
         assert!(o.upper > o.middle);
         assert!(o.lower < o.middle);
@@ -205,7 +248,8 @@ mod tests {
     #[test]
     fn bb_bandwidth() {
         let mut bb = BollingerBands::new(3, 2.0);
-        bb.update(10.0); bb.update(10.0);
+        bb.update(10.0);
+        bb.update(10.0);
         let o = bb.update(10.0).unwrap();
         assert!((o.bandwidth - 0.0).abs() < 1e-10);
     }
@@ -213,28 +257,34 @@ mod tests {
     #[test]
     fn bb_not_enough_data() {
         let mut bb = BollingerBands::new(5, 2.0);
-        for _ in 0..4 { assert_eq!(bb.update(1.0), None); }
+        for _ in 0..4 {
+            assert_eq!(bb.update(1.0), None);
+        }
         assert!(bb.update(1.0).is_some());
     }
 
     #[test]
     fn bb_zero_middle_bandwidth() {
         let mut bb = BollingerBands::new(3, 2.0);
-        bb.update(0.0); bb.update(0.0);
+        bb.update(0.0);
+        bb.update(0.0);
         assert!((bb.update(0.0).unwrap().bandwidth - 0.0).abs() < 1e-10);
     }
 
     #[test]
     fn bb_reset() {
         let mut bb = BollingerBands::new(3, 2.0);
-        bb.update(1.0); bb.update(1.0);
+        bb.update(1.0);
+        bb.update(1.0);
         bb.reset();
         assert_eq!(bb.update(10.0), None);
     }
 
     #[test]
     #[should_panic]
-    fn bb_zero_period_panics() { BollingerBands::new(0, 2.0); }
+    fn bb_zero_period_panics() {
+        BollingerBands::new(0, 2.0);
+    }
 
     #[test]
     fn keltner_basic() {
@@ -252,12 +302,16 @@ mod tests {
     #[test]
     fn keltner_reset() {
         let mut kc = KeltnerChannel::new(3, 1.5);
-        for _ in 0..5 { kc.update(1.0, 1.0, 1.0); }
+        for _ in 0..5 {
+            kc.update(1.0, 1.0, 1.0);
+        }
         kc.reset();
         assert_eq!(kc.update(1.0, 1.0, 1.0), None);
     }
 
     #[test]
     #[should_panic]
-    fn keltner_zero_period_panics() { KeltnerChannel::new(0, 1.5); }
+    fn keltner_zero_period_panics() {
+        KeltnerChannel::new(0, 1.5);
+    }
 }

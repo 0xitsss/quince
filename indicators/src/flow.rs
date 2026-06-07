@@ -12,7 +12,13 @@ pub struct Mfi {
 impl Mfi {
     pub fn new(period: usize) -> Self {
         assert!(period > 0, "MFI period must be > 0");
-        Self { period, typical_prev: None, pos_flow: RingVec::new(period), neg_flow: RingVec::new(period), count: 0 }
+        Self {
+            period,
+            typical_prev: None,
+            pos_flow: RingVec::new(period),
+            neg_flow: RingVec::new(period),
+            count: 0,
+        }
     }
 
     pub fn update(&mut self, candle: &Candle) -> Option<f64> {
@@ -21,21 +27,39 @@ impl Mfi {
 
         if let Some(prev_tp) = self.typical_prev {
             if self.count < self.period {
-                if tp > prev_tp { self.pos_flow.push(money_flow); self.neg_flow.push(0.0); }
-                else if tp < prev_tp { self.pos_flow.push(0.0); self.neg_flow.push(money_flow); }
-                else { self.pos_flow.push(0.0); self.neg_flow.push(0.0); }
+                if tp > prev_tp {
+                    self.pos_flow.push(money_flow);
+                    self.neg_flow.push(0.0);
+                } else if tp < prev_tp {
+                    self.pos_flow.push(0.0);
+                    self.neg_flow.push(money_flow);
+                } else {
+                    self.pos_flow.push(0.0);
+                    self.neg_flow.push(0.0);
+                }
                 self.count += 1;
             } else {
-                if tp > prev_tp { self.pos_flow.push(money_flow); self.neg_flow.push(0.0); }
-                else if tp < prev_tp { self.pos_flow.push(0.0); self.neg_flow.push(money_flow); }
-                else { self.pos_flow.push(0.0); self.neg_flow.push(0.0); }
+                if tp > prev_tp {
+                    self.pos_flow.push(money_flow);
+                    self.neg_flow.push(0.0);
+                } else if tp < prev_tp {
+                    self.pos_flow.push(0.0);
+                    self.neg_flow.push(money_flow);
+                } else {
+                    self.pos_flow.push(0.0);
+                    self.neg_flow.push(0.0);
+                }
             }
 
             if self.count >= self.period {
                 let pos_sum: f64 = self.pos_flow.iter().sum();
                 let neg_sum: f64 = self.neg_flow.iter().sum();
-                if pos_sum == 0.0 && neg_sum == 0.0 { return Some(50.0) }
-                if neg_sum == 0.0 { return Some(100.0) }
+                if pos_sum == 0.0 && neg_sum == 0.0 {
+                    return Some(50.0);
+                }
+                if neg_sum == 0.0 {
+                    return Some(100.0);
+                }
                 let mfr = pos_sum / neg_sum;
                 Some(100.0 - 100.0 / (1.0 + mfr))
             } else {
@@ -47,7 +71,12 @@ impl Mfi {
         }
     }
 
-    pub fn reset(&mut self) { self.typical_prev = None; self.pos_flow.clear(); self.neg_flow.clear(); self.count = 0; }
+    pub fn reset(&mut self) {
+        self.typical_prev = None;
+        self.pos_flow.clear();
+        self.neg_flow.clear();
+        self.count = 0;
+    }
 }
 
 pub struct VolumeDelta;
@@ -63,7 +92,9 @@ pub struct Cvd {
 }
 
 impl Cvd {
-    pub fn new() -> Self { Self { cumulative: 0.0 } }
+    pub fn new() -> Self {
+        Self { cumulative: 0.0 }
+    }
 
     pub fn update(&mut self, _trade_price: f64, trade_qty: f64, is_buyer_aggressive: bool) -> f64 {
         if is_buyer_aggressive {
@@ -74,8 +105,12 @@ impl Cvd {
         self.cumulative
     }
 
-    pub fn reset(&mut self) { self.cumulative = 0.0; }
-    pub fn value(&self) -> f64 { self.cumulative }
+    pub fn reset(&mut self) {
+        self.cumulative = 0.0;
+    }
+    pub fn value(&self) -> f64 {
+        self.cumulative
+    }
 }
 
 pub struct Obv {
@@ -84,19 +119,32 @@ pub struct Obv {
 }
 
 impl Obv {
-    pub fn new() -> Self { Self { obv: 0.0, prev_close: None } }
+    pub fn new() -> Self {
+        Self {
+            obv: 0.0,
+            prev_close: None,
+        }
+    }
 
     pub fn update(&mut self, close: f64, volume: f64) -> f64 {
         if let Some(prev) = self.prev_close {
-            if close > prev { self.obv += volume; }
-            else if close < prev { self.obv -= volume; }
+            if close > prev {
+                self.obv += volume;
+            } else if close < prev {
+                self.obv -= volume;
+            }
         }
         self.prev_close = Some(close);
         self.obv
     }
 
-    pub fn reset(&mut self) { self.obv = 0.0; self.prev_close = None; }
-    pub fn value(&self) -> f64 { self.obv }
+    pub fn reset(&mut self) {
+        self.obv = 0.0;
+        self.prev_close = None;
+    }
+    pub fn value(&self) -> f64 {
+        self.obv
+    }
 }
 
 pub struct AccDist {
@@ -104,20 +152,28 @@ pub struct AccDist {
 }
 
 impl AccDist {
-    pub fn new() -> Self { Self { ad: 0.0 } }
+    pub fn new() -> Self {
+        Self { ad: 0.0 }
+    }
 
     pub fn update(&mut self, candle: &Candle) -> f64 {
         let clv = if candle.high == candle.low {
             0.0
         } else {
-            ((candle.close - candle.low) - (candle.high - candle.close)) / (candle.high - candle.low) * candle.volume
+            ((candle.close - candle.low) - (candle.high - candle.close))
+                / (candle.high - candle.low)
+                * candle.volume
         };
         self.ad += clv;
         self.ad
     }
 
-    pub fn reset(&mut self) { self.ad = 0.0; }
-    pub fn value(&self) -> f64 { self.ad }
+    pub fn reset(&mut self) {
+        self.ad = 0.0;
+    }
+    pub fn value(&self) -> f64 {
+        self.ad
+    }
 }
 
 pub struct Pmdi {
@@ -126,7 +182,12 @@ pub struct Pmdi {
 }
 
 impl Pmdi {
-    pub fn new() -> Self { Self { value: 0.0, prev_data: None } }
+    pub fn new() -> Self {
+        Self {
+            value: 0.0,
+            prev_data: None,
+        }
+    }
 
     pub fn update(&mut self, data: f64, close: f64) -> f64 {
         if let Some(prev_data) = self.prev_data {
@@ -141,8 +202,13 @@ impl Pmdi {
         self.value
     }
 
-    pub fn reset(&mut self) { self.value = 0.0; self.prev_data = None; }
-    pub fn value(&self) -> f64 { self.value }
+    pub fn reset(&mut self) {
+        self.value = 0.0;
+        self.prev_data = None;
+    }
+    pub fn value(&self) -> f64 {
+        self.value
+    }
 }
 
 pub struct Nmdi {
@@ -151,7 +217,12 @@ pub struct Nmdi {
 }
 
 impl Nmdi {
-    pub fn new() -> Self { Self { value: 0.0, prev_data: None } }
+    pub fn new() -> Self {
+        Self {
+            value: 0.0,
+            prev_data: None,
+        }
+    }
 
     pub fn update(&mut self, data: f64, close: f64) -> f64 {
         if let Some(prev_data) = self.prev_data {
@@ -166,15 +237,22 @@ impl Nmdi {
         self.value
     }
 
-    pub fn reset(&mut self) { self.value = 0.0; self.prev_data = None; }
-    pub fn value(&self) -> f64 { self.value }
+    pub fn reset(&mut self) {
+        self.value = 0.0;
+        self.prev_data = None;
+    }
+    pub fn value(&self) -> f64 {
+        self.value
+    }
 }
 
 pub struct AverageTradeSize;
 
 impl AverageTradeSize {
     pub fn update(volume: f64, trade_count: f64) -> f64 {
-        if trade_count == 0.0 { return 0.0 }
+        if trade_count == 0.0 {
+            return 0.0;
+        }
         volume / trade_count
     }
 }
@@ -187,9 +265,17 @@ mod tests {
     fn mfi_basic() {
         let mut mfi = Mfi::new(3);
         assert_eq!(mfi.update(&Candle::new(10.0, 11.0, 9.0, 10.0, 100.0)), None);
-        assert_eq!(mfi.update(&Candle::new(11.0, 12.0, 10.0, 11.0, 200.0)), None);
-        assert_eq!(mfi.update(&Candle::new(12.0, 13.0, 11.0, 12.0, 300.0)), None);
-        assert!(mfi.update(&Candle::new(13.0, 14.0, 12.0, 13.0, 400.0)).is_some());
+        assert_eq!(
+            mfi.update(&Candle::new(11.0, 12.0, 10.0, 11.0, 200.0)),
+            None
+        );
+        assert_eq!(
+            mfi.update(&Candle::new(12.0, 13.0, 11.0, 12.0, 300.0)),
+            None
+        );
+        assert!(mfi
+            .update(&Candle::new(13.0, 14.0, 12.0, 13.0, 400.0))
+            .is_some());
     }
 
     #[test]
@@ -215,14 +301,21 @@ mod tests {
     #[test]
     fn mfi_reset() {
         let mut mfi = Mfi::new(3);
-        for _ in 0..5 { mfi.update(&Candle::new(1.0, 1.0, 1.0, 1.0, 1.0)); }
+        for _ in 0..5 {
+            mfi.update(&Candle::new(1.0, 1.0, 1.0, 1.0, 1.0));
+        }
         mfi.reset();
-        assert_eq!(mfi.update(&Candle::new(10.0, 10.0, 10.0, 10.0, 100.0)), None);
+        assert_eq!(
+            mfi.update(&Candle::new(10.0, 10.0, 10.0, 10.0, 100.0)),
+            None
+        );
     }
 
     #[test]
     #[should_panic]
-    fn mfi_zero_period_panics() { Mfi::new(0); }
+    fn mfi_zero_period_panics() {
+        Mfi::new(0);
+    }
 
     #[test]
     fn volume_delta_basic() {
@@ -315,7 +408,8 @@ mod tests {
     #[test]
     fn pmdi_reset() {
         let mut pmdi = Pmdi::new();
-        pmdi.update(100.0, 10.0); pmdi.update(110.0, 12.0);
+        pmdi.update(100.0, 10.0);
+        pmdi.update(110.0, 12.0);
         pmdi.reset();
         assert!((pmdi.update(100.0, 10.0) - 10.0).abs() < 1e-10);
     }
@@ -345,7 +439,8 @@ mod tests {
     #[test]
     fn nmdi_reset() {
         let mut nmdi = Nmdi::new();
-        nmdi.update(100.0, 10.0); nmdi.update(90.0, 9.0);
+        nmdi.update(100.0, 10.0);
+        nmdi.update(90.0, 9.0);
         nmdi.reset();
         assert!((nmdi.update(100.0, 10.0) - 10.0).abs() < 1e-10);
     }

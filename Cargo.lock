@@ -1021,7 +1021,7 @@ dependencies = [
 
 [[package]]
 name = "quince"
-version = "0.6.1"
+version = "0.6.2"
 dependencies = [
  "async-trait",
  "chrono",
@@ -1042,14 +1042,14 @@ dependencies = [
 
 [[package]]
 name = "quince-core"
-version = "0.6.1"
+version = "0.6.2"
 dependencies = [
  "chrono",
 ]
 
 [[package]]
 name = "quince-engine"
-version = "0.6.1"
+version = "0.6.2"
 dependencies = [
  "async-trait",
  "chrono",
@@ -1071,7 +1071,7 @@ dependencies = [
 
 [[package]]
 name = "quince-exchange"
-version = "0.6.1"
+version = "0.6.2"
 dependencies = [
  "async-trait",
  "chrono",
@@ -1092,14 +1092,14 @@ dependencies = [
 
 [[package]]
 name = "quince-indicators"
-version = "0.6.1"
+version = "0.6.2"
 dependencies = [
  "quince-core",
 ]
 
 [[package]]
 name = "quince-logger"
-version = "0.6.1"
+version = "0.6.2"
 dependencies = [
  "chrono",
  "quince-core",
@@ -1111,7 +1111,7 @@ dependencies = [
 
 [[package]]
 name = "quince-qfl"
-version = "0.6.1"
+version = "0.6.2"
 dependencies = [
  "chrono",
  "crossbeam-channel",
@@ -1123,7 +1123,7 @@ dependencies = [
 
 [[package]]
 name = "quince-risk"
-version = "0.6.1"
+version = "0.6.2"
 dependencies = [
  "quince-core",
  "tracing",

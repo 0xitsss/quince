@@ -2,11 +2,11 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
+use async_trait::async_trait;
 use crossbeam_channel;
 use quince_core::types::*;
 use quince_engine::Engine;
-use async_trait::async_trait;
-use quince_exchange::r#trait::{Exchange, Result, Stream, StreamMsg, OrderStatus};
+use quince_exchange::r#trait::{Exchange, OrderStatus, Result, Stream, StreamMsg};
 use quince_risk::{RiskConfig, RiskControls};
 
 // ── Mock exchange for integration tests ──
@@ -46,7 +46,11 @@ impl Exchange for MockExchange {
                 let price = 100.0 + 10.0 * phase.sin();
                 state.lock().unwrap().last_price = price;
                 let qty = 0.1 + 0.05 * (phase * 3.0).sin();
-                let side = if (phase * 2.0).sin() > 0.0 { Side::Buy } else { Side::Sell };
+                let side = if (phase * 2.0).sin() > 0.0 {
+                    Side::Buy
+                } else {
+                    Side::Sell
+                };
                 let ts = SystemTime::now()
                     .duration_since(UNIX_EPOCH)
                     .unwrap()
@@ -64,10 +68,16 @@ impl Exchange for MockExchange {
                 if tick % 5 == 0 {
                     let spread = price * 0.001;
                     let bids: Vec<DepthLevel> = (0..5)
-                        .map(|i| DepthLevel { price: price - spread * (i + 1) as f64, qty: 1.0 })
+                        .map(|i| DepthLevel {
+                            price: price - spread * (i + 1) as f64,
+                            qty: 1.0,
+                        })
                         .collect();
                     let asks: Vec<DepthLevel> = (0..5)
-                        .map(|i| DepthLevel { price: price + spread * (i + 1) as f64, qty: 1.0 })
+                        .map(|i| DepthLevel {
+                            price: price + spread * (i + 1) as f64,
+                            qty: 1.0,
+                        })
                         .collect();
                     let _ = tx.try_send(StreamMsg::Depth(Depth { bids, asks }));
                 }
@@ -119,8 +129,16 @@ impl Exchange for MockExchange {
     async fn account_info(&self) -> Result<AccountInfo> {
         Ok(AccountInfo {
             balances: vec![
-                Balance { asset: "USDT".into(), wallet: 10000.0, cross_wallet: 10000.0 },
-                Balance { asset: "BTC".into(), wallet: 0.1, cross_wallet: 0.1 },
+                Balance {
+                    asset: "USDT".into(),
+                    wallet: 10000.0,
+                    cross_wallet: 10000.0,
+                },
+                Balance {
+                    asset: "BTC".into(),
+                    wallet: 0.1,
+                    cross_wallet: 0.1,
+                },
             ],
             positions: vec![],
         })
@@ -152,10 +170,18 @@ fn risk_config() -> RiskControls {
 async fn run_engine_for_ticks(strategy_path: &str) {
     let exchange = MockExchange::new();
     let risk = risk_config();
-    let mut engine = Engine::new(exchange, &["BTCUSDT".into()], strategy_path, risk, "test_trades.log")
-        .expect("engine should start");
+    let mut engine = Engine::new(
+        exchange,
+        &["BTCUSDT".into()],
+        strategy_path,
+        risk,
+        "test_trades.log",
+    )
+    .expect("engine should start");
     // Run for ~50ms to process some ticks
-    tokio::time::timeout(Duration::from_millis(200), engine.run()).await.ok();
+    tokio::time::timeout(Duration::from_millis(200), engine.run())
+        .await
+        .ok();
 }
 
 // ── Integration tests ──
@@ -171,34 +197,51 @@ macro_rules! integration_test {
     };
 }
 
-integration_test!(intg_basic_eval, "
+integration_test!(
+    intg_basic_eval,
+    "
 function on_eval()
 end
-");
+"
+);
 
-integration_test!(intg_only_trade, "
+integration_test!(
+    intg_only_trade,
+    "
 function on_trade(trade)
 end
-");
+"
+);
 
-integration_test!(intg_only_depth, "
+integration_test!(
+    intg_only_depth,
+    "
 function on_depth()
 end
-");
+"
+);
 
-integration_test!(intg_only_fill, "
+integration_test!(
+    intg_only_fill,
+    "
 function on_fill(fill)
 end
-");
+"
+);
 
-integration_test!(intg_all_entries, "
+integration_test!(
+    intg_all_entries,
+    "
 function on_trade(trade) end
 function on_depth() end
 function on_fill(fill) end
 function on_eval() end
-");
+"
+);
 
-integration_test!(intg_trade_fields, "
+integration_test!(
+    intg_trade_fields,
+    "
 function on_trade(trade)
     local p = trade.price
     local q = trade.qty
@@ -206,27 +249,36 @@ function on_trade(trade)
     local id = trade.trade_id
     local t = trade.time
 end
-");
+"
+);
 
-integration_test!(intg_get_price, "
+integration_test!(
+    intg_get_price,
+    "
 function on_trade(trade)
     local px = quince.price()
 end
 function on_eval()
     local px = quince.price()
 end
-");
+"
+);
 
-integration_test!(intg_get_position, "
+integration_test!(
+    intg_get_position,
+    "
 function on_trade(trade)
     local pos = quince.position()
 end
 function on_eval()
     local pos = quince.position()
 end
-");
+"
+);
 
-integration_test!(intg_get_indicator, "
+integration_test!(
+    intg_get_indicator,
+    "
 --USING ema 5
 function on_trade(trade)
     local ema = quince.get(\"ema\")
@@ -234,27 +286,39 @@ end
 function on_eval()
     local ema = quince.get(\"ema\")
 end
-");
+"
+);
 
-integration_test!(intg_get_balance, "
+integration_test!(
+    intg_get_balance,
+    "
 function on_eval()
     local bal = quince.balance(\"USDT\")
 end
-");
+"
+);
 
-integration_test!(intg_order_buy, "
+integration_test!(
+    intg_order_buy,
+    "
 function on_trade(trade)
     quince.order(0, 0.1, 0)
 end
-");
+"
+);
 
-integration_test!(intg_order_sell, "
+integration_test!(
+    intg_order_sell,
+    "
 function on_trade(trade)
     quince.order(1, 0.1, 0)
 end
-");
+"
+);
 
-integration_test!(intg_persist_counter, "
+integration_test!(
+    intg_persist_counter,
+    "
 @persist local count = 0
 function on_trade(trade)
     count = count + 1
@@ -262,9 +326,12 @@ end
 function on_eval()
     count = count + 1
 end
-");
+"
+);
 
-integration_test!(intg_if_else, "
+integration_test!(
+    intg_if_else,
+    "
 function on_trade(trade)
     local p = trade.price
     if p > 100 then
@@ -273,45 +340,60 @@ function on_trade(trade)
         quince.order(1, 0.1, 0)
     end
 end
-");
+"
+);
 
-integration_test!(intg_while_loop, "
+integration_test!(
+    intg_while_loop,
+    "
 function on_trade(trade)
     local i = 0
     while i < 3 do
         i = i + 1
     end
 end
-");
+"
+);
 
-integration_test!(intg_repeat_loop, "
+integration_test!(
+    intg_repeat_loop,
+    "
 function on_trade(trade)
     local i = 0
     repeat
         i = i + 1
     until i >= 3
 end
-");
+"
+);
 
-integration_test!(intg_for_loop, "
+integration_test!(
+    intg_for_loop,
+    "
 function on_trade(trade)
     local total = 0
     for i = 1, 5 do
         total = total + i
     end
 end
-");
+"
+);
 
-integration_test!(intg_log_call, "
+integration_test!(
+    intg_log_call,
+    "
 function on_trade(trade)
     quince.log(\"test log\")
 end
 function on_eval()
     quince.log(\"eval log\")
 end
-");
+"
+);
 
-integration_test!(intg_multi_persist, "
+integration_test!(
+    intg_multi_persist,
+    "
 @persist local a = 0
 @persist local b = 0
 function on_trade(trade)
@@ -321,21 +403,30 @@ end
 function on_eval()
     a = a + 1
 end
-");
+"
+);
 
-integration_test!(intg_fill_handler, "
+integration_test!(
+    intg_fill_handler,
+    "
 function on_fill(fill)
     local p = fill.price
     local q = fill.qty
 end
-");
+"
+);
 
-integration_test!(intg_depth_handler, "
+integration_test!(
+    intg_depth_handler,
+    "
 function on_depth()
 end
-");
+"
+);
 
-integration_test!(intg_quince_method_syntax, "
+integration_test!(
+    intg_quince_method_syntax,
+    "
 function on_trade(trade)
     local p = quince:price()
     local pos = quince:position()
@@ -343,11 +434,14 @@ function on_trade(trade)
     local bal = quince:balance(\"USDT\")
     quince:log(\"method call\")
 end
-");
+"
+);
 
 // ── Full strategies as integration tests ──
 
-integration_test!(intg_ema_cross, "
+integration_test!(
+    intg_ema_cross,
+    "
 --USING ema 9 50
 @persist local pos = 0
 function on_trade(trade)
@@ -357,9 +451,12 @@ function on_trade(trade)
     if fast < slow and pos > 0 then quince.order(1, 1.0, 0) pos = 0 end
 end
 function on_eval() quince.log(\"eval\") end
-");
+"
+);
 
-integration_test!(intg_scalper, "
+integration_test!(
+    intg_scalper,
+    "
 --USING bb 20 2.0
 @persist local pos = 0
 function on_trade(trade)
@@ -372,9 +469,12 @@ function on_trade(trade)
     if price > upper and ema < mid and pos > 0 then quince.order(1, 1.0, 0) pos = 0 end
 end
 function on_eval() end
-");
+"
+);
 
-integration_test!(intg_rsi_reversion, "
+integration_test!(
+    intg_rsi_reversion,
+    "
 @persist local pos = 0
 function on_trade(trade)
     local rsi = quince.get(\"rsi\")
@@ -382,9 +482,12 @@ function on_trade(trade)
     if rsi > 70 and pos > 0 then quince.order(1, 1.0, 0) pos = 0 end
 end
 function on_eval() quince.log(\"eval\") end
-");
+"
+);
 
-integration_test!(intg_macd_cross, "
+integration_test!(
+    intg_macd_cross,
+    "
 @persist local pos = 0
 function on_trade(trade)
     local macd = quince.get(\"macd.macd\")
@@ -393,9 +496,12 @@ function on_trade(trade)
     if macd < signal and pos > 0 then quince.order(1, 1.0, 0) pos = 0 end
 end
 function on_eval() end
-");
+"
+);
 
-integration_test!(intg_momentum, "
+integration_test!(
+    intg_momentum,
+    "
 @persist local pos = 0
 function on_trade(trade)
     local roc = quince.get(\"roc\")
@@ -403,9 +509,12 @@ function on_trade(trade)
     if roc < -2 and pos > 0 then quince.order(1, 1.0, 0) pos = 0 end
 end
 function on_eval() end
-");
+"
+);
 
-integration_test!(intg_data_passing, "
+integration_test!(
+    intg_data_passing,
+    "
 @using sma:10:50
 @using ema:20:50
 
@@ -473,7 +582,8 @@ on fill(f) {
     quince.log2(\"qty\", f.qty)
     quince.log2(\"price\", f.price)
 }
-");
+"
+);
 
 // ── Risk / edge integration tests ──
 
@@ -493,9 +603,17 @@ end
         max_daily_loss: 10000.0,
         cooldown_after_loss_secs: 0,
     });
-    let mut engine = Engine::new(exchange, &["BTCUSDT".into()], &path, risk, "test_trades.log")
-        .expect("engine should start");
-    tokio::time::timeout(Duration::from_millis(100), engine.run()).await.ok();
+    let mut engine = Engine::new(
+        exchange,
+        &["BTCUSDT".into()],
+        &path,
+        risk,
+        "test_trades.log",
+    )
+    .expect("engine should start");
+    tokio::time::timeout(Duration::from_millis(100), engine.run())
+        .await
+        .ok();
     let _ = std::fs::remove_file(&path);
 }
 
@@ -505,7 +623,13 @@ async fn intg_empty_strategy() {
     let path = write_strategy("intg_empty", src);
     let exchange = MockExchange::new();
     let risk = risk_config();
-    let result = Engine::new(exchange, &["BTCUSDT".into()], &path, risk, "test_trades.log");
+    let result = Engine::new(
+        exchange,
+        &["BTCUSDT".into()],
+        &path,
+        risk,
+        "test_trades.log",
+    );
     assert!(result.is_err(), "empty strategy should not load");
     let _ = std::fs::remove_file(&path);
 }

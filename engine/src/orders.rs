@@ -71,7 +71,8 @@ impl OrderManager {
                 order_id: order_id.clone(),
             };
             po.last_update = Instant::now();
-            self.exchange_to_client.insert(order_id, client_id.to_string());
+            self.exchange_to_client
+                .insert(order_id, client_id.to_string());
         }
     }
 
@@ -89,6 +90,7 @@ impl OrderManager {
         if let Some(po) = self.orders.get_mut(client_id) {
             po.status = PendingStatus::Filled;
             po.last_update = Instant::now();
+            self.remove_client_exchange_mapping(client_id);
         }
     }
 
@@ -96,6 +98,7 @@ impl OrderManager {
         if let Some(po) = self.orders.get_mut(client_id) {
             po.status = PendingStatus::Failed(err);
             po.last_update = Instant::now();
+            self.remove_client_exchange_mapping(client_id);
         }
     }
 
@@ -103,6 +106,7 @@ impl OrderManager {
         if let Some(po) = self.orders.get_mut(client_id) {
             po.status = PendingStatus::Cancelled;
             po.last_update = Instant::now();
+            self.remove_client_exchange_mapping(client_id);
         }
     }
 
@@ -111,32 +115,56 @@ impl OrderManager {
     }
 
     pub fn has_pending(&self) -> bool {
-        self.orders.values().any(|po| matches!(
-            po.status,
-            PendingStatus::Waiting | PendingStatus::Placed { .. } | PendingStatus::PartiallyFilled { .. }
-        ))
+        self.orders.values().any(|po| {
+            matches!(
+                po.status,
+                PendingStatus::Waiting
+                    | PendingStatus::Placed { .. }
+                    | PendingStatus::PartiallyFilled { .. }
+            )
+        })
     }
 
     pub fn pending_order_ids(&self) -> Vec<String> {
         self.orders
             .iter()
             .filter_map(|(id, po)| match &po.status {
-                PendingStatus::Waiting | PendingStatus::Placed { .. } | PendingStatus::PartiallyFilled { .. } => Some(id.clone()),
+                PendingStatus::Waiting
+                | PendingStatus::Placed { .. }
+                | PendingStatus::PartiallyFilled { .. } => Some(id.clone()),
                 _ => None,
             })
             .collect()
     }
 
     pub fn cleanup_filled(&mut self) {
-        self.orders.retain(|_, po| matches!(
-            po.status,
-            PendingStatus::Waiting | PendingStatus::Placed { .. } | PendingStatus::PartiallyFilled { .. }
-        ));
+        let removed: Vec<String> = self
+            .orders
+            .iter()
+            .filter_map(|(id, po)| {
+                let keep = matches!(
+                    po.status,
+                    PendingStatus::Waiting
+                        | PendingStatus::Placed { .. }
+                        | PendingStatus::PartiallyFilled { .. }
+                );
+                if !keep { Some(id.clone()) } else { None }
+            })
+            .collect();
+        for id in &removed {
+            self.remove_client_exchange_mapping(id);
+        }
+        self.orders.retain(|id, _| !removed.contains(id));
     }
 
     /// Remove exchange->client mapping (call when order is fully done).
     pub fn remove_exchange_mapping(&mut self, exchange_id: &str) {
         self.exchange_to_client.remove(exchange_id);
+    }
+
+    /// Remove exchange mapping for a given client_id by scanning all entries.
+    fn remove_client_exchange_mapping(&mut self, client_id: &str) {
+        self.exchange_to_client.retain(|_, v| v != client_id);
     }
 
     pub fn find_client_by_exchange_id(&self, exchange_id: &str) -> Option<&str> {
@@ -175,15 +203,21 @@ impl OrderManager {
             matches!(po.status, PendingStatus::Filled)
                 && (po.order.stop_loss.is_some() || po.order.take_profit.is_some())
         });
-        if !has_any { return Vec::new(); }
+        if !has_any {
+            return Vec::new();
+        }
 
         self.orders
             .iter()
             .filter_map(|(id, po)| {
-                if !matches!(po.status, PendingStatus::Filled) { return None; }
+                if !matches!(po.status, PendingStatus::Filled) {
+                    return None;
+                }
                 let has_sl = po.order.stop_loss.is_some();
                 let has_tp = po.order.take_profit.is_some();
-                if !has_sl && !has_tp { return None; }
+                if !has_sl && !has_tp {
+                    return None;
+                }
                 let close_side = match po.order.side {
                     Side::Buy => Side::Sell,
                     Side::Sell => Side::Buy,

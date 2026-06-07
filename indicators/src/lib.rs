@@ -1,14 +1,14 @@
+pub mod flow;
 pub mod ma;
 pub mod oscillator;
-pub mod volatility;
-pub mod flow;
 pub mod structure;
+pub mod volatility;
 
+pub use flow::*;
 pub use ma::*;
 pub use oscillator::*;
-pub use volatility::*;
-pub use flow::*;
 pub use structure::*;
+pub use volatility::*;
 
 #[derive(Debug, Clone, Copy)]
 pub struct Candle {
@@ -21,7 +21,13 @@ pub struct Candle {
 
 impl Candle {
     pub fn new(open: f64, high: f64, low: f64, close: f64, volume: f64) -> Self {
-        Self { open, high, low, close, volume }
+        Self {
+            open,
+            high,
+            low,
+            close,
+            volume,
+        }
     }
 
     pub fn typical(&self) -> f64 {
@@ -29,6 +35,12 @@ impl Candle {
     }
 
     pub fn from_trade(price: f64, volume: f64) -> Self {
-        Self { open: price, high: price, low: price, close: price, volume }
+        Self {
+            open: price,
+            high: price,
+            low: price,
+            close: price,
+            volume,
+        }
     }
 }

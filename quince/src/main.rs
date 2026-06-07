@@ -7,10 +7,7 @@ use tracing_subscriber::EnvFilter;
 #[tokio::main]
 async fn main() -> Result<(), EngineError> {
     tracing_subscriber::fmt()
-        .with_env_filter(
-            EnvFilter::from_default_env()
-                .add_directive(tracing::Level::INFO.into()),
-        )
+        .with_env_filter(EnvFilter::from_default_env().add_directive(tracing::Level::INFO.into()))
         .init();
 
     #[cfg(feature = "profiling")]
@@ -25,18 +22,26 @@ async fn main() -> Result<(), EngineError> {
     let is_mock = std::env::var("QUINCE_MOCK").is_ok();
     let is_public = std::env::var("QUINCE_PUBLIC").is_ok();
     let symbol = std::env::var("QUINCE_SYMBOL").unwrap_or_else(|_| "btcusdt".into());
-    let strategy = std::env::var("QUINCE_STRATEGY")
-        .unwrap_or_else(|_| "strategies/test_all.qfl".into());
+    let strategy =
+        std::env::var("QUINCE_STRATEGY").unwrap_or_else(|_| "strategies/test_all.qfl".into());
     let log_path = std::env::var("QUINCE_LOG").unwrap_or_else(|_| "trades.log".into());
 
     let max_pos: f64 = std::env::var("QUINCE_MAX_POSITION")
-        .ok().and_then(|v| v.parse().ok()).unwrap_or(1.0);
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(1.0);
     let max_dd: f64 = std::env::var("QUINCE_MAX_DRAWDOWN")
-        .ok().and_then(|v| v.parse().ok()).unwrap_or(0.05);
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(0.05);
     let max_freq: u32 = std::env::var("QUINCE_MAX_ORDER_FREQ")
-        .ok().and_then(|v| v.parse().ok()).unwrap_or(10);
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(10);
     let max_loss: f64 = std::env::var("QUINCE_MAX_DAILY_LOSS")
-        .ok().and_then(|v| v.parse().ok()).unwrap_or(1000.0);
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(1000.0);
 
     let risk_config = RiskConfig {
         max_position_size: max_pos,
@@ -67,7 +72,9 @@ async fn main() -> Result<(), EngineError> {
         tracing::info!("quince engine starting");
         engine.run().await
     } else {
-        tracing::info!("no BINANCE_API_KEY set — falling back to PUBLIC mode (Binance WS, no keys)");
+        tracing::info!(
+            "no BINANCE_API_KEY set — falling back to PUBLIC mode (Binance WS, no keys)"
+        );
         let exchange = mock::MockExchange::new_public();
         let mut engine = Engine::new(exchange, &[symbol], &strategy, risk, &log_path)?;
         engine.run().await

@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 use chrono::{DateTime, Utc};
 
 #[derive(Debug, Clone, Copy)]
@@ -38,7 +40,7 @@ pub struct Depth {
 
 #[derive(Debug, Clone)]
 pub struct Order {
-    pub symbol: String,
+    pub symbol: Arc<str>,
     pub side: Side,
     pub qty: f64,
     pub price: Option<f64>,
@@ -162,7 +164,10 @@ mod tests {
 
     #[test]
     fn depth_level_default() {
-        let dl = DepthLevel { price: 100.0, qty: 1.5 };
+        let dl = DepthLevel {
+            price: 100.0,
+            qty: 1.5,
+        };
         assert_eq!(dl.price, 100.0);
         assert_eq!(dl.qty, 1.5);
     }
@@ -179,7 +184,7 @@ mod tests {
             stop_loss: None,
             take_profit: None,
         };
-        assert_eq!(o.symbol, "btcusdt");
+        assert_eq!(o.symbol.as_ref(), "btcusdt");
         assert_eq!(o.order_type, OrderType::Market);
     }
 

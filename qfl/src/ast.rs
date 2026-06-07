@@ -1,17 +1,22 @@
 use std::fmt;
 
+/// Binary operators supported in QFL expressions.
+///
+/// Includes arithmetic (`+`, `-`, `*`, `/`, `//`, `%`, `^`),
+/// comparison (`==`, `~=`, `<`, `>`, `<=`, `>=`),
+/// concatenation (`..`), and logical (`and`, `or`).
 #[derive(Debug, Clone, PartialEq)]
 pub enum BinOp {
     Add,
     Sub,
     Mul,
     Div,
-    IDiv,  // //
+    IDiv, // //
     Mod,
-    Pow,   // ^
+    Pow,    // ^
     Concat, // ..
-    Eq,    // ==
-    Ne,    // ~=
+    Eq,     // ==
+    Ne,     // ~=
     Lt,
     Gt,
     Le,
@@ -43,6 +48,7 @@ impl fmt::Display for BinOp {
     }
 }
 
+/// Unary operators: negation (`-`), logical not (`not`), length (`#`).
 #[derive(Debug, Clone, PartialEq)]
 pub enum UnaryOp {
     Neg, // -
@@ -60,6 +66,7 @@ impl fmt::Display for UnaryOp {
     }
 }
 
+/// Literal values in QFL: nil, booleans, integers, floats, and strings.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Literal {
     Nil,
@@ -81,6 +88,10 @@ impl fmt::Display for Literal {
     }
 }
 
+/// QFL expression node.
+///
+/// Covers literals, identifiers, function/method calls, field/index access,
+/// unary and binary operations, and table constructors.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Expr {
     Literal(Literal),
@@ -129,7 +140,11 @@ impl fmt::Display for Expr {
                 }
                 write!(f, ")")
             }
-            Expr::MethodCall { obj, method, args: _ } => {
+            Expr::MethodCall {
+                obj,
+                method,
+                args: _,
+            } => {
                 write!(f, "{}:{}(...)", obj, method)
             }
             Expr::FieldAccess { obj, field } => {
@@ -158,6 +173,7 @@ impl fmt::Display for Expr {
     }
 }
 
+/// A field in a table constructor: either `[key] = value` or a plain value.
 #[derive(Debug, Clone, PartialEq)]
 pub enum TableField {
     KeyValue { key: Expr, value: Expr },
@@ -173,6 +189,11 @@ impl fmt::Display for TableField {
     }
 }
 
+/// QFL statement node.
+///
+/// Includes variable declarations, assignments, control flow
+/// (if/while/repeat/for), function definitions, event handlers,
+/// and declarative pipeline statements (using, window, feature, signal, state).
 #[derive(Debug, Clone, PartialEq)]
 pub enum Stmt {
     VarDecl {
@@ -261,12 +282,14 @@ pub enum Stmt {
     },
 }
 
+/// A typed function parameter: `name: type`.
 #[derive(Debug, Clone, PartialEq)]
 pub struct FnParam {
     pub name: String,
     pub type_name: String,
 }
 
+/// An entry in the `@using` directive specifying an indicator and its parameters.
 #[derive(Debug, Clone, PartialEq)]
 pub struct UsingEntry {
     pub name: String,
@@ -276,7 +299,12 @@ pub struct UsingEntry {
 impl fmt::Display for Stmt {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Stmt::VarDecl { names, init, is_local, persist } => {
+            Stmt::VarDecl {
+                names,
+                init,
+                is_local,
+                persist,
+            } => {
                 if *persist {
                     write!(f, "@persist ")?;
                 }
@@ -303,7 +331,9 @@ impl fmt::Display for Stmt {
             Stmt::If { cond, .. } => write!(f, "if {} then ... end", cond),
             Stmt::While { cond, .. } => write!(f, "while {} do ... end", cond),
             Stmt::Repeat { until, .. } => write!(f, "repeat ... until {}", until),
-            Stmt::ForNum { var, from, to: _, .. } => write!(f, "for {} = {} to ... end", var, from),
+            Stmt::ForNum {
+                var, from, to: _, ..
+            } => write!(f, "for {} = {} to ... end", var, from),
             Stmt::ForIn { vars, .. } => write!(f, "for {} in ... end", vars.join(", ")),
             Stmt::FunctionDecl { name, params, .. } => {
                 write!(f, "function {}({}) ... end", name, params.join(", "))
@@ -335,7 +365,17 @@ impl fmt::Display for Stmt {
             Stmt::Using { indicators } => {
                 write!(f, "@using")?;
                 for entry in indicators {
-                    write!(f, " {}:{}", entry.name, entry.params.iter().map(|p| p.to_string()).collect::<Vec<_>>().join(":"))?;
+                    write!(
+                        f,
+                        " {}:{}",
+                        entry.name,
+                        entry
+                            .params
+                            .iter()
+                            .map(|p| p.to_string())
+                            .collect::<Vec<_>>()
+                            .join(":")
+                    )?;
                 }
                 Ok(())
             }
@@ -348,7 +388,11 @@ impl fmt::Display for Stmt {
             Stmt::Signal { name, expr } => {
                 write!(f, "signal {} = {}", name, expr)
             }
-            Stmt::State { name, type_name, default } => {
+            Stmt::State {
+                name,
+                type_name,
+                default,
+            } => {
                 write!(f, "state {} : {}", name, type_name)?;
                 if let Some(expr) = default {
                     write!(f, " = {}", expr)?;
@@ -362,10 +406,17 @@ impl fmt::Display for Stmt {
                 }
                 write!(f, ") {{ ... }} ({} stmts)", body.len())
             }
-            Stmt::FnDecl { name, params, return_type, body } => {
+            Stmt::FnDecl {
+                name,
+                params,
+                return_type,
+                body,
+            } => {
                 write!(f, "fn {}(", name)?;
                 for (i, p) in params.iter().enumerate() {
-                    if i > 0 { write!(f, ", ")?; }
+                    if i > 0 {
+                        write!(f, ", ")?;
+                    }
                     write!(f, "{}: {}", p.name, p.type_name)?;
                 }
                 write!(f, ") -> {} {{ ... }} ({} stmts)", return_type, body.len())
@@ -382,51 +433,92 @@ mod tests {
     use super::*;
 
     #[test]
-    fn display_binop_add() { assert_eq!(BinOp::Add.to_string(), "+"); }
+    fn display_binop_add() {
+        assert_eq!(BinOp::Add.to_string(), "+");
+    }
     #[test]
-    fn display_binop_sub() { assert_eq!(BinOp::Sub.to_string(), "-"); }
+    fn display_binop_sub() {
+        assert_eq!(BinOp::Sub.to_string(), "-");
+    }
     #[test]
-    fn display_binop_mul() { assert_eq!(BinOp::Mul.to_string(), "*"); }
+    fn display_binop_mul() {
+        assert_eq!(BinOp::Mul.to_string(), "*");
+    }
     #[test]
-    fn display_binop_div() { assert_eq!(BinOp::Div.to_string(), "/"); }
+    fn display_binop_div() {
+        assert_eq!(BinOp::Div.to_string(), "/");
+    }
     #[test]
-    fn display_binop_idiv() { assert_eq!(BinOp::IDiv.to_string(), "//"); }
+    fn display_binop_idiv() {
+        assert_eq!(BinOp::IDiv.to_string(), "//");
+    }
     #[test]
-    fn display_binop_mod() { assert_eq!(BinOp::Mod.to_string(), "%%"); }
+    fn display_binop_mod() {
+        assert_eq!(BinOp::Mod.to_string(), "%%");
+    }
     #[test]
-    fn display_binop_pow() { assert_eq!(BinOp::Pow.to_string(), "^"); }
+    fn display_binop_pow() {
+        assert_eq!(BinOp::Pow.to_string(), "^");
+    }
     #[test]
-    fn display_binop_concat() { assert_eq!(BinOp::Concat.to_string(), ".."); }
+    fn display_binop_concat() {
+        assert_eq!(BinOp::Concat.to_string(), "..");
+    }
     #[test]
-    fn display_binop_eq() { assert_eq!(BinOp::Eq.to_string(), "=="); }
+    fn display_binop_eq() {
+        assert_eq!(BinOp::Eq.to_string(), "==");
+    }
     #[test]
-    fn display_binop_ne() { assert_eq!(BinOp::Ne.to_string(), "~="); }
+    fn display_binop_ne() {
+        assert_eq!(BinOp::Ne.to_string(), "~=");
+    }
     #[test]
-    fn display_binop_lt() { assert_eq!(BinOp::Lt.to_string(), "<"); }
+    fn display_binop_lt() {
+        assert_eq!(BinOp::Lt.to_string(), "<");
+    }
     #[test]
-    fn display_unary_neg() { assert_eq!(UnaryOp::Neg.to_string(), "-"); }
+    fn display_unary_neg() {
+        assert_eq!(UnaryOp::Neg.to_string(), "-");
+    }
     #[test]
-    fn display_unary_not() { assert_eq!(UnaryOp::Not.to_string(), "not"); }
+    fn display_unary_not() {
+        assert_eq!(UnaryOp::Not.to_string(), "not");
+    }
     #[test]
-    fn display_unary_len() { assert_eq!(UnaryOp::Len.to_string(), "#"); }
+    fn display_unary_len() {
+        assert_eq!(UnaryOp::Len.to_string(), "#");
+    }
     #[test]
-    fn display_literal_i64() { assert_eq!(Literal::I64(42).to_string(), "42"); }
+    fn display_literal_i64() {
+        assert_eq!(Literal::I64(42).to_string(), "42");
+    }
     #[test]
-    fn display_literal_f64() { assert_eq!(Literal::F64(3.14).to_string(), "3.14"); }
+    fn display_literal_f64() {
+        assert_eq!(Literal::F64(3.14).to_string(), "3.14");
+    }
     #[test]
     fn display_literal_bool() {
         assert_eq!(Literal::Bool(true).to_string(), "true");
         assert_eq!(Literal::Bool(false).to_string(), "false");
     }
     #[test]
-    fn display_literal_string() { assert_eq!(Literal::String("hello".into()).to_string(), "\"hello\""); }
+    fn display_literal_string() {
+        assert_eq!(Literal::String("hello".into()).to_string(), "\"hello\"");
+    }
     #[test]
-    fn display_literal_nil() { assert_eq!(Literal::Nil.to_string(), "nil"); }
+    fn display_literal_nil() {
+        assert_eq!(Literal::Nil.to_string(), "nil");
+    }
     #[test]
-    fn display_expr_ident() { assert_eq!(Expr::Ident("x".into()).to_string(), "x"); }
+    fn display_expr_ident() {
+        assert_eq!(Expr::Ident("x".into()).to_string(), "x");
+    }
     #[test]
     fn display_expr_fcall() {
-        let e = Expr::FnCall { name: "foo".into(), args: vec![Expr::Literal(Literal::I64(1))] };
+        let e = Expr::FnCall {
+            name: "foo".into(),
+            args: vec![Expr::Literal(Literal::I64(1))],
+        };
         assert_eq!(e.to_string(), "foo(1)");
     }
     #[test]

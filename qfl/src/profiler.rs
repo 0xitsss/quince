@@ -2,7 +2,6 @@
 ///
 /// Tracks opcode execution counts and per-handler timing.
 /// Zero-allocation in the hot path when disabled (None).
-
 use crate::opcodes::Opcode;
 use std::time::Instant;
 
@@ -61,7 +60,8 @@ impl Profiler {
 
     /// End timing the current handler and record the sample.
     pub fn end_handler(&mut self) {
-        if let (Some(name), Some(start)) = (self.current_handler.take(), self.handler_start.take()) {
+        if let (Some(name), Some(start)) = (self.current_handler.take(), self.handler_start.take())
+        {
             let elapsed = start.elapsed();
             let instr_count = self.total_instructions - self.handler_start_instr;
             self.handler_samples.push(HandlerSample {
@@ -74,7 +74,8 @@ impl Profiler {
 
     /// Get per-opcode execution counts (sorted descending by count).
     pub fn opcode_profile(&self) -> Vec<OpcodeProfile> {
-        let mut profiles: Vec<OpcodeProfile> = self.opcode_counts
+        let mut profiles: Vec<OpcodeProfile> = self
+            .opcode_counts
             .iter()
             .enumerate()
             .filter(|(_, &c)| c > 0)
@@ -94,7 +95,8 @@ impl Profiler {
 
     /// Get mean handler latency in ns for a specific handler.
     pub fn mean_handler_ns(&self, name: &str) -> u64 {
-        let samples: Vec<&HandlerSample> = self.handler_samples
+        let samples: Vec<&HandlerSample> = self
+            .handler_samples
             .iter()
             .filter(|s| s.name == name)
             .collect();
@@ -143,7 +145,11 @@ mod tests {
         let profile = p.opcode_profile();
         assert_eq!(p.total_instructions, 3);
         // Add should have count 2
-        let add_count = profile.iter().find(|x| x.opcode == O::Add).map(|x| x.count).unwrap_or(0);
+        let add_count = profile
+            .iter()
+            .find(|x| x.opcode == O::Add)
+            .map(|x| x.count)
+            .unwrap_or(0);
         assert_eq!(add_count, 2);
     }
 

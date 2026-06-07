@@ -5,7 +5,7 @@
 [![Tests](https://img.shields.io/badge/tests-1032%20passing-brightgreen?style=for-the-badge)](https://github.com/0xitsss/quince)
 [![License](https://img.shields.io/badge/license-AGPL--3.0-blue?style=for-the-badge)](https://www.gnu.org/licenses/agpl-3.0)
 [![Rust](https://img.shields.io/badge/rust-1.80+-orange?style=for-the-badge\&logo=rust)](https://www.rust-lang.org)
-[![Version](https://img.shields.io/badge/version-0.6.1-purple?style=for-the-badge)](https://github.com/0xitsss/quince/releases)
+[![Version](https://img.shields.io/badge/version-0.6.2-purple?style=for-the-badge)](https://github.com/0xitsss/quince/releases)
 [![Performance](https://img.shields.io/badge/ULL-%3C0.5ms-red?style=for-the-badge)](https://github.com/0xitsss/quince)
 
 **Q**uantitative **U**ltra-low-latency **I**nterpreter for **N**etwork-centric **C**ompetitive **E**xecution
@@ -561,6 +561,7 @@ cargo test
 
 | Version | Phase | Changes                                                                                 |
 | ------- | ----- | --------------------------------------------------------------------------------------- |
+| v0.6.2  | 7     | Perf audit fixes: VM bounds → debug_asserts, monotonic deque bitops, HashMap indicators/balances, Arc&lt;str&gt; Order.symbol; StreamMsg profiling |
 | v0.6.1  | 6b    | Compiler safety hardening (register overflow, Index/Table, name length, emit_at bounds), VM debug_asserts, fix Jz/Jnz fencepost errors |
 | v0.6.0  | 6a    | handler_param field access, persist coalesce, window O(1) deque, Vm hot/cold reorder |
 | v0.5.3  | 5c    | Mov elimination (reuse analysis) — skip redundant Mov on variable read                 |

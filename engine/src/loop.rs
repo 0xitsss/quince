@@ -5,6 +5,7 @@ use quince_exchange::r#trait::{Exchange, ExchangeError, StreamMsg};
 use quince_logger::TradeLog;
 use quince_qfl::runtime::QflRuntime;
 use quince_risk::RiskControls;
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 const IDLE_SLEEP_MS: u64 = 1;
@@ -43,8 +44,6 @@ pub struct Engine<E: Exchange> {
     last_price: f64,
     daily_pnl: f64,
     peak_equity: f64,
-    order_timestamps: Vec<Instant>,
-
     // Account state for equity check (Vec + linear search, N ≤ 5)
     balance_names: Vec<String>,
     balance_values: Vec<f64>,
@@ -74,11 +73,9 @@ impl<E: Exchange> Engine<E> {
         // Load QFL strategy (.qfl = compile+optimize, .qfr = pre-compiled)
         let is_qfr = strategy_path.ends_with(".qfr");
         let mut qfl = if is_qfr {
-            QflRuntime::load_qfr(strategy_path)
-                .map_err(|e| EngineError::Strategy(e))?
+            QflRuntime::load_qfr(strategy_path).map_err(|e| EngineError::Strategy(e))?
         } else {
-            let qfl = QflRuntime::load(strategy_path)
-                .map_err(|e| EngineError::Strategy(e))?;
+            let qfl = QflRuntime::load(strategy_path).map_err(|e| EngineError::Strategy(e))?;
             let qfr_path = strategy_path.replace(".qfl", ".qfr");
             qfl.save_qfr(&qfr_path)
                 .map_err(|e| EngineError::Strategy(format!("save .qfr: {}", e)))?;
@@ -91,7 +88,11 @@ impl<E: Exchange> Engine<E> {
         // Read source for --USING directives (from .qfl companion for .qfr)
         let src_path = if is_qfr {
             let qfl_path = strategy_path.replace(".qfr", ".qfl");
-            if std::path::Path::new(&qfl_path).exists() { qfl_path } else { String::new() }
+            if std::path::Path::new(&qfl_path).exists() {
+                qfl_path
+            } else {
+                String::new()
+            }
         } else {
             strategy_path.to_string()
         };
@@ -101,11 +102,19 @@ impl<E: Exchange> Engine<E> {
             std::fs::read_to_string(&src_path)
                 .map_err(|e| EngineError::Strategy(format!("read {}: {}", src_path, e)))?
         };
-        tracing::info!("strategy loaded: {strategy_path} ({} lines)", src.lines().count());
+        tracing::info!(
+            "strategy loaded: {strategy_path} ({} lines)",
+            src.lines().count()
+        );
 
         let ind_cfg = parse_using(&src);
         for entry in &ind_cfg {
-            tracing::info!("  indicator: {} params={:?} buffer={}", entry.name, entry.params, entry.buffer);
+            tracing::info!(
+                "  indicator: {} params={:?} buffer={}",
+                entry.name,
+                entry.params,
+                entry.buffer
+            );
         }
         tracing::info!("parsed {} indicator directives", ind_cfg.len());
 
@@ -113,26 +122,41 @@ impl<E: Exchange> Engine<E> {
 
         // Phase 4g: pre-assign indicator slots — zero HashMap lookups in hot path
         let synthetic_names = [
-            "price", "volume_delta", "avg_trade_size", "trade_count",
-            "bid_depth", "ask_depth", "depth_imbalance",
-            "entry_price", "unrealized_pnl",
+            "price",
+            "volume_delta",
+            "avg_trade_size",
+            "trade_count",
+            "bid_depth",
+            "ask_depth",
+            "depth_imbalance",
+            "entry_price",
+            "unrealized_pnl",
         ];
         for entry in &ind_cfg {
             let slot = qfl.ensure_indicator_slot(&entry.name);
             indicators.set_name_to_slot(&entry.name, slot);
             match entry.name.as_str() {
                 "macd" => {
-                    indicators.set_name_to_slot("macd.signal", qfl.ensure_indicator_slot("macd.signal"));
-                    indicators.set_name_to_slot("macd.histogram", qfl.ensure_indicator_slot("macd.histogram"));
+                    indicators
+                        .set_name_to_slot("macd.signal", qfl.ensure_indicator_slot("macd.signal"));
+                    indicators.set_name_to_slot(
+                        "macd.histogram",
+                        qfl.ensure_indicator_slot("macd.histogram"),
+                    );
                 }
                 "bb" => {
-                    indicators.set_name_to_slot("bb.middle", qfl.ensure_indicator_slot("bb.middle"));
+                    indicators
+                        .set_name_to_slot("bb.middle", qfl.ensure_indicator_slot("bb.middle"));
                     indicators.set_name_to_slot("bb.upper", qfl.ensure_indicator_slot("bb.upper"));
                     indicators.set_name_to_slot("bb.lower", qfl.ensure_indicator_slot("bb.lower"));
-                    indicators.set_name_to_slot("bb.bandwidth", qfl.ensure_indicator_slot("bb.bandwidth"));
+                    indicators.set_name_to_slot(
+                        "bb.bandwidth",
+                        qfl.ensure_indicator_slot("bb.bandwidth"),
+                    );
                 }
                 "kc" => {
-                    indicators.set_name_to_slot("kc.middle", qfl.ensure_indicator_slot("kc.middle"));
+                    indicators
+                        .set_name_to_slot("kc.middle", qfl.ensure_indicator_slot("kc.middle"));
                     indicators.set_name_to_slot("kc.upper", qfl.ensure_indicator_slot("kc.upper"));
                     indicators.set_name_to_slot("kc.lower", qfl.ensure_indicator_slot("kc.lower"));
                 }
@@ -181,7 +205,6 @@ impl<E: Exchange> Engine<E> {
             last_price: 0.0,
             daily_pnl: 0.0,
             peak_equity: 0.0,
-            order_timestamps: Vec::new(),
             balance_names: Vec::new(),
             balance_values: Vec::new(),
             position: None,
@@ -270,7 +293,6 @@ impl<E: Exchange> Engine<E> {
             if !did_work {
                 tokio::time::sleep(Duration::from_millis(IDLE_SLEEP_MS)).await;
             }
-
         }
     }
 
@@ -293,7 +315,9 @@ impl<E: Exchange> Engine<E> {
                 self.last_price = price;
             }
             StreamMsg::OrderUpdate(fill) => {
-                let cid = self.order_manager.find_client_by_exchange_id(&fill.order_id);
+                let cid = self
+                    .order_manager
+                    .find_client_by_exchange_id(&fill.order_id);
                 if let Some(cid) = cid {
                     let cid = cid.to_string();
                     self.order_manager.update_fill(&cid, fill.qty, fill.price);
@@ -307,7 +331,11 @@ impl<E: Exchange> Engine<E> {
                     self.set_balance(&b.asset, b.wallet);
                     self.qfl.set_balance(&b.asset, b.wallet);
                 }
-                if let Some(pos) = info.positions.into_iter().find(|p| p.symbol == self.symbols.first().cloned().unwrap_or_default()) {
+                if let Some(pos) = info
+                    .positions
+                    .into_iter()
+                    .find(|p| p.symbol == self.symbols.first().cloned().unwrap_or_default())
+                {
                     self.position = Some(pos.clone());
                     self.qfl.set_position_size(pos.size);
                 }
@@ -327,11 +355,10 @@ impl<E: Exchange> Engine<E> {
     }
 
     async fn on_strategy_order(&mut self, order: Order) {
-        if let Err(reason) = self.risk.check_order(
-            &order,
-            self.daily_pnl,
-            self.peak_equity,
-        ) {
+        if let Err(reason) = self
+            .risk
+            .check_order(&order, self.daily_pnl, self.peak_equity)
+        {
             tracing::warn!("risk rejected order: {}", reason);
             return;
         }
@@ -341,7 +368,6 @@ impl<E: Exchange> Engine<E> {
             match self.exchange.place_order(po.order.clone()).await {
                 Ok(order_id) => {
                     self.order_manager.mark_placed(&client_id, order_id);
-                    self.order_timestamps.push(Instant::now());
                     self.risk.record_trade();
                 }
                 Err(e) => {
@@ -358,8 +384,10 @@ impl<E: Exchange> Engine<E> {
         }
         if let Some(pos) = &self.position {
             self.qfl.set_position_size(pos.size);
-            self.qfl.set_indicator_by_slot(self.entry_price_slot, pos.entry_price);
-            self.qfl.set_indicator_by_slot(self.unrealized_pnl_slot, pos.unrealized_pnl);
+            self.qfl
+                .set_indicator_by_slot(self.entry_price_slot, pos.entry_price);
+            self.qfl
+                .set_indicator_by_slot(self.unrealized_pnl_slot, pos.unrealized_pnl);
         }
         self.qfl.feed_eval();
         self.equity_check();
@@ -372,7 +400,11 @@ impl<E: Exchange> Engine<E> {
                     self.set_balance(&b.asset, b.wallet);
                     self.qfl.set_balance(&b.asset, b.wallet);
                 }
-                if let Some(pos) = info.positions.into_iter().find(|p| p.symbol == self.symbols.first().cloned().unwrap_or_default()) {
+                if let Some(pos) = info
+                    .positions
+                    .into_iter()
+                    .find(|p| p.symbol == self.symbols.first().cloned().unwrap_or_default())
+                {
                     self.position = Some(pos.clone());
                     self.qfl.set_position_size(pos.size);
                 }
@@ -401,7 +433,7 @@ impl<E: Exchange> Engine<E> {
 
         for cid in timed_out {
             if let Some(po) = self.order_manager.get(&cid) {
-                let symbol = &po.order.symbol;
+                let symbol = po.order.symbol.as_ref();
                 if let PendingStatus::Placed { order_id } = &po.status {
                     let _ = self.exchange.cancel_order(symbol, order_id).await;
                 }
@@ -415,7 +447,9 @@ impl<E: Exchange> Engine<E> {
 
     async fn check_sl_tp(&mut self) {
         let price = self.last_price;
-        if price <= 0.0 { return; }
+        if price <= 0.0 {
+            return;
+        }
 
         let triggered: Vec<(String, Side, f64)> = self
             .order_manager
@@ -451,7 +485,7 @@ impl<E: Exchange> Engine<E> {
 
         for (cid, side, qty) in triggered {
             let close = Order {
-                symbol: self.symbols.first().cloned().unwrap_or_default(),
+                symbol: self.symbols.first().map(|s| Arc::<str>::from(s.as_str())).unwrap_or_else(|| Arc::from("")),
                 side,
                 qty,
                 price: None,
@@ -473,11 +507,18 @@ impl<E: Exchange> Engine<E> {
     }
 
     fn equity_check(&mut self) {
-        let usdt = self.balance_names.iter().position(|n| n == "USDT")
+        let usdt = self
+            .balance_names
+            .iter()
+            .position(|n| n == "USDT")
             .and_then(|i| self.balance_values.get(i).copied())
             .unwrap_or(0.0);
         let equity = usdt
-            + self.position.as_ref().map(|p| p.unrealized_pnl).unwrap_or(0.0);
+            + self
+                .position
+                .as_ref()
+                .map(|p| p.unrealized_pnl)
+                .unwrap_or(0.0);
 
         if equity > self.peak_equity {
             self.peak_equity = equity;

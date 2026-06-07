@@ -1,47 +1,63 @@
+// --- Section: Imports ---
 use crate::vm::Vm;
 use quince_core::types::{Depth, OrderFill, Side, Trade};
 use std::path::PathBuf;
+use std::sync::Arc;
 
-/// Unified exchange event for the QFL runtime.
+// --- Section: Event enum ---
+// Unified exchange event that can be dispatched to the QFL runtime.
+// Each variant triggers a different handler in the VM.
 #[derive(Debug, Clone)]
 pub enum Event {
-    Trade(Trade),
-    Depth(Depth),
-    Fill(OrderFill),
-    Eval,
+    Trade(Trade),       // Market trade tick
+    Depth(Depth),       // Order book snapshot
+    Fill(OrderFill),    // Order fill notification
+    Eval,               // Periodic evaluation tick
 }
 
+// --- Section: QflRuntime struct ---
+// Top-level runtime that owns a VM, strategy path, symbol context,
+// an order-sending channel, and a risk engine.
 #[derive(Debug)]
 pub struct QflRuntime {
-    vm: Vm,
+    vm: Vm,                                      // The QFL bytecode VM instance
     #[allow(dead_code)]
-    path_qfl: PathBuf,
+    path_qfl: PathBuf,                            // Path to the .qfl or .qfr source file
     #[allow(dead_code)]
-    current_symbol: String,
-    orders_tx: Option<crossbeam_channel::Sender<quince_core::types::Order>>,
-    pub risk_engine: crate::risk::RiskEngine,
+    current_symbol: Arc<str>,                       // Trading symbol currently being processed
+    orders_tx: Option<crossbeam_channel::Sender<quince_core::types::Order>>,  // Channel to send orders to the exchange adapter
+    pub risk_engine: crate::risk::RiskEngine,     // Risk limits and checking
 }
 
+// --- Section: QflRuntime implementation ---
 impl QflRuntime {
+    // Load and compile a .qfl strategy file from source.
+    // Full pipeline: read file -> parse -> type-check -> optimize -> create VM.
+    // Returns a fully initialized runtime, or an error string.
     pub fn load(strategy_path: &str) -> Result<Self, String> {
+        // Read the raw source file
         let src = std::fs::read_to_string(strategy_path)
             .map_err(|e| format!("read {}: {}", strategy_path, e))?;
 
+        // Reject empty files early
         if src.trim().is_empty() {
             return Err(format!("empty strategy file: {}", strategy_path));
         }
 
-        let program = crate::parser::parse(&src)
-            .map_err(|e| format!("parse {}: {}", strategy_path, e))?;
+        // Parse source text into an AST
+        let program =
+            crate::parser::parse(&src).map_err(|e| format!("parse {}: {}", strategy_path, e))?;
 
-        let mut qfr = crate::compiler::compile_checked(&program)
-            .map_err(|errs| {
-                let details: Vec<String> = errs.iter().map(|e| e.msg.clone()).collect();
-                format!("type error in {}: {}", strategy_path, details.join("; "))
-            })?;
+        // Type-check and compile AST into QFR bytecode (may return multiple errors)
+        let mut qfr = crate::compiler::compile_checked(&program).map_err(|errs| {
+            let details: Vec<String> = errs.iter().map(|e| e.msg.clone()).collect();
+            format!("type error in {}: {}", strategy_path, details.join("; "))
+        })?;
 
+        // Apply peephole and other optimizations to the bytecode
         crate::optimize::optimize(&mut qfr);
 
+        // Log the loaded strategy metadata
         tracing::info!(
             "QFL VM loaded: {} ({} entry, {} instr, {} consts)",
             strategy_path,
@@ -50,6 +66,7 @@ impl QflRuntime {
             qfr.const_pool.len(),
         );
 
+        // Construct the VM from the compiled program
         let mut vm = Vm::new(qfr);
 
         // Auto-enable VM trace if QFL_TRACE_VM env var is set
@@ -57,19 +74,23 @@ impl QflRuntime {
             vm.enable_trace_vm("qflvmtrace.log");
         }
 
+        // Assemble the runtime with default risk limits and no order channel yet
         Ok(QflRuntime {
             vm,
             path_qfl: PathBuf::from(strategy_path),
-            current_symbol: String::new(),
+            current_symbol: Arc::from(""),
             orders_tx: None,
             risk_engine: crate::risk::RiskEngine::new(crate::risk::RiskLimits::default()),
         })
     }
 
-    /// Load from pre-compiled .qfr file (bypasses parsing + type checking)
+    // Load from a pre-compiled .qfr file, bypassing parsing and type checking.
+    // Useful for faster startup when the strategy has already been validated.
     pub fn load_qfr(qfr_path: &str) -> Result<Self, String> {
+        // Deserialize the binary .qfr program file
         let qfr = crate::ir::QfrProgram::load(qfr_path)?;
 
+        // Log metadata about the loaded program
         tracing::info!(
             "QFL VM loaded from .qfr: {} ({} entry, {} instr, {} consts)",
             qfr_path,
@@ -78,25 +99,39 @@ impl QflRuntime {
             qfr.const_pool.len(),
         );
 
+        // Construct runtime from the pre-compiled program
         Ok(QflRuntime {
             vm: Vm::new(qfr),
             path_qfl: PathBuf::from(qfr_path),
-            current_symbol: String::new(),
+            current_symbol: Arc::from(""),
             orders_tx: None,
             risk_engine: crate::risk::RiskEngine::new(crate::risk::RiskLimits::default()),
         })
     }
 
-    /// Save current program to .qfr file
+    // Serialize the current compiled program to a .qfr file for later fast loading.
+    // Rebuilds the entry-point table and const pool from the VM's internal state.
     pub fn save_qfr(&self, qfr_path: &str) -> Result<(), String> {
+        // Reconstruct entry points from VM's internal entry arrays
         let mut entries = Vec::with_capacity(self.vm.entry_count as usize);
         for i in 0..self.vm.entry_count as usize {
+            // Read the 8-byte little-endian entry name, trim trailing null bytes
             let name_bytes = self.vm.entry_names[i].to_le_bytes();
             let name_end = name_bytes.iter().position(|&b| b == 0).unwrap_or(8);
             let name = String::from_utf8_lossy(&name_bytes[..name_end]).to_string();
-            entries.push(crate::ir::EntryPoint { name, code_offset: self.vm.entry_offsets[i] });
+            entries.push(crate::ir::EntryPoint {
+                name,
+                code_offset: self.vm.entry_offsets[i],
+            });
         }
-        let const_map = self.vm.const_pool.iter().enumerate()
+
+        // Build a map from string constants to their index in the const pool
+        let const_map = self
+            .vm
+            .cold
+            .const_pool
+            .iter()
+            .enumerate()
             .filter_map(|(i, e)| {
                 if let crate::ir::ConstEntry::String(s) = e {
                     Some((s.clone(), i as u32))
@@ -105,133 +140,241 @@ impl QflRuntime {
                 }
             })
             .collect();
+
+        // Assemble the QfrProgram structure from VM state
         let prog = crate::ir::QfrProgram {
             entries,
-            const_pool: self.vm.const_pool.clone(),
+            const_pool: self.vm.cold.const_pool.clone(),
             code: self.vm.code_instr(),
             const_map,
-            ema_alphas: Vec::new(),
+            ema_alphas: Vec::new(),  // Not serialized from VM; recalculated on load
+            // Extract f64, i64, and string constants into separate vectors
+            f64_consts: self
+                .vm
+                .cold
+                .const_pool
+                .iter()
+                .filter_map(|e| {
+                    if let crate::ir::ConstEntry::F64(v) = e {
+                        Some(*v)
+                    } else {
+                        None
+                    }
+                })
+                .collect(),
+            i64_consts: self
+                .vm
+                .cold
+                .const_pool
+                .iter()
+                .filter_map(|e| {
+                    if let crate::ir::ConstEntry::I64(v) = e {
+                        Some(*v)
+                    } else {
+                        None
+                    }
+                })
+                .collect(),
+            string_consts: self
+                .vm
+                .cold
+                .const_pool
+                .iter()
+                .filter_map(|e| {
+                    if let crate::ir::ConstEntry::String(s) = e {
+                        Some(s.clone())
+                    } else {
+                        None
+                    }
+                })
+                .collect(),
         };
+        // Write the program to disk in binary format
         prog.save(qfr_path)
     }
 
+    // Provide the runtime with a crossbeam channel sender for outbound orders.
+    // Must be called before any feed methods that generate orders.
     pub fn set_order_sender(&mut self, tx: crossbeam_channel::Sender<quince_core::types::Order>) {
         self.orders_tx = Some(tx);
     }
 
-    pub fn feed_trade(&mut self, trade: Trade) {
-        self.vm.set_last_price(trade.price);
-        self.vm.set_position_size(0.0);
+    // --- Section: Event feed methods ---
 
-        self.vm.regs[0].f = trade.price;
-        self.vm.regs[1].f = trade.qty;
-        self.vm.regs[2].i = match trade.side {
+    // Feed a trade event into the runtime.
+    // Sets up VM registers (price, qty, side, trade_id, timestamp),
+    // updates last_price and resets position_size to 0,
+    // then calls the user-defined on_trade handler and flushes any pending order.
+    pub fn feed_trade(&mut self, trade: Trade) {
+        // Update VM state with trade data
+        self.vm.set_last_price(trade.price);
+        self.vm.set_position_size(0.0); // Reset position each trade
+
+        // Load trade fields into fixed VM registers for the handler
+        self.vm.regs[0].f = trade.price;                          // reg0 = price
+        self.vm.regs[1].f = trade.qty;                            // reg1 = qty
+        self.vm.regs[2].i = match trade.side {                    // reg2 = side (0=buy, 1=sell)
             Side::Buy => 0,
             Side::Sell => 1,
         };
-        self.vm.regs[3].i = trade.trade_id as i64;
-        self.vm.regs[4].i = trade.time.timestamp_nanos_opt().unwrap_or(0);
+        self.vm.regs[3].i = trade.trade_id as i64;                // reg3 = trade_id
+        self.vm.regs[4].i = trade.time.timestamp_nanos_opt().unwrap_or(0);  // reg4 = timestamp
 
+        // Dispatch to the user's on_trade handler
         self.vm.call("on_trade");
+        // Send any order that was placed during the handler
         self.flush_pending_order();
     }
 
+    // Feed a depth (order book) snapshot into the runtime.
+    // Sets up depth data in the VM, loads top bid into registers,
+    // then calls the on_depth handler.
     pub fn feed_depth(&mut self, depth: Depth) {
+        // Store full bid/ask arrays in VM for quince.bid()/quince.ask() lookups
         self.vm.set_depth_bids(&depth.bids);
         self.vm.set_depth_asks(&depth.asks);
 
-        self.vm.regs[0].f = depth.bids.first().map_or(0.0, |l| l.price);
-        self.vm.regs[1].f = depth.bids.first().map_or(0.0, |l| l.qty);
-        self.vm.regs[2].i = depth.bids.len() as i64;
-        self.vm.regs[3].i = depth.asks.len() as i64;
+        // Load top-of-book info into registers for convenience
+        self.vm.regs[0].f = depth.bids.first().map_or(0.0, |l| l.price);  // reg0 = best bid price
+        self.vm.regs[1].f = depth.bids.first().map_or(0.0, |l| l.qty);    // reg1 = best bid qty
+        self.vm.regs[2].i = depth.bids.len() as i64;                       // reg2 = bid levels count
+        self.vm.regs[3].i = depth.asks.len() as i64;                       // reg3 = ask levels count
 
+        // Dispatch to the user's on_depth handler
         self.vm.call("on_depth");
+        // Send any order that was placed during the handler
+        self.flush_pending_order();
     }
 
+    // Feed an order fill event into the runtime.
+    // Sets up registers with fill data, records trace if enabled,
+    // then calls on_fill handler.
     pub fn feed_fill(&mut self, fill: OrderFill) {
+        // Update last_price from the fill
         self.vm.set_last_price(fill.price);
-        self.vm.regs[0].f = fill.price;
-        self.vm.regs[1].f = fill.qty;
-        self.vm.regs[2].i = match fill.side {
+        // Load fill fields into VM registers
+        self.vm.regs[0].f = fill.price;                          // reg0 = fill price
+        self.vm.regs[1].f = fill.qty;                            // reg1 = fill qty
+        self.vm.regs[2].i = match fill.side {                    // reg2 = side (0=buy, 1=sell)
             Side::Buy => 0,
             Side::Sell => 1,
         };
         // OrderFill has no trade_id; fill.trade_id would read 0
         self.vm.regs[3].i = 0;
-        self.vm.regs[4].i = fill.time.timestamp_nanos_opt().unwrap_or(0);
+        self.vm.regs[4].i = fill.time.timestamp_nanos_opt().unwrap_or(0);  // reg4 = timestamp
 
-        if let Some(ref mut t) = self.vm.tracer {
+        // Record fill in the tracer if one is attached
+        if let Some(ref mut t) = self.vm.cold.tracer {
             t.record_fill(fill.price, fill.qty, &format!("{:?}", fill.side));
         }
 
+        // Dispatch to the user's on_fill handler
         self.vm.call("on_fill");
+        // Send any order that was placed during the handler
+        self.flush_pending_order();
     }
 
+    // Feed a periodic evaluation tick.
+    // Calls the on_eval handler and flushes any pending order.
     pub fn feed_eval(&mut self) {
         self.vm.call("on_eval");
         self.flush_pending_order();
     }
 
+    // --- Section: Indicator setters ---
+
+    // Set an indicator value by name (creates or updates).
+    // The VM resolves the name to a slot and stores the value.
     pub fn set_indicator(&mut self, name: &str, val: f64) {
         self.vm.set_indicator(name, val);
     }
 
+    // Ensure an indicator slot exists for the given name, creating it if needed.
+    // Returns the slot index for fast subsequent updates via set_indicator_by_slot.
     pub fn ensure_indicator_slot(&mut self, name: &str) -> u16 {
         self.vm.ensure_indicator_slot(name)
     }
 
+    // Set an indicator value by pre-resolved slot index (faster than by name).
     pub fn set_indicator_by_slot(&mut self, slot: u16, val: f64) {
         self.vm.set_indicator_by_slot(slot, val);
     }
 
+    // --- Section: Balance setters ---
+
+    // Set a balance value by asset name (creates or updates).
     pub fn set_balance(&mut self, asset: &str, val: f64) {
         self.vm.set_balance(asset, val);
     }
 
+    // Ensure a balance slot exists for the given asset name, creating it if needed.
+    // Returns the slot index for fast subsequent updates.
     pub fn ensure_balance_slot(&mut self, name: &str) -> u16 {
         self.vm.ensure_balance_slot(name)
     }
 
+    // Set a balance value by pre-resolved slot index.
     pub fn set_balance_by_slot(&mut self, slot: u16, val: f64) {
         self.vm.set_balance_by_slot(slot, val);
     }
 
+    // --- Section: Position / symbol setters ---
+
+    // Set the current position size exposed to the strategy via quince.position().
     pub fn set_position_size(&mut self, size: f64) {
         self.vm.set_position_size(size);
     }
 
+    // Set the trading symbol string (used when constructing orders).
     pub fn set_symbol(&mut self, symbol: &str) {
-        self.current_symbol = symbol.to_string();
+        self.current_symbol = Arc::from(symbol);
     }
 
-    /// Finalize VM const lookups after all indicator/balance registrations.
-    /// Call this once before the engine loop starts.
+    // Finalize VM const lookups after all indicator/balance registrations.
+    // Call this once before the engine loop starts to freeze the slot mappings.
     pub fn finalize_vm_init(&mut self) {
         self.vm.finalize_const_lookups();
     }
 
+    // --- Section: Order flushing ---
+
+    // Check if the user's handler placed a pending order (via quince.order()).
+    // If so, read the order parameters from VM registers, perform a risk check,
+    // and send the order through the channel if allowed.
     fn flush_pending_order(&mut self) {
+        // Early exit if no order was placed
         if !self.vm.has_pending_order {
             return;
         }
+        // Clear the pending flag
         self.vm.has_pending_order = false;
+
+        // Read the side register; must be 0 (buy) or 1 (sell)
         let side_val = self.vm.int(250);
         if side_val != 0 && side_val != 1 {
-            return;
+            return; // Invalid side, silently discard
         }
+
+        // Bail out if no order sender has been configured
         let Some(ref tx) = self.orders_tx else { return };
 
+        // Decode order fields from VM reserved registers
         let side = if side_val == 0 { Side::Buy } else { Side::Sell };
-        let qty = self.vm.float(192);
-        let price_f64 = self.vm.float(193);
-        let price = if price_f64 > 0.0 { Some(price_f64) } else { None };
+        let qty = self.vm.float(192);                    // qty register
+        let price_f64 = self.vm.float(193);              // price register
+        let price = if price_f64 > 0.0 {
+            Some(price_f64)                              // Price > 0 means limit order
+        } else {
+            None                                         // Zero price means market order
+        };
         let order_type = if self.vm.int(253) == 0 {
             quince_core::types::OrderType::Market
         } else {
             quince_core::types::OrderType::Limit
         };
-        let reduce_only = self.vm.int(254) != 0;
+        let reduce_only = self.vm.int(254) != 0;         // reduce-only flag
 
+        // Assemble the full order struct
         let order = quince_core::types::Order {
             symbol: self.current_symbol.clone(),
             side,
@@ -246,13 +389,16 @@ impl QflRuntime {
         // Risk check before sending
         match self.risk_engine.check_order(&order) {
             crate::risk::RiskVerdict::Allowed => {
-                if let Some(ref mut t) = self.vm.tracer {
+                // Record risk-allowed trace if tracer is attached
+                if let Some(ref mut t) = self.vm.cold.tracer {
                     t.record_risk("allowed", "");
                 }
+                // Non-blocking send through the crossbeam channel
                 let _ = tx.try_send(order);
             }
             crate::risk::RiskVerdict::Rejected(reason) => {
-                if let Some(ref mut t) = self.vm.tracer {
+                // Record risk-rejected trace if tracer is attached
+                if let Some(ref mut t) = self.vm.cold.tracer {
                     t.record_risk("rejected", &reason);
                 }
                 tracing::warn!("QFL risk rejected order: {}", reason);
@@ -260,9 +406,10 @@ impl QflRuntime {
         }
     }
 
-    /// Unified feed — dispatch any event to the correct handler.
+    // Unified feed — accepts any Event variant and dispatches to the correct handler.
+    // Starts a new risk cycle (resets per-cycle counters) before dispatching.
     pub fn feed_event(&mut self, event: Event) {
-        self.risk_engine.new_cycle();
+        self.risk_engine.new_cycle();   // Reset per-cycle risk counters
         match event {
             Event::Trade(trade) => self.feed_trade(trade),
             Event::Depth(depth) => self.feed_depth(depth),
@@ -272,11 +419,15 @@ impl QflRuntime {
     }
 }
 
+// --- Section: Tests ---
 #[cfg(test)]
 mod tests {
     use super::*;
     use quince_core::types::{DepthLevel, Side, Trade};
 
+    // --- Test helpers ---
+
+    // Construct a Trade with the given parameters and current timestamp
     fn make_trade(price: f64, qty: f64, side: Side, id: u64) -> Trade {
         Trade {
             price,
@@ -287,12 +438,14 @@ mod tests {
         }
     }
 
+    // Write a strategy source string to a .qfl file and return the file path
     fn write_test_strategy(name: &str, source: &str) -> String {
         let path = format!("{}.qfl", name);
         std::fs::write(&path, source).unwrap();
         path
     }
 
+    // Construct an OrderFill with the given parameters and current timestamp
     fn make_fill(price: f64, qty: f64, side: Side) -> OrderFill {
         OrderFill {
             order_id: "test_fill".into(),
@@ -304,6 +457,8 @@ mod tests {
             time: chrono::Utc::now(),
         }
     }
+
+    // --- Section: Basic loading tests ---
 
     #[test]
     fn test_load_and_eval() {
@@ -327,11 +482,16 @@ mod tests {
         let _ = std::fs::remove_file(&path);
     }
 
+    // --- Section: Trade feed tests ---
+
     #[test]
     fn test_feed_trade_buy() {
-        let path = write_test_strategy("runtime_test_trade_buy", "
+        let path = write_test_strategy(
+            "runtime_test_trade_buy",
+            "
 function on_trade(trade) end
-");
+",
+        );
         let mut rt = QflRuntime::load(&path).unwrap();
         let trade = make_trade(50000.0, 0.1, Side::Buy, 1);
         rt.feed_trade(trade);
@@ -345,9 +505,12 @@ function on_trade(trade) end
 
     #[test]
     fn test_feed_trade_sell() {
-        let path = write_test_strategy("runtime_test_trade_sell", "
+        let path = write_test_strategy(
+            "runtime_test_trade_sell",
+            "
 function on_trade(trade) end
-");
+",
+        );
         let mut rt = QflRuntime::load(&path).unwrap();
         let trade = make_trade(50100.0, 0.2, Side::Sell, 42);
         rt.feed_trade(trade);
@@ -359,25 +522,41 @@ function on_trade(trade) end
         let _ = std::fs::remove_file(&path);
     }
 
+    // --- Section: Depth feed tests ---
+
     #[test]
     fn test_feed_depth_with_bids_asks() {
         let path = write_test_strategy("runtime_test_depth_ba", "function on_depth() end");
         let mut rt = QflRuntime::load(&path).unwrap();
         let depth = Depth {
             bids: vec![
-                DepthLevel { price: 49900.0, qty: 1.5 },
-                DepthLevel { price: 49800.0, qty: 2.5 },
+                DepthLevel {
+                    price: 49900.0,
+                    qty: 1.5,
+                },
+                DepthLevel {
+                    price: 49800.0,
+                    qty: 2.5,
+                },
             ],
             asks: vec![
-                DepthLevel { price: 50100.0, qty: 1.0 },
-                DepthLevel { price: 50200.0, qty: 3.0 },
+                DepthLevel {
+                    price: 50100.0,
+                    qty: 1.0,
+                },
+                DepthLevel {
+                    price: 50200.0,
+                    qty: 3.0,
+                },
             ],
         };
         rt.feed_depth(depth);
-        assert_eq!(rt.vm.depth_bids_len, 2);
-        assert_eq!(rt.vm.depth_asks_len, 2);
+        assert_eq!(rt.vm.cold.depth_bids_len, 2);
+        assert_eq!(rt.vm.cold.depth_asks_len, 2);
         let _ = std::fs::remove_file(&path);
     }
+
+    // --- Section: Fill feed tests ---
 
     #[test]
     fn test_feed_fill_buy() {
@@ -401,13 +580,15 @@ function on_trade(trade) end
         let _ = std::fs::remove_file(&path);
     }
 
+    // --- Section: Indicator / Balance tests ---
+
     #[test]
     fn test_set_indicator() {
         let path = write_test_strategy("runtime_test_set_ind", "function on_eval() end");
         let mut rt = QflRuntime::load(&path).unwrap();
         rt.set_indicator("ema", 123.456);
         let slot = rt.vm.indicator_slot("ema").unwrap();
-        assert!((rt.vm.indicators[slot as usize] - 123.456).abs() < 0.001);
+        assert!((rt.vm.cold.indicators[slot as usize] - 123.456).abs() < 0.001);
         let _ = std::fs::remove_file(&path);
     }
 
@@ -419,8 +600,8 @@ function on_trade(trade) end
         rt.set_balance("BTC", 1.5);
         let usdt_slot = rt.vm.ensure_balance_slot("USDT");
         let btc_slot = rt.vm.ensure_balance_slot("BTC");
-        assert!((rt.vm.balances[usdt_slot as usize] - 50000.0).abs() < 0.001);
-        assert!((rt.vm.balances[btc_slot as usize] - 1.5).abs() < 0.001);
+        assert!((rt.vm.cold.balances[usdt_slot as usize] - 50000.0).abs() < 0.001);
+        assert!((rt.vm.cold.balances[btc_slot as usize] - 1.5).abs() < 0.001);
         let _ = std::fs::remove_file(&path);
     }
 
@@ -438,9 +619,11 @@ function on_trade(trade) end
         let path = write_test_strategy("runtime_test_set_sym", "function on_eval() end");
         let mut rt = QflRuntime::load(&path).unwrap();
         rt.set_symbol("BTCUSDT");
-        assert_eq!(rt.current_symbol, "BTCUSDT");
+        assert_eq!(rt.current_symbol.as_ref(), "BTCUSDT");
         let _ = std::fs::remove_file(&path);
     }
+
+    // --- Section: Order sending tests ---
 
     #[test]
     fn test_order_send_buy_market() {
@@ -457,7 +640,7 @@ end
         rt.feed_eval();
 
         let order = rx.try_recv().expect("should have sent order");
-        assert_eq!(order.symbol, "BTCUSDT");
+        assert_eq!(order.symbol.as_ref(), "BTCUSDT");
         assert_eq!(order.side, quince_core::types::Side::Buy);
         assert!((order.qty - 1.0).abs() < 0.001);
         assert_eq!(order.order_type, quince_core::types::OrderType::Market);
@@ -480,7 +663,7 @@ end
         rt.feed_eval();
 
         let order = rx.try_recv().expect("should have sent order");
-        assert_eq!(order.symbol, "ETHUSDT");
+        assert_eq!(order.symbol.as_ref(), "ETHUSDT");
         assert_eq!(order.side, quince_core::types::Side::Sell);
         assert!((order.qty - 0.1).abs() < 0.001);
         assert_eq!(order.price, Some(51000.0));
@@ -519,9 +702,14 @@ end
         let (tx, rx) = crossbeam_channel::unbounded();
         rt.set_order_sender(tx);
         rt.feed_eval();
-        assert!(rx.try_recv().is_err(), "should NOT send order with invalid side");
+        assert!(
+            rx.try_recv().is_err(),
+            "should NOT send order with invalid side"
+        );
         let _ = std::fs::remove_file(&path);
     }
+
+    // --- Section: Multi-feed tests ---
 
     #[test]
     fn test_multiple_feeds() {
@@ -546,15 +734,20 @@ end
 
         rt.feed_trade(trade);
         rt.feed_depth(Depth {
-            bids: vec![DepthLevel { price: 99.0, qty: 1.0 }],
+            bids: vec![DepthLevel {
+                price: 99.0,
+                qty: 1.0,
+            }],
             asks: vec![],
         });
         rt.feed_fill(make_fill(100.0, 1.0, Side::Buy));
         rt.feed_eval();
 
-        assert_eq!(rt.vm.persist[0].int_val, 4);
+        assert_eq!(rt.vm.cold.persist[0].int_val, 4);
         let _ = std::fs::remove_file(&path);
     }
+
+    // --- Section: Indicator setup before eval ---
 
     #[test]
     fn test_indicators_set_before_eval() {
@@ -589,6 +782,8 @@ end
         let _ = std::fs::remove_file(&path);
     }
 
+    // --- Section: Persist state hot-reload ---
+
     #[test]
     fn test_persist_survives_reload() {
         let src = "
@@ -602,23 +797,26 @@ end
         rt.feed_eval();
         rt.feed_eval();
 
-        let persist = rt.vm.persist;
+        let persist = rt.vm.cold.persist;
 
         let path_b = write_test_strategy("runtime_test_persist_b", src);
         let mut rt2 = QflRuntime::load(&path_b).unwrap();
-        rt2.vm.persist.copy_from_slice(&persist);
+        rt2.vm.cold.persist.copy_from_slice(&persist);
         rt2.feed_eval();
 
-        assert_eq!(rt2.vm.persist[0].int_val, 3);
+        assert_eq!(rt2.vm.cold.persist[0].int_val, 3);
         let _ = std::fs::remove_file(&path_a);
         let _ = std::fs::remove_file(&path_b);
     }
 
     #[test]
     fn test_feed_trade_sell_side() {
-        let path = write_test_strategy("runtime_test_trade_sell2", "
+        let path = write_test_strategy(
+            "runtime_test_trade_sell2",
+            "
 function on_trade(trade) end
-");
+",
+        );
         let mut rt = QflRuntime::load(&path).unwrap();
         let trade = make_trade(100.0, 0.5, Side::Sell, 99);
         rt.feed_trade(trade);
@@ -672,7 +870,10 @@ end
         let path = write_test_strategy("runtime_depth_none", "function on_trade(trade) end");
         let mut rt = QflRuntime::load(&path).unwrap();
         rt.feed_depth(Depth {
-            bids: vec![DepthLevel { price: 100.0, qty: 1.0 }],
+            bids: vec![DepthLevel {
+                price: 100.0,
+                qty: 1.0,
+            }],
             asks: vec![],
         });
         let _ = std::fs::remove_file(&path);
@@ -694,6 +895,8 @@ end
         let _ = std::fs::remove_file(&path);
     }
 
+    // --- Section: Multiple eval/trade feed tests ---
+
     #[test]
     fn test_multiple_evals() {
         let src = "
@@ -707,7 +910,7 @@ end
         for _ in 0..10 {
             rt.feed_eval();
         }
-        assert_eq!(rt.vm.persist[0].int_val, 10);
+        assert_eq!(rt.vm.cold.persist[0].int_val, 10);
         let _ = std::fs::remove_file(&path);
     }
 
@@ -724,7 +927,7 @@ end
         for i in 0..5 {
             rt.feed_trade(make_trade(100.0 + i as f64, 1.0, Side::Buy, i));
         }
-        assert_eq!(rt.vm.persist[0].int_val, 5);
+        assert_eq!(rt.vm.cold.persist[0].int_val, 5);
         let _ = std::fs::remove_file(&path);
     }
 
@@ -740,7 +943,7 @@ end
         let mut rt = QflRuntime::load(&path).unwrap();
         // First eval increments from 0 to 1 (init value is only template)
         rt.feed_eval();
-        assert_eq!(rt.vm.persist[0].int_val, 1);
+        assert_eq!(rt.vm.cold.persist[0].int_val, 1);
         let _ = std::fs::remove_file(&path);
     }
 
@@ -808,7 +1011,7 @@ end
         let path = write_test_strategy("runtime_ind_missing", src);
         let mut rt = QflRuntime::load(&path).unwrap();
         rt.feed_eval();
-        assert!((rt.vm.persist[0].float_val - 0.0).abs() < 0.001);
+        assert!((rt.vm.cold.persist[0].float_val - 0.0).abs() < 0.001);
         let _ = std::fs::remove_file(&path);
     }
 
@@ -842,7 +1045,7 @@ end
         // feed_trade sets position to 0 before calling on_trade
         rt.feed_trade(make_trade(100.0, 1.0, Side::Buy, 1));
         // Position resets to 0 during trade feed
-        assert!((rt.vm.persist[0].float_val - 0.0).abs() < 0.001);
+        assert!((rt.vm.cold.persist[0].float_val - 0.0).abs() < 0.001);
         let _ = std::fs::remove_file(&path);
     }
 
@@ -857,7 +1060,7 @@ end
         let path = write_test_strategy("runtime_price_trade", src);
         let mut rt = QflRuntime::load(&path).unwrap();
         rt.feed_trade(make_trade(50500.0, 0.5, Side::Buy, 1));
-        assert!((rt.vm.persist[0].float_val - 50500.0).abs() < 0.001);
+        assert!((rt.vm.cold.persist[0].float_val - 50500.0).abs() < 0.001);
         let _ = std::fs::remove_file(&path);
     }
 
@@ -888,13 +1091,13 @@ end
         let path_a = write_test_strategy("runtime_pfloat_a", src);
         let mut rt = QflRuntime::load(&path_a).unwrap();
         rt.feed_eval();
-        let persist = rt.vm.persist;
+        let persist = rt.vm.cold.persist;
         let path_b = write_test_strategy("runtime_pfloat_b", src);
         let mut rt2 = QflRuntime::load(&path_b).unwrap();
-        rt2.vm.persist.copy_from_slice(&persist);
+        rt2.vm.cold.persist.copy_from_slice(&persist);
         rt2.feed_eval();
-        assert_eq!(rt2.vm.persist[0].tag, 1);
-        assert!((rt2.vm.persist[0].float_val - 3.14159).abs() < 0.001);
+        assert_eq!(rt2.vm.cold.persist[0].tag, 1);
+        assert!((rt2.vm.cold.persist[0].float_val - 3.14159).abs() < 0.001);
         let _ = std::fs::remove_file(&path_a);
         let _ = std::fs::remove_file(&path_b);
     }
@@ -910,12 +1113,18 @@ end
         let path = write_test_strategy("runtime_multi_depth", src);
         let mut rt = QflRuntime::load(&path).unwrap();
         let d = Depth {
-            bids: vec![DepthLevel { price: 100.0, qty: 1.0 }],
+            bids: vec![DepthLevel {
+                price: 100.0,
+                qty: 1.0,
+            }],
             asks: vec![],
         };
         rt.feed_depth(d);
-        rt.feed_depth(Depth { bids: vec![], asks: vec![] });
-        assert_eq!(rt.vm.persist[0].int_val, 2);
+        rt.feed_depth(Depth {
+            bids: vec![],
+            asks: vec![],
+        });
+        assert_eq!(rt.vm.cold.persist[0].int_val, 2);
         let _ = std::fs::remove_file(&path);
     }
 
@@ -931,7 +1140,7 @@ end
         let mut rt = QflRuntime::load(&path).unwrap();
         rt.feed_fill(make_fill(100.0, 1.0, Side::Buy));
         rt.feed_fill(make_fill(101.0, 0.5, Side::Sell));
-        assert_eq!(rt.vm.persist[0].int_val, 2);
+        assert_eq!(rt.vm.cold.persist[0].int_val, 2);
         let _ = std::fs::remove_file(&path);
     }
 
@@ -958,8 +1167,8 @@ end
         rt.feed_eval();
         rt.feed_trade(make_trade(50200.0, 0.5, Side::Sell, 2));
         rt.feed_eval();
-        assert_eq!(rt.vm.persist[0].int_val, 2); // trade_count
-        assert_eq!(rt.vm.persist[1].int_val, 2); // eval_count
+        assert_eq!(rt.vm.cold.persist[0].int_val, 2); // trade_count
+        assert_eq!(rt.vm.cold.persist[1].int_val, 2); // eval_count
         let _ = std::fs::remove_file(&path);
     }
 
@@ -976,7 +1185,7 @@ end
         for _ in 0..100 {
             rt.feed_eval();
         }
-        assert_eq!(rt.vm.persist[0].int_val, 100);
+        assert_eq!(rt.vm.cold.persist[0].int_val, 100);
         let _ = std::fs::remove_file(&path);
     }
 
@@ -1001,7 +1210,7 @@ end
         // "Reload" by loading v2 into a new rt
         let path_v2 = write_test_strategy("runtime_reload_v2", src_v2);
         let mut rt2 = QflRuntime::load(&path_v2).unwrap();
-        rt2.vm.persist.copy_from_slice(&rt.vm.persist);
+        rt2.vm.cold.persist.copy_from_slice(&rt.vm.cold.persist);
         rt2.set_indicator("ema", 101.0);
         rt2.set_indicator("sma", 99.0);
         rt2.feed_eval();
@@ -1029,17 +1238,17 @@ end
         let path_v1 = write_test_strategy("hr_type_v1", src_v1);
         let mut rt_v1 = QflRuntime::load(&path_v1).unwrap();
         rt_v1.feed_eval();
-        assert_eq!(rt_v1.vm.persist[0].int_val, 42);
+        assert_eq!(rt_v1.vm.cold.persist[0].int_val, 42);
 
-        let persist = rt_v1.vm.persist;
+        let persist = rt_v1.vm.cold.persist;
 
         let path_v2 = write_test_strategy("hr_type_v2", src_v2);
         let mut rt_v2 = QflRuntime::load(&path_v2).unwrap();
-        rt_v2.vm.persist.copy_from_slice(&persist);
+        rt_v2.vm.cold.persist.copy_from_slice(&persist);
         rt_v2.feed_eval();
 
-        assert_eq!(rt_v2.vm.persist[0].tag, 1);
-        assert!((rt_v2.vm.persist[0].float_val - 3.14).abs() < 0.001);
+        assert_eq!(rt_v2.vm.cold.persist[0].tag, 1);
+        assert!((rt_v2.vm.cold.persist[0].float_val - 3.14).abs() < 0.001);
 
         let _ = std::fs::remove_file(&path_v1);
         let _ = std::fs::remove_file(&path_v2);
@@ -1060,14 +1269,14 @@ end
         let path_v1 = write_test_strategy("hr_rem_v1", src_v1);
         let mut rt_v1 = QflRuntime::load(&path_v1).unwrap();
         rt_v1.feed_eval();
-        assert_eq!(rt_v1.vm.persist[0].int_val, 42);
+        assert_eq!(rt_v1.vm.cold.persist[0].int_val, 42);
 
-        let persist = rt_v1.vm.persist;
+        let persist = rt_v1.vm.cold.persist;
 
         let path_v2 = write_test_strategy("hr_rem_v2", src_v2);
         let mut rt_v2 = QflRuntime::load(&path_v2).unwrap();
-        rt_v2.vm.persist.copy_from_slice(&persist);
-        assert_eq!(rt_v2.vm.persist[0].int_val, 42);
+        rt_v2.vm.cold.persist.copy_from_slice(&persist);
+        assert_eq!(rt_v2.vm.cold.persist[0].int_val, 42);
 
         let _ = std::fs::remove_file(&path_v1);
         let _ = std::fs::remove_file(&path_v2);
@@ -1092,17 +1301,17 @@ end
         let path_v1 = write_test_strategy("hr_shift_v1", src_v1);
         let mut rt_v1 = QflRuntime::load(&path_v1).unwrap();
         rt_v1.feed_eval();
-        assert_eq!(rt_v1.vm.persist[0].int_val, 10);
+        assert_eq!(rt_v1.vm.cold.persist[0].int_val, 10);
 
-        let persist = rt_v1.vm.persist;
+        let persist = rt_v1.vm.cold.persist;
 
         let path_v2 = write_test_strategy("hr_shift_v2", src_v2);
         let mut rt_v2 = QflRuntime::load(&path_v2).unwrap();
-        rt_v2.vm.persist.copy_from_slice(&persist);
+        rt_v2.vm.cold.persist.copy_from_slice(&persist);
         rt_v2.feed_eval();
 
-        assert_eq!(rt_v2.vm.persist[0].int_val, 11);
-        assert_eq!(rt_v2.vm.persist[1].int_val, 1);
+        assert_eq!(rt_v2.vm.cold.persist[0].int_val, 11);
+        assert_eq!(rt_v2.vm.cold.persist[1].int_val, 1);
 
         let _ = std::fs::remove_file(&path_v1);
         let _ = std::fs::remove_file(&path_v2);
@@ -1129,7 +1338,7 @@ end
             let mut rt = QflRuntime::load(&path).unwrap();
             rt.feed_eval();
             rt.feed_eval();
-            assert_eq!(rt.vm.persist[0].int_val, 2);
+            assert_eq!(rt.vm.cold.persist[0].int_val, 2);
             let _ = std::fs::remove_file(&path);
         }
     }
@@ -1153,7 +1362,7 @@ end
         rt.feed_eval();
 
         for i in 0..32 {
-            assert_eq!(rt.vm.persist[i].int_val, 1, "slot {}", i);
+            assert_eq!(rt.vm.cold.persist[i].int_val, 1, "slot {}", i);
         }
         let _ = std::fs::remove_file(&path);
     }
@@ -1172,11 +1381,11 @@ end
         let path = write_test_strategy("persist_multi_entry", src);
         let mut rt = QflRuntime::load(&path).unwrap();
         rt.feed_trade(make_trade(100.0, 1.0, Side::Buy, 1));
-        assert_eq!(rt.vm.persist[0].int_val, 1);
+        assert_eq!(rt.vm.cold.persist[0].int_val, 1);
         rt.feed_eval();
-        assert_eq!(rt.vm.persist[0].int_val, 2);
+        assert_eq!(rt.vm.cold.persist[0].int_val, 2);
         rt.feed_trade(make_trade(101.0, 0.5, Side::Sell, 2));
-        assert_eq!(rt.vm.persist[0].int_val, 3);
+        assert_eq!(rt.vm.cold.persist[0].int_val, 3);
         let _ = std::fs::remove_file(&path);
     }
 
@@ -1190,7 +1399,7 @@ end
 ";
         let path = write_test_strategy("persist_default", src);
         let rt = QflRuntime::load(&path).unwrap();
-        assert_eq!(rt.vm.persist[0].int_val, 0);
+        assert_eq!(rt.vm.cold.persist[0].int_val, 0);
         let _ = std::fs::remove_file(&path);
     }
 
@@ -1205,7 +1414,7 @@ end
         let path = write_test_strategy("persist_neg", src);
         let mut rt = QflRuntime::load(&path).unwrap();
         rt.feed_eval();
-        assert_eq!(rt.vm.persist[0].int_val, -42);
+        assert_eq!(rt.vm.cold.persist[0].int_val, -42);
         let _ = std::fs::remove_file(&path);
     }
 
@@ -1220,7 +1429,7 @@ end
         let path = write_test_strategy("persist_large", src);
         let mut rt = QflRuntime::load(&path).unwrap();
         rt.feed_eval();
-        assert_eq!(rt.vm.persist[0].int_val, 500000000000i64);
+        assert_eq!(rt.vm.cold.persist[0].int_val, 500000000000i64);
         let _ = std::fs::remove_file(&path);
     }
 
@@ -1410,14 +1619,20 @@ end
         let path = write_test_strategy("fd_depth", "function on_depth() end");
         let mut rt = QflRuntime::load(&path).unwrap();
         let depth = Depth {
-            bids: vec![DepthLevel { price: 49900.0, qty: 1.5 }],
-            asks: vec![DepthLevel { price: 50100.0, qty: 2.0 }],
+            bids: vec![DepthLevel {
+                price: 49900.0,
+                qty: 1.5,
+            }],
+            asks: vec![DepthLevel {
+                price: 50100.0,
+                qty: 2.0,
+            }],
         };
         rt.feed_depth(depth);
-        assert_eq!(rt.vm.depth_bids_len, 1);
-        assert_eq!(rt.vm.depth_asks_len, 1);
-        assert!((rt.vm.depth_bids_price[0] - 49900.0).abs() < 0.001);
-        assert!((rt.vm.depth_asks_price[0] - 50100.0).abs() < 0.001);
+        assert_eq!(rt.vm.cold.depth_bids_len, 1);
+        assert_eq!(rt.vm.cold.depth_asks_len, 1);
+        assert!((rt.vm.cold.depth_bids_price[0] - 49900.0).abs() < 0.001);
+        assert!((rt.vm.cold.depth_asks_price[0] - 50100.0).abs() < 0.001);
         let _ = std::fs::remove_file(&path);
     }
 
@@ -1462,19 +1677,22 @@ end
         let mut rt = QflRuntime::load(&path).unwrap();
 
         rt.feed_trade(make_trade(100.0, 1.0, Side::Buy, 1));
-        assert_eq!(rt.vm.persist[0].int_val, 2);
+        assert_eq!(rt.vm.cold.persist[0].int_val, 2);
 
         rt.feed_depth(Depth {
-            bids: vec![DepthLevel { price: 99.0, qty: 1.0 }],
+            bids: vec![DepthLevel {
+                price: 99.0,
+                qty: 1.0,
+            }],
             asks: vec![],
         });
-        assert_eq!(rt.vm.persist[0].int_val, 5);
+        assert_eq!(rt.vm.cold.persist[0].int_val, 5);
 
         rt.feed_fill(make_fill(100.0, 1.0, Side::Buy));
-        assert_eq!(rt.vm.persist[0].int_val, 10);
+        assert_eq!(rt.vm.cold.persist[0].int_val, 10);
 
         rt.feed_eval();
-        assert_eq!(rt.vm.persist[0].int_val, 17);
+        assert_eq!(rt.vm.cold.persist[0].int_val, 17);
 
         let _ = std::fs::remove_file(&path);
     }
@@ -1486,23 +1704,37 @@ end
         // 42 + true is a type error
         let path = write_test_strategy("runtime_type_err", "42 + true");
         let result = QflRuntime::load(&path);
-        assert!(result.is_err(), "type error should be rejected at load time");
+        assert!(
+            result.is_err(),
+            "type error should be rejected at load time"
+        );
         let err = result.unwrap_err();
-        assert!(err.contains("type error"), "error should mention type error: {}", err);
+        assert!(
+            err.contains("type error"),
+            "error should mention type error: {}",
+            err
+        );
         let _ = std::fs::remove_file(&path);
     }
 
     #[test]
     fn test_load_valid_strategy_ok() {
-        let path = write_test_strategy("runtime_valid_type", "
+        let path = write_test_strategy(
+            "runtime_valid_type",
+            "
             @persist local pos = 0
             function on_trade(trade)
                 if trade.price > 0 then quince.order(0, 1.0, trade.price) end
             end
             function on_eval() quince.log(\"ok\") end
-        ");
+        ",
+        );
         let result = QflRuntime::load(&path);
-        assert!(result.is_ok(), "valid strategy should load: {:?}", result.err());
+        assert!(
+            result.is_ok(),
+            "valid strategy should load: {:?}",
+            result.err()
+        );
         let _ = std::fs::remove_file(&path);
     }
 
@@ -1510,9 +1742,12 @@ end
 
     #[test]
     fn test_risk_rejects_large_order() {
-        let path = write_test_strategy("risk_large", "
+        let path = write_test_strategy(
+            "risk_large",
+            "
             function on_eval() quince.order(0, 100.0, 50000.0) end
-        ");
+        ",
+        );
         let mut rt = QflRuntime::load(&path).unwrap();
         // Set very tight risk limits
         rt.risk_engine.limits.max_order_notional = 1000.0;
@@ -1537,11 +1772,14 @@ end
         let path = write_test_strategy("fe_event_depth", "function on_depth() end");
         let mut rt = QflRuntime::load(&path).unwrap();
         let depth = Depth {
-            bids: vec![DepthLevel { price: 100.0, qty: 1.0 }],
+            bids: vec![DepthLevel {
+                price: 100.0,
+                qty: 1.0,
+            }],
             asks: vec![],
         };
         rt.feed_event(Event::Depth(depth));
-        assert_eq!(rt.vm.depth_bids_len, 1);
+        assert_eq!(rt.vm.cold.depth_bids_len, 1);
         let _ = std::fs::remove_file(&path);
     }
 
@@ -1565,12 +1803,15 @@ end
 
     #[test]
     fn test_risk_new_cycle_called_on_feed_event() {
-        let path = write_test_strategy("risk_cycle", "
+        let path = write_test_strategy(
+            "risk_cycle",
+            "
             function on_eval()
                 quince.order(0, 0.1, 100.0)
                 quince.order(0, 0.1, 100.0)
             end
-        ");
+        ",
+        );
         let mut rt = QflRuntime::load(&path).unwrap();
         rt.risk_engine.limits.max_orders_per_cycle = 1;
         rt.feed_event(Event::Eval);
@@ -1584,7 +1825,7 @@ end
     fn make_tracer_rt(name: &str, src: &str) -> (QflRuntime, String) {
         let path = write_test_strategy(name, src);
         let mut rt = QflRuntime::load(&path).unwrap();
-        rt.vm.tracer = Some(crate::tracer::Tracer::new(1024));
+        rt.vm.cold.tracer = Some(crate::tracer::Tracer::new(1024));
         (rt, path)
     }
 
@@ -1593,9 +1834,11 @@ end
         let (mut rt, path) = make_tracer_rt("tr_fill_rec", "function on_fill(fill) end");
         let fill = make_fill(50000.0, 0.1, Side::Buy);
         rt.feed_fill(fill);
-        let events = rt.vm.tracer.as_mut().unwrap().drain();
+        let events = rt.vm.cold.tracer.as_mut().unwrap().drain();
         assert!(!events.is_empty());
-        let has_fill = events.iter().any(|e| matches!(e, crate::tracer::TraceEvent::Fill { .. }));
+        let has_fill = events
+            .iter()
+            .any(|e| matches!(e, crate::tracer::TraceEvent::Fill { .. }));
         assert!(has_fill, "expected a Fill trace event");
         let _ = std::fs::remove_file(&path);
     }
@@ -1605,7 +1848,7 @@ end
         let (mut rt, path) = make_tracer_rt("tr_fill_vals", "function on_fill(fill) end");
         let fill = make_fill(50200.0, 0.25, Side::Sell);
         rt.feed_fill(fill);
-        let events = rt.vm.tracer.as_mut().unwrap().drain();
+        let events = rt.vm.cold.tracer.as_mut().unwrap().drain();
         let fill_event = events.iter().find_map(|e| {
             if let crate::tracer::TraceEvent::Fill { price, qty, side } = e {
                 Some((*price, *qty, side.clone()))
@@ -1633,8 +1876,10 @@ end
         rt.set_order_sender(tx);
         rt.set_symbol("BTCUSDT");
         rt.feed_eval();
-        let events = rt.vm.tracer.as_mut().unwrap().drain();
-        let has_risk = events.iter().any(|e| matches!(e, crate::tracer::TraceEvent::RiskAction { .. }));
+        let events = rt.vm.cold.tracer.as_mut().unwrap().drain();
+        let has_risk = events
+            .iter()
+            .any(|e| matches!(e, crate::tracer::TraceEvent::RiskAction { .. }));
         assert!(has_risk, "expected a RiskAction trace event");
         let _ = std::fs::remove_file(&path);
     }
@@ -1652,7 +1897,7 @@ end
         rt.set_order_sender(tx);
         rt.set_symbol("BTCUSDT");
         rt.feed_eval();
-        let events = rt.vm.tracer.as_mut().unwrap().drain();
+        let events = rt.vm.cold.tracer.as_mut().unwrap().drain();
         let rejected = events.iter().any(|e| {
             matches!(e, crate::tracer::TraceEvent::RiskAction { verdict, .. } if verdict == "rejected")
         });
@@ -1674,7 +1919,7 @@ end
         // feed_fill produces Fill trace, feed_eval may produce signal+risk traces
         rt.feed_fill(make_fill(50000.0, 0.1, Side::Buy));
         rt.feed_eval();
-        let events = rt.vm.tracer.as_mut().unwrap().drain();
+        let events = rt.vm.cold.tracer.as_mut().unwrap().drain();
         let kinds: Vec<&str> = events.iter().map(|e| e.kind()).collect();
         assert!(kinds.contains(&"fill"), "expected fill event: {:?}", kinds);
         assert!(kinds.contains(&"risk"), "expected risk event: {:?}", kinds);
@@ -1723,7 +1968,7 @@ end
         // Verify loaded program has same structure
         assert_eq!(rt2.vm.entry_count, 2);
         assert_eq!(rt2.vm.code_len, rt.vm.code_len);
-        assert_eq!(rt2.vm.const_pool.len(), rt.vm.const_pool.len());
+        assert_eq!(rt2.vm.cold.const_pool.len(), rt.vm.cold.const_pool.len());
     }
 
     #[test]
@@ -1746,15 +1991,21 @@ end
     fn test_feed_depth_empty_bids_asks() {
         let path = write_test_strategy("rt_depth_empty", "function on_depth() end");
         let mut rt = QflRuntime::load(&path).unwrap();
-        rt.feed_depth(Depth { bids: vec![], asks: vec![] });
-        assert_eq!(rt.vm.depth_bids_len, 0);
-        assert_eq!(rt.vm.depth_asks_len, 0);
+        rt.feed_depth(Depth {
+            bids: vec![],
+            asks: vec![],
+        });
+        assert_eq!(rt.vm.cold.depth_bids_len, 0);
+        assert_eq!(rt.vm.cold.depth_asks_len, 0);
         let _ = std::fs::remove_file(&path);
     }
 
     #[test]
     fn test_on_fill_with_field_access() {
-        let path = write_test_strategy("rt_fill_field", "function on_fill(fill) local p = fill.price local q = fill.qty end");
+        let path = write_test_strategy(
+            "rt_fill_field",
+            "function on_fill(fill) local p = fill.price local q = fill.qty end",
+        );
         let mut rt = QflRuntime::load(&path).unwrap();
         rt.feed_fill(make_fill(50000.0, 0.5, Side::Buy));
         assert!((rt.vm.reg_f(0) - 50000.0).abs() < 0.001);
@@ -1788,7 +2039,8 @@ on eval() {
         crate::optimize::optimize(&mut qfr);
 
         let trade = quince_core::types::Trade {
-            price: 100.0, qty: 1.0,
+            price: 100.0,
+            qty: 1.0,
             time: chrono::Utc::now(),
             side: quince_core::types::Side::Buy,
             trade_id: 1,
@@ -1801,7 +2053,10 @@ on eval() {
             vm.set_position_size(0.0);
             vm.regs[0].f = trade.price;
             vm.regs[1].f = trade.qty;
-            vm.regs[2].i = match trade.side { quince_core::types::Side::Buy => 0, _ => 1 };
+            vm.regs[2].i = match trade.side {
+                quince_core::types::Side::Buy => 0,
+                _ => 1,
+            };
             vm.regs[3].i = trade.trade_id as i64;
             vm.regs[4].i = trade.time.timestamp_nanos_opt().unwrap_or(0);
             vm.call("on_trade");
@@ -1814,7 +2069,10 @@ on eval() {
             vm.set_position_size(0.0);
             vm.regs[0].f = trade.price;
             vm.regs[1].f = trade.qty;
-            vm.regs[2].i = match trade.side { quince_core::types::Side::Buy => 0, _ => 1 };
+            vm.regs[2].i = match trade.side {
+                quince_core::types::Side::Buy => 0,
+                _ => 1,
+            };
             vm.regs[3].i = trade.trade_id as i64;
             vm.regs[4].i = trade.time.timestamp_nanos_opt().unwrap_or(0);
             vm.call("on_trade");
@@ -1837,7 +2095,8 @@ on eval() {
         crate::optimize::optimize(&mut qfr);
 
         let trade = quince_core::types::Trade {
-            price: 100.0, qty: 1.0,
+            price: 100.0,
+            qty: 1.0,
             time: chrono::Utc::now(),
             side: quince_core::types::Side::Buy,
             trade_id: 1,
@@ -1882,7 +2141,8 @@ on eval() {
         crate::optimize::optimize(&mut qfr);
 
         let trade = quince_core::types::Trade {
-            price: 100.0, qty: 1.0,
+            price: 100.0,
+            qty: 1.0,
             time: chrono::Utc::now(),
             side: quince_core::types::Side::Buy,
             trade_id: 1,
@@ -1943,7 +2203,11 @@ on eval() {
                 price: 50000.0 + (i % 1000) as f64,
                 qty: 0.1 + (i % 5) as f64 * 0.1,
                 time: chrono::Utc::now(),
-                side: if i % 2 == 0 { quince_core::types::Side::Buy } else { quince_core::types::Side::Sell },
+                side: if i % 2 == 0 {
+                    quince_core::types::Side::Buy
+                } else {
+                    quince_core::types::Side::Sell
+                },
                 trade_id: i as u64,
             };
             rt.feed_trade(trade);
@@ -1951,12 +2215,24 @@ on eval() {
         for _ in 0..10 {
             let depth = quince_core::types::Depth {
                 bids: vec![
-                    quince_core::types::DepthLevel { price: 50000.0, qty: 1.0 },
-                    quince_core::types::DepthLevel { price: 49900.0, qty: 5.0 },
+                    quince_core::types::DepthLevel {
+                        price: 50000.0,
+                        qty: 1.0,
+                    },
+                    quince_core::types::DepthLevel {
+                        price: 49900.0,
+                        qty: 5.0,
+                    },
                 ],
                 asks: vec![
-                    quince_core::types::DepthLevel { price: 50100.0, qty: 1.5 },
-                    quince_core::types::DepthLevel { price: 50200.0, qty: 3.0 },
+                    quince_core::types::DepthLevel {
+                        price: 50100.0,
+                        qty: 1.5,
+                    },
+                    quince_core::types::DepthLevel {
+                        price: 50200.0,
+                        qty: 3.0,
+                    },
                 ],
             };
             rt.feed_depth(depth);
@@ -1975,7 +2251,11 @@ on eval() {
                         price: 50000.0 + (i % 2000) as f64,
                         qty: 0.1 + (i % 10) as f64 * 0.05,
                         time: chrono::Utc::now(),
-                        side: if i % 2 == 0 { quince_core::types::Side::Buy } else { quince_core::types::Side::Sell },
+                        side: if i % 2 == 0 {
+                            quince_core::types::Side::Buy
+                        } else {
+                            quince_core::types::Side::Sell
+                        },
                         trade_id: i as u64,
                     };
                     rt.feed_trade(trade);
@@ -1983,12 +2263,24 @@ on eval() {
                 3 => {
                     let depth = quince_core::types::Depth {
                         bids: vec![
-                            quince_core::types::DepthLevel { price: 50000.0 - (i % 100) as f64, qty: 0.5 },
-                            quince_core::types::DepthLevel { price: 49800.0, qty: 2.0 },
+                            quince_core::types::DepthLevel {
+                                price: 50000.0 - (i % 100) as f64,
+                                qty: 0.5,
+                            },
+                            quince_core::types::DepthLevel {
+                                price: 49800.0,
+                                qty: 2.0,
+                            },
                         ],
                         asks: vec![
-                            quince_core::types::DepthLevel { price: 50100.0 + (i % 100) as f64, qty: 0.8 },
-                            quince_core::types::DepthLevel { price: 50300.0, qty: 1.5 },
+                            quince_core::types::DepthLevel {
+                                price: 50100.0 + (i % 100) as f64,
+                                qty: 0.8,
+                            },
+                            quince_core::types::DepthLevel {
+                                price: 50300.0,
+                                qty: 1.5,
+                            },
                         ],
                     };
                     rt.feed_depth(depth);
@@ -2008,5 +2300,4 @@ on eval() {
         );
         assert!(elapsed.as_secs() < 30, "heavy_test took too long");
     }
-
 }

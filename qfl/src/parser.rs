@@ -1,6 +1,9 @@
 use crate::ast::*;
 use crate::lexer::Token;
 
+// --- Section: ParseError ---
+
+// Error produced during parsing, carrying the error message and token position.
 #[derive(Debug, Clone)]
 pub struct ParseError {
     pub msg: String,
@@ -13,16 +16,26 @@ impl std::fmt::Display for ParseError {
     }
 }
 
+// --- Section: Parser struct ---
+
+// Pratt parser that transforms a token stream into a QFL AST (Program).
+// Uses precedence-based expression parsing with a dispatch-on-first-token approach for statements.
 pub struct Parser {
     tokens: Vec<Token>,
     pos: usize,
 }
 
 impl Parser {
+    // --- Section: Constructors ---
+
+    // Creates a new parser from a tokenised source, starting at position 0.
     pub fn new(tokens: Vec<Token>) -> Self {
         Parser { tokens, pos: 0 }
     }
 
+    // --- Section: Top-level parse entry point ---
+
+    // Parses the full token stream into a QFL program (list of statements).
     pub fn parse(&mut self) -> Result<Program, ParseError> {
         let mut stmts = Vec::new();
         while !self.is_eof() {
@@ -31,26 +44,31 @@ impl Parser {
         Ok(stmts)
     }
 
-    // --- helpers ---
+    // --- Section: Helper methods ---
 
+    // Returns the current token without consuming it; Eof if exhausted.
     fn peek(&self) -> &Token {
         self.tokens.get(self.pos).unwrap_or(&Token::Eof)
     }
 
+    // Returns the token at offset n ahead without consuming; Eof if out of range.
     fn peek_at(&self, n: usize) -> &Token {
         self.tokens.get(self.pos + n).unwrap_or(&Token::Eof)
     }
 
+    // Returns true if the parser has reached the end of the token stream.
     fn is_eof(&self) -> bool {
         matches!(self.peek(), Token::Eof)
     }
 
+    // Advances the token cursor by one position (if not already at end).
     fn advance(&mut self) {
         if self.pos < self.tokens.len() {
             self.pos += 1;
         }
     }
 
+    // If the current token matches expected, consumes it; otherwise returns an error.
     fn expect(&mut self, expected: &Token) -> Result<(), ParseError> {
         if self.peek() == expected {
             self.advance();
@@ -60,10 +78,15 @@ impl Parser {
         }
     }
 
+    // Wraps a message string into a ParseError with the current token position.
     fn err(&self, msg: &str) -> ParseError {
-        ParseError { msg: msg.to_string(), pos: self.pos }
+        ParseError {
+            msg: msg.to_string(),
+            pos: self.pos,
+        }
     }
 
+    // Consumes and returns an Ident token; returns an error if current token is not an identifier.
     fn expect_ident(&mut self) -> Result<String, ParseError> {
         match self.peek().clone() {
             Token::Ident(s) => {
@@ -74,9 +97,12 @@ impl Parser {
         }
     }
 
-    // --- statements ---
+    // --- Section: Statement dispatch ---
 
+    // Dispatches to the appropriate statement parser based on the first token.
+    // Handles optional @persist prefix, comments, and falls back to assign-or-call.
     fn parse_stmt(&mut self) -> Result<Stmt, ParseError> {
+        // Check for @persist modifier; if present, consume it and pass along.
         let persist = if matches!(self.peek(), Token::AtPersist) {
             self.advance();
             true
@@ -96,10 +122,12 @@ impl Parser {
             Token::For => self.parse_for(),
             Token::Return => self.parse_return(),
             Token::Semi => {
+                // Empty statement (just a semicolon) produces a nil expression statement.
                 self.advance();
                 Ok(Stmt::ExprStmt(Expr::Literal(Literal::Nil)))
             }
             Token::Comment(_) => {
+                // Comments are skipped; recursively parse the next meaningful statement.
                 self.advance();
                 self.parse_stmt()
             }
@@ -111,15 +139,21 @@ impl Parser {
             Token::Ident(s) if s == "feature" => self.parse_feature(),
             Token::Ident(s) if s == "signal" => self.parse_signal(),
             _ => {
+                // Bare @persist without `local` counts as a non-local var decl.
                 if persist {
                     self.parse_var_decl(false, true)
                 } else {
+                    // Anything else is treated as an assignment or a function-call expression statement.
                     self.parse_assign_or_call()
                 }
             }
         }
     }
 
+    // --- Section: Variable declaration ---
+
+    // Parses `[local] name [, name]... [= expr [, expr]...]`.
+    // is_local and persist are determined by the caller (parse_stmt).
     fn parse_var_decl(&mut self, is_local: bool, persist: bool) -> Result<Stmt, ParseError> {
         let names = self.parse_name_list()?;
         let init = if matches!(self.peek(), Token::Eq) {
@@ -128,9 +162,15 @@ impl Parser {
         } else {
             None
         };
-        Ok(Stmt::VarDecl { names, init, is_local, persist })
+        Ok(Stmt::VarDecl {
+            names,
+            init,
+            is_local,
+            persist,
+        })
     }
 
+    // Parses a comma-separated list of identifiers.
     fn parse_name_list(&mut self) -> Result<Vec<String>, ParseError> {
         let mut names = Vec::new();
         names.push(self.expect_ident()?);
@@ -141,6 +181,9 @@ impl Parser {
         Ok(names)
     }
 
+    // --- Section: Numeric literal helper ---
+
+    // Consumes and returns a numeric token as f64 (integers are widened).
     fn parse_number_value(&mut self) -> Result<f64, ParseError> {
         match self.peek().clone() {
             Token::Number(s) => {
@@ -155,13 +198,18 @@ impl Parser {
         }
     }
 
-    // @using name[:param[:param...]] name ...
+    // --- Section: @using directive ---
+
+    // Parses `@using name[:param[:param...]] name[:param...] ...`
+    // Each indicator optionally carries colon-separated numeric parameters.
     fn parse_using(&mut self) -> Result<Stmt, ParseError> {
         self.advance();
         let mut indicators = Vec::new();
+        // Consume identifiers as long as they appear (each is a using entry).
         while matches!(self.peek(), Token::Ident(_)) {
             let name = self.expect_ident()?.to_lowercase();
             let mut params = Vec::new();
+            // After an identifier, optional colon-separated numeric parameters.
             if matches!(self.peek(), Token::Colon) {
                 self.advance();
                 params.push(self.parse_number_value()?);
@@ -175,34 +223,51 @@ impl Parser {
         Ok(Stmt::Using { indicators })
     }
 
-    // @window name capacity
+    // --- Section: @window directive ---
+
+    // Parses `@window name capacity`.
     fn parse_window(&mut self) -> Result<Stmt, ParseError> {
         self.advance();
         let name = self.expect_ident()?;
         let cap = self.parse_number_value()? as usize;
-        Ok(Stmt::Window { name, capacity: cap })
+        Ok(Stmt::Window {
+            name,
+            capacity: cap,
+        })
     }
 
-    // feature name = expr
+    // --- Section: feature declaration ---
+
+    // Parses `feature name = expr`.
     fn parse_feature(&mut self) -> Result<Stmt, ParseError> {
         self.advance();
         let name = self.expect_ident()?;
         self.expect(&Token::Eq)?;
         let expr = self.parse_expr()?;
-        Ok(Stmt::Feature { name, expr: Box::new(expr) })
+        Ok(Stmt::Feature {
+            name,
+            expr: Box::new(expr),
+        })
     }
 
-    // signal name = expr
+    // --- Section: signal declaration ---
+
+    // Parses `signal name = expr`.
     fn parse_signal(&mut self) -> Result<Stmt, ParseError> {
         self.advance();
         let name = self.expect_ident()?;
         self.expect(&Token::Eq)?;
         let expr = self.parse_expr()?;
-        Ok(Stmt::Signal { name, expr: Box::new(expr) })
+        Ok(Stmt::Signal {
+            name,
+            expr: Box::new(expr),
+        })
     }
 
-    // state name : type [= expr]   (declaration)
-    // state name = expr            (reassignment)
+    // --- Section: state declaration/reassignment ---
+
+    // Parses `state name : type [= expr]` (declaration) or `state name = expr` (reassignment).
+    // If a colon follows the name, it is a typed declaration; otherwise it is an assignment.
     fn parse_state(&mut self) -> Result<Stmt, ParseError> {
         self.advance();
         let name = self.expect_ident()?;
@@ -216,7 +281,11 @@ impl Parser {
             } else {
                 None
             };
-            Ok(Stmt::State { name, type_name, default })
+            Ok(Stmt::State {
+                name,
+                type_name,
+                default,
+            })
         } else {
             // Reassignment: state name = expr
             self.expect(&Token::Eq)?;
@@ -228,11 +297,14 @@ impl Parser {
         }
     }
 
-    // on event(param?) { body }
+    // --- Section: event handler ---
+
+    // Parses `on event(param?) { body }`.
     fn parse_event_handler(&mut self) -> Result<Stmt, ParseError> {
         self.advance();
         let event = self.expect_ident()?;
         self.expect(&Token::LParen)?;
+        // Optional single parameter inside parentheses.
         let param = if matches!(self.peek(), Token::Ident(_)) {
             Some(self.expect_ident()?)
         } else {
@@ -243,7 +315,9 @@ impl Parser {
         Ok(Stmt::EventHandler { event, param, body })
     }
 
-    // { stmts }
+    // --- Section: brace block ---
+
+    // Parses `{ stmts }` and returns the statements inside.
     fn parse_brace_block(&mut self) -> Result<Vec<Stmt>, ParseError> {
         self.expect(&Token::LBrace)?;
         let stmts = self.parse_block_until(&[Token::RBrace])?;
@@ -251,12 +325,16 @@ impl Parser {
         Ok(stmts)
     }
 
-    // fn name(params) -> type { body }
+    // --- Section: typed function declaration (new syntax) ---
+
+    // Parses `fn name(params) -> type { body }`.
+    // Parameters may optionally have type annotations; default type is "i64".
     fn parse_fn_decl(&mut self) -> Result<Stmt, ParseError> {
         self.advance();
         let name = self.expect_ident()?;
         self.expect(&Token::LParen)?;
         let mut params = Vec::new();
+        // Parse optional parameter list with optional `: type` annotations.
         if !matches!(self.peek(), Token::RParen) {
             let p_name = self.expect_ident()?;
             let p_type = if matches!(self.peek(), Token::Colon) {
@@ -265,7 +343,10 @@ impl Parser {
             } else {
                 "i64".into()
             };
-            params.push(crate::ast::FnParam { name: p_name, type_name: p_type });
+            params.push(crate::ast::FnParam {
+                name: p_name,
+                type_name: p_type,
+            });
             while matches!(self.peek(), Token::Comma) {
                 self.advance();
                 let p_name = self.expect_ident()?;
@@ -275,10 +356,14 @@ impl Parser {
                 } else {
                     "i64".into()
                 };
-                params.push(crate::ast::FnParam { name: p_name, type_name: p_type });
+                params.push(crate::ast::FnParam {
+                    name: p_name,
+                    type_name: p_type,
+                });
             }
         }
         self.expect(&Token::RParen)?;
+        // Optional `-> return_type` (defaults to "i64").
         let return_type = if matches!(self.peek(), Token::Arrow) {
             self.advance();
             self.expect_ident()?
@@ -286,14 +371,23 @@ impl Parser {
             "i64".into()
         };
         let body = self.parse_brace_block()?;
-        Ok(Stmt::FnDecl { name, params, return_type, body })
+        Ok(Stmt::FnDecl {
+            name,
+            params,
+            return_type,
+            body,
+        })
     }
 
+    // --- Section: legacy function declaration ---
+
+    // Parses `function name(params) body end` (Lua-style, no type annotations).
     fn parse_function_decl(&mut self) -> Result<Stmt, ParseError> {
         self.advance();
         let name = self.expect_ident()?;
         self.expect(&Token::LParen)?;
         let mut params = Vec::new();
+        // Parse comma-separated parameter names (identifiers only, no types).
         if !matches!(self.peek(), Token::RParen) {
             params.push(self.expect_ident()?);
             while matches!(self.peek(), Token::Comma) {
@@ -302,11 +396,16 @@ impl Parser {
             }
         }
         self.expect(&Token::RParen)?;
+        // Body is a block terminated by `end`.
         let body = self.parse_block_until(&[Token::End])?;
         self.expect(&Token::End)?;
         Ok(Stmt::FunctionDecl { name, params, body })
     }
 
+    // --- Section: if statement ---
+
+    // Parses `if cond { body } [elseif cond { body }]* [else { body }]` (brace syntax)
+    // or `if cond then body [elseif cond then body]* [else body] end` (legacy syntax).
     fn parse_if(&mut self) -> Result<Stmt, ParseError> {
         self.advance();
         let cond = Box::new(self.parse_expr()?);
@@ -330,11 +429,17 @@ impl Parser {
                 else_body = self.parse_brace_block()?;
             }
 
-            return Ok(Stmt::If { cond, then_body, elseif_branches, else_body });
+            return Ok(Stmt::If {
+                cond,
+                then_body,
+                elseif_branches,
+                else_body,
+            });
         }
 
-        // Legacy syntax: if cond then body [elseif cond then body]* [else body] end
+        // Legacy syntax: if cond then body [elseif ...] [else ...] end
         self.expect(&Token::Then)?;
+        // Parse then-body until we hit else, elseif, or end.
         let then_body = self.parse_block_until(&[Token::Else, Token::ElseIf, Token::End])?;
 
         let mut elseif_branches = Vec::new();
@@ -354,9 +459,17 @@ impl Parser {
         }
 
         self.expect(&Token::End)?;
-        Ok(Stmt::If { cond, then_body, elseif_branches, else_body })
+        Ok(Stmt::If {
+            cond,
+            then_body,
+            elseif_branches,
+            else_body,
+        })
     }
 
+    // --- Section: while loop ---
+
+    // Parses `while cond do body end`.
     fn parse_while(&mut self) -> Result<Stmt, ParseError> {
         self.advance();
         let cond = Box::new(self.parse_expr()?);
@@ -366,22 +479,32 @@ impl Parser {
         Ok(Stmt::While { cond, body })
     }
 
+    // --- Section: repeat-until loop ---
+
+    // Parses `repeat body until cond` (body executes at least once).
     fn parse_repeat(&mut self) -> Result<Stmt, ParseError> {
         self.advance();
         let body = self.parse_block_until(&[Token::Until])?;
+        // Consume the `until` token.
         self.advance();
         let cond = Box::new(self.parse_expr()?);
         Ok(Stmt::Repeat { body, until: cond })
     }
 
+    // --- Section: for loop ---
+
+    // Parses numeric `for var = from, to [, step] do body end`
+    // or generic `for vars in exprs do body end`.
     fn parse_for(&mut self) -> Result<Stmt, ParseError> {
         self.advance();
         let first = self.expect_ident()?;
         if matches!(self.peek(), Token::Eq) {
+            // Numeric for: for var = from, to [, step] do body end
             self.advance();
             let from = Box::new(self.parse_expr()?);
             self.expect(&Token::Comma)?;
             let to = Box::new(self.parse_expr()?);
+            // Optional step (third expression after second comma).
             let step = if matches!(self.peek(), Token::Comma) {
                 self.advance();
                 Some(Box::new(self.parse_expr()?))
@@ -391,8 +514,15 @@ impl Parser {
             self.expect(&Token::Do)?;
             let body = self.parse_block_until(&[Token::End])?;
             self.expect(&Token::End)?;
-            Ok(Stmt::ForNum { var: first, from, to, step, body })
+            Ok(Stmt::ForNum {
+                var: first,
+                from,
+                to,
+                step,
+                body,
+            })
         } else {
+            // Generic for: for vars in exprs do body end
             let mut vars = vec![first];
             while matches!(self.peek(), Token::Comma) {
                 self.advance();
@@ -407,11 +537,18 @@ impl Parser {
         }
     }
 
+    // --- Section: return statement ---
+
+    // Parses `return [expr [, expr]...]`.
+    // Return is empty (no expressions) if the next token is a block terminator or EOF.
     fn parse_return(&mut self) -> Result<Stmt, ParseError> {
         self.advance();
+        // If the next token ends a block, there are no return values.
         let exprs = if self.is_eof()
-            || matches!(self.peek(), Token::End | Token::Else | Token::ElseIf | Token::Until | Token::RBrace)
-        {
+            || matches!(
+                self.peek(),
+                Token::End | Token::Else | Token::ElseIf | Token::Until | Token::RBrace
+            ) {
             Vec::new()
         } else {
             self.parse_expr_list()?
@@ -419,8 +556,12 @@ impl Parser {
         Ok(Stmt::Return { exprs })
     }
 
+    // --- Section: assignment or call statement ---
+
+    // Parses an assignment (single or multi-target) or falls through to an expression statement.
+    // Handles `a = 1`, `a, b = 1, 2`, `a.b = 1`, and bare expression calls.
     fn parse_assign_or_call(&mut self) -> Result<Stmt, ParseError> {
-        // Parse LHS as a full expression — needed for binary ops like `a + b`
+        // Parse LHS as a full expression — needed for binary ops like `a + b`.
         let first = self.parse_expr()?;
 
         // Multi-target: a, b = 1, 2
@@ -439,12 +580,19 @@ impl Parser {
         if matches!(self.peek(), Token::Eq) {
             self.advance();
             let exprs = self.parse_expr_list()?;
-            return Ok(Stmt::Assign { targets: vec![first], exprs });
+            return Ok(Stmt::Assign {
+                targets: vec![first],
+                exprs,
+            });
         }
 
+        // No assignment operator found — treat as a bare expression statement (e.g. function call).
         Ok(Stmt::ExprStmt(first))
     }
 
+    // --- Section: block parsing helper ---
+
+    // Collects statements until EOF or one of the delimiter tokens is reached.
     fn parse_block_until(&mut self, delimiters: &[Token]) -> Result<Vec<Stmt>, ParseError> {
         let mut stmts = Vec::new();
         while !self.is_eof() {
@@ -456,12 +604,14 @@ impl Parser {
         Ok(stmts)
     }
 
-    // --- expressions (precedence climbing) ---
+    // --- Section: Expression parsing (Pratt / precedence climbing) ---
 
+    // Entry point for expression parsing; starts at the lowest precedence.
     fn parse_expr(&mut self) -> Result<Expr, ParseError> {
         self.parse_binary(0)
     }
 
+    // Parses a comma-separated list of expressions.
     fn parse_expr_list(&mut self) -> Result<Vec<Expr>, ParseError> {
         let mut exprs = Vec::new();
         exprs.push(self.parse_expr()?);
@@ -472,12 +622,17 @@ impl Parser {
         Ok(exprs)
     }
 
-    /// Precedence climbing for binary operators.
-    /// min_prec: minimum precedence to accept (higher = tighter binding).
+    // --- Section: Binary operator parsing (precedence climbing) ---
+
+    // Precedence climbing for binary operators.
+    // min_prec: minimum precedence to accept (higher = tighter binding).
     fn parse_binary(&mut self, min_prec: u32) -> Result<Expr, ParseError> {
+        // Parse the left-hand side which may start with a unary or prefix operator.
         let mut lhs = self.parse_unary()?;
 
         loop {
+            // Look up the current token in the precedence table.
+            // Each entry: (operator, precedence, right_associative).
             let op_data = match self.peek() {
                 Token::Or => Some((BinOp::Or, 10, false)),
                 Token::And => Some((BinOp::And, 20, false)),
@@ -500,64 +655,99 @@ impl Parser {
 
             let (op, prec, right_assoc) = match op_data {
                 Some(d) => d,
+                // No operator found; this expression is complete.
                 None => break,
             };
 
+            // Stop if this operator binds less tightly than our minimum.
             if prec < min_prec {
                 break;
             }
 
+            // Consume the operator token.
             self.advance();
+            // For right-associative operators, recurse at the same precedence;
+            // for left-associative, recurse one level higher.
             let next_prec = if right_assoc { prec } else { prec + 1 };
             let rhs = self.parse_binary(next_prec)?;
-            lhs = Expr::Binary { lhs: Box::new(lhs), op, rhs: Box::new(rhs) };
+            lhs = Expr::Binary {
+                lhs: Box::new(lhs),
+                op,
+                rhs: Box::new(rhs),
+            };
         }
 
         Ok(lhs)
     }
 
-    /// Unary ops + power (right-assoc) + postfix + prefix
+    // --- Section: Unary and power expression parsing ---
+
+    // Unary ops (negation, not, length) + right-associative power.
+    // `not` has higher precedence than comparisons in this parser.
     fn parse_unary(&mut self) -> Result<Expr, ParseError> {
+        // Prefix unary operators: -, not, # (length).
         match self.peek() {
             Token::Minus => {
                 self.advance();
                 let expr = self.parse_unary()?;
-                return Ok(Expr::Unary { op: UnaryOp::Neg, expr: Box::new(expr) });
+                return Ok(Expr::Unary {
+                    op: UnaryOp::Neg,
+                    expr: Box::new(expr),
+                });
             }
             Token::Not => {
                 self.advance();
                 let expr = self.parse_unary()?;
-                return Ok(Expr::Unary { op: UnaryOp::Not, expr: Box::new(expr) });
+                return Ok(Expr::Unary {
+                    op: UnaryOp::Not,
+                    expr: Box::new(expr),
+                });
             }
             Token::Hash => {
                 self.advance();
                 let expr = self.parse_unary()?;
-                return Ok(Expr::Unary { op: UnaryOp::Len, expr: Box::new(expr) });
+                return Ok(Expr::Unary {
+                    op: UnaryOp::Len,
+                    expr: Box::new(expr),
+                });
             }
             _ => {}
         }
 
-        // Power: right-associative
+        // Power: right-associative, so parse postfix first then optionally consume `^`.
         let mut lhs = self.parse_postfix()?;
         if matches!(self.peek(), Token::Caret) {
             self.advance();
             let rhs = self.parse_unary()?;
-            lhs = Expr::Binary { lhs: Box::new(lhs), op: BinOp::Pow, rhs: Box::new(rhs) };
+            lhs = Expr::Binary {
+                lhs: Box::new(lhs),
+                op: BinOp::Pow,
+                rhs: Box::new(rhs),
+            };
         }
         Ok(lhs)
     }
 
-    /// Postfix: field access, method call, index, function call
+    // --- Section: Postfix expression parsing ---
+
+    // Postfix: field access (.name), method call (:name(args)), index ([expr]), function call (args).
+    // Chains repeatedly until no postfix operator is found.
     fn parse_postfix(&mut self) -> Result<Expr, ParseError> {
+        // Start with a prefix expression, then apply postfix operators in a loop.
         let mut expr = self.parse_prefix()?;
         loop {
             match self.peek() {
                 Token::Dot => {
+                    // Field access: obj.field
                     self.advance();
                     let field = self.expect_ident()?;
-                    expr = Expr::FieldAccess { obj: Box::new(expr), field };
+                    expr = Expr::FieldAccess {
+                        obj: Box::new(expr),
+                        field,
+                    };
                 }
                 Token::Colon => {
+                    // Method call: obj:method(args)
                     self.advance();
                     let method = self.expect_ident()?;
                     self.expect(&Token::LParen)?;
@@ -567,6 +757,8 @@ impl Parser {
                         self.parse_expr_list()?
                     };
                     self.expect(&Token::RParen)?;
+                    // Determine the object name for the MethodCall node:
+                    // unwrap nested FieldAccess/MethodCall to find the chainable name.
                     let obj = match &expr {
                         Expr::Ident(name) => name.clone(),
                         Expr::FieldAccess { field, .. } => field.clone(),
@@ -576,12 +768,17 @@ impl Parser {
                     expr = Expr::MethodCall { obj, method, args };
                 }
                 Token::LBracket => {
+                    // Index: obj[expr]
                     self.advance();
                     let index = self.parse_expr()?;
                     self.expect(&Token::RBracket)?;
-                    expr = Expr::Index { obj: Box::new(expr), index: Box::new(index) };
+                    expr = Expr::Index {
+                        obj: Box::new(expr),
+                        index: Box::new(index),
+                    };
                 }
                 Token::LParen => {
+                    // Function call: fn(args)
                     self.advance();
                     let args = if matches!(self.peek(), Token::RParen) {
                         Vec::new()
@@ -589,19 +786,27 @@ impl Parser {
                         self.parse_expr_list()?
                     };
                     self.expect(&Token::RParen)?;
+                    // Dispatch based on the preceding expression to decide between FnCall and MethodCall.
                     match expr {
                         Expr::Ident(name) => {
                             expr = Expr::FnCall { name, args };
                         }
                         Expr::FieldAccess { obj, field } => {
+                            // obj.field(args) — sugar for obj:field(args)
                             let obj_name = match obj.as_ref() {
                                 Expr::Ident(s) => s.clone(),
                                 Expr::FieldAccess { field: f, .. } => f.clone(),
-                                other => return Err(self.err(
-                                    &format!("cannot call method on {:?}", other)
-                                )),
+                                other => {
+                                    return Err(
+                                        self.err(&format!("cannot call method on {:?}", other))
+                                    )
+                                }
                             };
-                            expr = Expr::MethodCall { obj: obj_name, method: field, args };
+                            expr = Expr::MethodCall {
+                                obj: obj_name,
+                                method: field,
+                                args,
+                            };
                         }
                         _ => return Err(self.err("cannot call non-function expression")),
                     }
@@ -612,12 +817,24 @@ impl Parser {
         Ok(expr)
     }
 
+    // --- Section: Prefix / primary expression parsing ---
+
+    // Parses the atomic prefix of an expression: literals, identifiers, parenthesized exprs, tables, vararg.
     fn parse_prefix(&mut self) -> Result<Expr, ParseError> {
         let tok = self.peek().clone();
         match tok {
-            Token::Nil => { self.advance(); Ok(Expr::Literal(Literal::Nil)) }
-            Token::True => { self.advance(); Ok(Expr::Literal(Literal::Bool(true))) }
-            Token::False => { self.advance(); Ok(Expr::Literal(Literal::Bool(false))) }
+            Token::Nil => {
+                self.advance();
+                Ok(Expr::Literal(Literal::Nil))
+            }
+            Token::True => {
+                self.advance();
+                Ok(Expr::Literal(Literal::Bool(true)))
+            }
+            Token::False => {
+                self.advance();
+                Ok(Expr::Literal(Literal::Bool(false)))
+            }
             Token::Number(s) => {
                 self.advance();
                 Ok(Expr::Literal(parse_number(&s)?))
@@ -631,15 +848,15 @@ impl Parser {
                 Ok(Expr::Ident(s))
             }
             Token::LParen => {
+                // Parenthesized expression: ( expr )
                 self.advance();
                 let expr = self.parse_expr()?;
                 self.expect(&Token::RParen)?;
                 Ok(expr)
             }
-            Token::LBrace => {
-                self.parse_table()
-            }
+            Token::LBrace => self.parse_table(),
             Token::VarArg => {
+                // Vararg (...) is treated as the identifier "...".
                 self.advance();
                 Ok(Expr::Ident("...".to_string()))
             }
@@ -647,11 +864,16 @@ impl Parser {
         }
     }
 
+    // --- Section: Table constructor parsing ---
+
+    // Parses `{ [field [, field]...] }`.
+    // Fields can be: list-style (value), key-value with `[expr] = expr`, or record-style `name = expr`.
     fn parse_table(&mut self) -> Result<Expr, ParseError> {
         self.advance();
         let mut fields = Vec::new();
         while !matches!(self.peek(), Token::RBrace) && !self.is_eof() {
             if matches!(self.peek(), Token::LBracket) {
+                // [key] = value  (computed-key field)
                 self.advance();
                 let key = self.parse_expr()?;
                 self.expect(&Token::RBracket)?;
@@ -659,6 +881,7 @@ impl Parser {
                 let value = self.parse_expr()?;
                 fields.push(TableField::KeyValue { key, value });
             } else if matches!(self.peek_at(1), Token::Eq) {
+                // name = value  (record-style field — name becomes a string key)
                 let name = self.expect_ident()?;
                 self.expect(&Token::Eq)?;
                 let value = self.parse_expr()?;
@@ -667,9 +890,11 @@ impl Parser {
                     value,
                 });
             } else {
+                // Bare value (list-style field).
                 let value = self.parse_expr()?;
                 fields.push(TableField::Value(value));
             }
+            // Optional comma or semicolon separator between fields.
             if matches!(self.peek(), Token::Comma | Token::Semi) {
                 self.advance();
             }
@@ -679,34 +904,47 @@ impl Parser {
     }
 }
 
+// --- Section: Number literal parser (free function) ---
+
+// Converts a numeric string token into a Literal.
+// Handles: integer, float (with '.' or 'e'/'E'), and hex (0x/0X).
 fn parse_number(s: &str) -> Result<Literal, ParseError> {
     if s.contains('.') || s.contains('e') || s.contains('E') {
-        s.parse::<f64>().map(Literal::F64).map_err(|_| {
-            ParseError { msg: format!("invalid float: {}", s), pos: 0 }
+        s.parse::<f64>().map(Literal::F64).map_err(|_| ParseError {
+            msg: format!("invalid float: {}", s),
+            pos: 0,
         })
     } else if s.starts_with("0x") || s.starts_with("0X") {
-        i64::from_str_radix(&s[2..], 16).map(Literal::I64).map_err(|_| {
-            ParseError { msg: format!("invalid hex: {}", s), pos: 0 }
-        })
+        i64::from_str_radix(&s[2..], 16)
+            .map(Literal::I64)
+            .map_err(|_| ParseError {
+                msg: format!("invalid hex: {}", s),
+                pos: 0,
+            })
     } else {
-        s.parse::<i64>().map(Literal::I64).map_err(|_| {
-            ParseError { msg: format!("invalid integer: {}", s), pos: 0 }
+        s.parse::<i64>().map(Literal::I64).map_err(|_| ParseError {
+            msg: format!("invalid integer: {}", s),
+            pos: 0,
         })
     }
 }
 
+// --- Section: Convenience parse function ---
+
+// Tokenises and parses QFL source in one call.
 pub fn parse(input: &str) -> Result<Program, ParseError> {
-    let tokens = crate::lexer::tokenize(input).map_err(|e| ParseError {
-        msg: e.msg,
-        pos: 0,
-    })?;
+    let tokens = crate::lexer::tokenize(input).map_err(|e| ParseError { msg: e.msg, pos: 0 })?;
     let mut parser = Parser::new(tokens);
     parser.parse()
 }
 
+// --- Section: Tests ---
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // ── Basic expression tests ──
 
     #[test]
     fn test_empty() {
@@ -730,7 +968,10 @@ mod tests {
     #[test]
     fn test_string() {
         let prog = parse("\"hello\"").unwrap();
-        assert_eq!(prog[0], Stmt::ExprStmt(Expr::Literal(Literal::String("hello".into()))));
+        assert_eq!(
+            prog[0],
+            Stmt::ExprStmt(Expr::Literal(Literal::String("hello".into())))
+        );
     }
 
     #[test]
@@ -770,6 +1011,8 @@ mod tests {
             })
         );
     }
+
+    // ── Variable declaration tests ──
 
     #[test]
     fn test_local_var() {
@@ -813,6 +1056,8 @@ mod tests {
         );
     }
 
+    // ── Assignment tests ──
+
     #[test]
     fn test_assign() {
         let prog = parse("x = 10").unwrap();
@@ -840,6 +1085,8 @@ mod tests {
         );
     }
 
+    // ── Legacy function declaration tests ──
+
     #[test]
     fn test_fn_decl() {
         let prog = parse("function foo(a, b) return a + b end").unwrap();
@@ -859,18 +1106,28 @@ mod tests {
         );
     }
 
+    // ── Control flow tests ──
+
     #[test]
     fn test_if_stmt() {
         let src = "if x > 0 then return x else return -x end";
         let prog = parse(src).unwrap();
         assert_eq!(prog.len(), 1);
         match &prog[0] {
-            Stmt::If { cond, then_body, elseif_branches, else_body } => {
-                assert_eq!(cond.as_ref(), &Expr::Binary {
-                    lhs: Box::new(Expr::Ident("x".into())),
-                    op: BinOp::Gt,
-                    rhs: Box::new(Expr::Literal(Literal::I64(0))),
-                });
+            Stmt::If {
+                cond,
+                then_body,
+                elseif_branches,
+                else_body,
+            } => {
+                assert_eq!(
+                    cond.as_ref(),
+                    &Expr::Binary {
+                        lhs: Box::new(Expr::Ident("x".into())),
+                        op: BinOp::Gt,
+                        rhs: Box::new(Expr::Literal(Literal::I64(0))),
+                    }
+                );
                 assert_eq!(then_body.len(), 1);
                 assert!(elseif_branches.is_empty());
                 assert_eq!(else_body.len(), 1);
@@ -885,11 +1142,14 @@ mod tests {
         assert_eq!(prog.len(), 1);
         match &prog[0] {
             Stmt::While { cond, body } => {
-                assert_eq!(cond.as_ref(), &Expr::Binary {
-                    lhs: Box::new(Expr::Ident("x".into())),
-                    op: BinOp::Lt,
-                    rhs: Box::new(Expr::Literal(Literal::I64(10))),
-                });
+                assert_eq!(
+                    cond.as_ref(),
+                    &Expr::Binary {
+                        lhs: Box::new(Expr::Ident("x".into())),
+                        op: BinOp::Lt,
+                        rhs: Box::new(Expr::Literal(Literal::I64(10))),
+                    }
+                );
                 assert_eq!(body.len(), 1);
             }
             _ => panic!("expected While stmt"),
@@ -903,22 +1163,33 @@ mod tests {
         match &prog[0] {
             Stmt::Repeat { body, until } => {
                 assert_eq!(body.len(), 1);
-                assert_eq!(until.as_ref(), &Expr::Binary {
-                    lhs: Box::new(Expr::Ident("x".into())),
-                    op: BinOp::Eq,
-                    rhs: Box::new(Expr::Literal(Literal::I64(0))),
-                });
+                assert_eq!(
+                    until.as_ref(),
+                    &Expr::Binary {
+                        lhs: Box::new(Expr::Ident("x".into())),
+                        op: BinOp::Eq,
+                        rhs: Box::new(Expr::Literal(Literal::I64(0))),
+                    }
+                );
             }
             _ => panic!("expected Repeat stmt"),
         }
     }
+
+    // ── For loop tests ──
 
     #[test]
     fn test_numeric_for() {
         let prog = parse("for i = 1, 10 do print(i) end").unwrap();
         assert_eq!(prog.len(), 1);
         match &prog[0] {
-            Stmt::ForNum { var, from, to, step, body } => {
+            Stmt::ForNum {
+                var,
+                from,
+                to,
+                step,
+                body,
+            } => {
                 assert_eq!(var, "i");
                 assert_eq!(from.as_ref(), &Expr::Literal(Literal::I64(1)));
                 assert_eq!(to.as_ref(), &Expr::Literal(Literal::I64(10)));
@@ -935,7 +1206,10 @@ mod tests {
         match &prog[0] {
             Stmt::ForNum { step, .. } => {
                 assert!(step.is_some());
-                assert_eq!(step.as_ref().unwrap().as_ref(), &Expr::Literal(Literal::I64(2)));
+                assert_eq!(
+                    step.as_ref().unwrap().as_ref(),
+                    &Expr::Literal(Literal::I64(2))
+                );
             }
             _ => panic!("expected ForNum stmt"),
         }
@@ -953,6 +1227,8 @@ mod tests {
             _ => panic!("expected ForIn stmt"),
         }
     }
+
+    // ── Function call tests ──
 
     #[test]
     fn test_fn_call() {
@@ -982,6 +1258,8 @@ mod tests {
         );
     }
 
+    // ── Field access tests ──
+
     #[test]
     fn test_field_access() {
         let prog = parse("a.b.c").unwrap();
@@ -996,6 +1274,8 @@ mod tests {
             })
         );
     }
+
+    // ── Table constructor tests ──
 
     #[test]
     fn test_table_simple() {
@@ -1026,6 +1306,8 @@ mod tests {
         }
     }
 
+    // ── Unary operator tests ──
+
     #[test]
     fn test_unary_minus() {
         let prog = parse("-42").unwrap();
@@ -1050,6 +1332,8 @@ mod tests {
         );
     }
 
+    // ── String concat and power tests ──
+
     #[test]
     fn test_concat() {
         let prog = parse("\"a\" .. \"b\"").unwrap();
@@ -1068,10 +1352,18 @@ mod tests {
         let prog = parse("2 ^ 3 ^ 2").unwrap();
         // right-associative: 2 ^ (3 ^ 2)
         match &prog[0] {
-            Stmt::ExprStmt(Expr::Binary { lhs, op: BinOp::Pow, rhs }) => {
+            Stmt::ExprStmt(Expr::Binary {
+                lhs,
+                op: BinOp::Pow,
+                rhs,
+            }) => {
                 assert_eq!(lhs.as_ref(), &Expr::Literal(Literal::I64(2)));
                 match rhs.as_ref() {
-                    Expr::Binary { lhs: rl, op: BinOp::Pow, rhs: rr } => {
+                    Expr::Binary {
+                        lhs: rl,
+                        op: BinOp::Pow,
+                        rhs: rr,
+                    } => {
                         assert_eq!(rl.as_ref(), &Expr::Literal(Literal::I64(3)));
                         assert_eq!(rr.as_ref(), &Expr::Literal(Literal::I64(2)));
                     }
@@ -1089,7 +1381,11 @@ mod tests {
             Stmt::ExprStmt(Expr::FieldAccess { obj, field }) => {
                 assert_eq!(field, "qux");
                 match obj.as_ref() {
-                    Expr::MethodCall { obj: o, method: m, args: _ } => {
+                    Expr::MethodCall {
+                        obj: o,
+                        method: m,
+                        args: _,
+                    } => {
                         assert_eq!(o, "bar");
                         assert_eq!(m, "baz");
                     }
@@ -1100,15 +1396,22 @@ mod tests {
         }
     }
 
+    // ── Edge case: empty function ──
+
     #[test]
     fn test_empty_fn() {
         let prog = parse("function empty() end").unwrap();
-        assert_eq!(prog[0], Stmt::FunctionDecl {
-            name: "empty".into(),
-            params: vec![],
-            body: vec![],
-        });
+        assert_eq!(
+            prog[0],
+            Stmt::FunctionDecl {
+                name: "empty".into(),
+                params: vec![],
+                body: vec![],
+            }
+        );
     }
+
+    // ── Nested block tests ──
 
     #[test]
     fn test_nested_blocks() {
@@ -1146,13 +1449,19 @@ end
 ";
         let prog = parse(src).unwrap();
         match &prog[0] {
-            Stmt::If { elseif_branches, else_body, .. } => {
+            Stmt::If {
+                elseif_branches,
+                else_body,
+                ..
+            } => {
                 assert_eq!(elseif_branches.len(), 1);
                 assert!(!else_body.is_empty());
             }
             _ => panic!("expected If"),
         }
     }
+
+    // ── Return statement tests ──
 
     #[test]
     fn test_multiple_returns() {
@@ -1180,6 +1489,8 @@ end
         }
     }
 
+    // ── Multi-variable local ──
+
     #[test]
     fn test_multi_local() {
         let prog = parse("local a, b = 1, 2").unwrap();
@@ -1196,6 +1507,8 @@ end
             }
         );
     }
+
+    // ── Parenthesised expression ──
 
     #[test]
     fn test_expr_in_parens() {
@@ -1214,14 +1527,24 @@ end
         );
     }
 
+    // ── Integer division and modulo ──
+
     #[test]
     fn test_idiv_mod() {
         let prog = parse("10 // 3 % 2").unwrap();
         // (10 // 3) % 2 — same precedence, left-assoc
         match &prog[0] {
-            Stmt::ExprStmt(Expr::Binary { lhs, op: BinOp::Mod, rhs }) => {
+            Stmt::ExprStmt(Expr::Binary {
+                lhs,
+                op: BinOp::Mod,
+                rhs,
+            }) => {
                 match lhs.as_ref() {
-                    Expr::Binary { lhs: ll, op: BinOp::IDiv, rhs: lr } => {
+                    Expr::Binary {
+                        lhs: ll,
+                        op: BinOp::IDiv,
+                        rhs: lr,
+                    } => {
                         assert_eq!(ll.as_ref(), &Expr::Literal(Literal::I64(10)));
                         assert_eq!(lr.as_ref(), &Expr::Literal(Literal::I64(3)));
                     }
@@ -1233,17 +1556,23 @@ end
         }
     }
 
+    // ── Hex literal ──
+
     #[test]
     fn test_hex_number() {
         let prog = parse("0xff").unwrap();
         assert_eq!(prog[0], Stmt::ExprStmt(Expr::Literal(Literal::I64(255))));
     }
 
+    // ── Semicolon as empty statement ──
+
     #[test]
     fn test_semi_stmt() {
         let prog = parse(";").unwrap();
         assert_eq!(prog[0], Stmt::ExprStmt(Expr::Literal(Literal::Nil)));
     }
+
+    // ── Index expression ──
 
     #[test]
     fn test_table_field_access() {
@@ -1257,15 +1586,24 @@ end
         );
     }
 
+    // ── Unary not precedence ──
+
     #[test]
     fn test_unary_not_precedence() {
         // In Lua, `not` has HIGHER precedence than comparison.
         // `not a > b` parses as `(not a) > b`.
         let prog = parse("not a > b").unwrap();
         match &prog[0] {
-            Stmt::ExprStmt(Expr::Binary { lhs, op: BinOp::Gt, rhs }) => {
+            Stmt::ExprStmt(Expr::Binary {
+                lhs,
+                op: BinOp::Gt,
+                rhs,
+            }) => {
                 match lhs.as_ref() {
-                    Expr::Unary { op: UnaryOp::Not, expr } => {
+                    Expr::Unary {
+                        op: UnaryOp::Not,
+                        expr,
+                    } => {
                         assert_eq!(expr.as_ref(), &Expr::Ident("a".into()));
                     }
                     _ => panic!("expected unary not"),
@@ -1306,7 +1644,10 @@ end
     #[test]
     fn test_escape_string() {
         let prog = parse("\"hello\\nworld\"").unwrap();
-        assert_eq!(prog[0], Stmt::ExprStmt(Expr::Literal(Literal::String("hello\nworld".into()))));
+        assert_eq!(
+            prog[0],
+            Stmt::ExprStmt(Expr::Literal(Literal::String("hello\nworld".into())))
+        );
     }
 
     #[test]
@@ -1351,10 +1692,13 @@ end
     #[test]
     fn test_negative_float() {
         let prog = parse("-3.14").unwrap();
-        assert_eq!(prog[0], Stmt::ExprStmt(Expr::Unary {
-            op: UnaryOp::Neg,
-            expr: Box::new(Expr::Literal(Literal::F64(3.14))),
-        }));
+        assert_eq!(
+            prog[0],
+            Stmt::ExprStmt(Expr::Unary {
+                op: UnaryOp::Neg,
+                expr: Box::new(Expr::Literal(Literal::F64(3.14))),
+            })
+        );
     }
 
     #[test]
@@ -1424,7 +1768,10 @@ end
 
     #[test]
     fn test_fn_decl_many_params() {
-        let params = (0..50).map(|i| format!("p{}", i)).collect::<Vec<_>>().join(", ");
+        let params = (0..50)
+            .map(|i| format!("p{}", i))
+            .collect::<Vec<_>>()
+            .join(", ");
         let src = format!("function f({}) end", params);
         let prog = parse(&src).unwrap();
         assert_eq!(prog.len(), 1);
@@ -1497,18 +1844,26 @@ end
     #[test]
     fn test_empty_block_in_fn() {
         let prog = parse("function f() end").unwrap();
-        assert_eq!(prog[0], Stmt::FunctionDecl {
-            name: "f".into(),
-            params: vec![],
-            body: vec![],
-        });
+        assert_eq!(
+            prog[0],
+            Stmt::FunctionDecl {
+                name: "f".into(),
+                params: vec![],
+                body: vec![],
+            }
+        );
     }
 
     #[test]
     fn test_if_without_else() {
         let prog = parse("if 1 then return 42 end").unwrap();
         match &prog[0] {
-            Stmt::If { cond, then_body, elseif_branches, else_body } => {
+            Stmt::If {
+                cond,
+                then_body,
+                elseif_branches,
+                else_body,
+            } => {
                 assert_eq!(cond.as_ref(), &Expr::Literal(Literal::I64(1)));
                 assert_eq!(then_body.len(), 1);
                 assert!(elseif_branches.is_empty());
@@ -1522,7 +1877,12 @@ end
     fn test_if_elseif_only() {
         let prog = parse("if 1 then elseif 2 then end").unwrap();
         match &prog[0] {
-            Stmt::If { cond, then_body, elseif_branches, else_body } => {
+            Stmt::If {
+                cond,
+                then_body,
+                elseif_branches,
+                else_body,
+            } => {
                 assert_eq!(cond.as_ref(), &Expr::Literal(Literal::I64(1)));
                 assert!(then_body.is_empty());
                 assert_eq!(elseif_branches.len(), 1);
@@ -1549,10 +1909,14 @@ end
             Stmt::If { then_body, .. } => {
                 assert_eq!(then_body.len(), 1);
                 match &then_body[0] {
-                    Stmt::If { then_body: inner2, .. } => {
+                    Stmt::If {
+                        then_body: inner2, ..
+                    } => {
                         assert_eq!(inner2.len(), 1);
                         match &inner2[0] {
-                            Stmt::If { then_body: inner3, .. } => {
+                            Stmt::If {
+                                then_body: inner3, ..
+                            } => {
                                 assert_eq!(inner3.len(), 1);
                             }
                             _ => panic!("expected third If"),
@@ -1583,7 +1947,11 @@ end
                 assert_eq!(cond.as_ref(), &Expr::Literal(Literal::I64(1)));
                 assert_eq!(body.len(), 1);
                 match &body[0] {
-                    Stmt::If { then_body, else_body, .. } => {
+                    Stmt::If {
+                        then_body,
+                        else_body,
+                        ..
+                    } => {
                         assert_eq!(then_body.len(), 1);
                         assert_eq!(else_body.len(), 1);
                     }
@@ -1607,11 +1975,14 @@ until x >= 10
         match &prog[0] {
             Stmt::Repeat { body, until } => {
                 assert_eq!(body.len(), 2);
-                assert_eq!(until.as_ref(), &Expr::Binary {
-                    lhs: Box::new(Expr::Ident("x".into())),
-                    op: BinOp::Ge,
-                    rhs: Box::new(Expr::Literal(Literal::I64(10))),
-                });
+                assert_eq!(
+                    until.as_ref(),
+                    &Expr::Binary {
+                        lhs: Box::new(Expr::Ident("x".into())),
+                        op: BinOp::Ge,
+                        rhs: Box::new(Expr::Literal(Literal::I64(10))),
+                    }
+                );
             }
             _ => panic!("expected Repeat"),
         }
@@ -1621,7 +1992,13 @@ until x >= 10
     fn test_for_with_float_bounds() {
         let prog = parse("for i = 1.5, 10.5 do end").unwrap();
         match &prog[0] {
-            Stmt::ForNum { var, from, to, step, body } => {
+            Stmt::ForNum {
+                var,
+                from,
+                to,
+                step,
+                body,
+            } => {
                 assert_eq!(var, "i");
                 assert_eq!(from.as_ref(), &Expr::Literal(Literal::F64(1.5)));
                 assert_eq!(to.as_ref(), &Expr::Literal(Literal::F64(10.5)));
@@ -1638,7 +2015,10 @@ until x >= 10
         match &prog[0] {
             Stmt::ForNum { step, .. } => {
                 assert!(step.is_some());
-                assert_eq!(step.as_ref().unwrap().as_ref(), &Expr::Literal(Literal::I64(0)));
+                assert_eq!(
+                    step.as_ref().unwrap().as_ref(),
+                    &Expr::Literal(Literal::I64(0))
+                );
             }
             _ => panic!("expected ForNum"),
         }
@@ -1663,7 +2043,12 @@ until x >= 10
         let prog = parse("--[[ multi-line comment ]]\nlocal x = 1").unwrap();
         assert_eq!(prog.len(), 1);
         match &prog[0] {
-            Stmt::VarDecl { names, init, is_local, persist } => {
+            Stmt::VarDecl {
+                names,
+                init,
+                is_local,
+                persist,
+            } => {
                 assert_eq!(names, &vec!["x".to_string()]);
                 assert!(is_local);
                 assert!(!persist);
@@ -1827,27 +2212,38 @@ until x >= 10
 
     #[test]
     fn test_very_long_expression() {
-        let expr: String = (1..=100).map(|i| i.to_string()).collect::<Vec<_>>().join(" + ");
+        let expr: String = (1..=100)
+            .map(|i| i.to_string())
+            .collect::<Vec<_>>()
+            .join(" + ");
         let prog = parse(&expr).unwrap();
         assert_eq!(prog.len(), 1);
         // Walk the left-associative tree without borrowing temporaries
         fn count_add_depth(stmt: &Stmt) -> u32 {
             match stmt {
-                Stmt::ExprStmt(Expr::Binary { lhs, op: BinOp::Add, .. }) => {
-                    1 + count_add_depth(&Stmt::ExprStmt(*lhs.clone()))
-                }
+                Stmt::ExprStmt(Expr::Binary {
+                    lhs,
+                    op: BinOp::Add,
+                    ..
+                }) => 1 + count_add_depth(&Stmt::ExprStmt(*lhs.clone())),
                 _ => 0,
             }
         }
         assert_eq!(count_add_depth(&prog[0]), 99);
     }
 
+    // ── Phase 4g: state, event handler, typed fn tests ──
+
     #[test]
     fn test_state_decl() {
         let prog = parse("state x : f64 = 42.0\nstate y : i32\nstate z : qty").unwrap();
         assert_eq!(prog.len(), 3);
         match &prog[0] {
-            Stmt::State { name, type_name, default } => {
+            Stmt::State {
+                name,
+                type_name,
+                default,
+            } => {
                 assert_eq!(name, "x");
                 assert_eq!(type_name, "f64");
                 assert!(default.is_some());
@@ -1855,7 +2251,11 @@ until x >= 10
             _ => panic!("expected State"),
         }
         match &prog[1] {
-            Stmt::State { name, type_name, default } => {
+            Stmt::State {
+                name,
+                type_name,
+                default,
+            } => {
                 assert_eq!(name, "y");
                 assert_eq!(type_name, "i32");
                 assert!(default.is_none());
@@ -1863,7 +2263,9 @@ until x >= 10
             _ => panic!("expected State"),
         }
         match &prog[2] {
-            Stmt::State { name, type_name, .. } => {
+            Stmt::State {
+                name, type_name, ..
+            } => {
                 assert_eq!(name, "z");
                 assert_eq!(type_name, "qty");
             }
@@ -1904,7 +2306,12 @@ until x >= 10
         let prog = parse("fn calc(x: f64, y: f64) -> f64 { return x + y }").unwrap();
         assert_eq!(prog.len(), 1);
         match &prog[0] {
-            Stmt::FnDecl { name, params, return_type, body } => {
+            Stmt::FnDecl {
+                name,
+                params,
+                return_type,
+                body,
+            } => {
                 assert_eq!(name, "calc");
                 assert_eq!(params.len(), 2);
                 assert_eq!(params[0].name, "x");
@@ -1966,7 +2373,10 @@ until x >= 10
             Stmt::Feature { name, expr } => {
                 assert_eq!(name, "ema_fast");
                 match expr.as_ref() {
-                    Expr::FnCall { name: fn_name, args } => {
+                    Expr::FnCall {
+                        name: fn_name,
+                        args,
+                    } => {
                         assert_eq!(fn_name, "ema");
                         assert_eq!(args.len(), 2);
                     }
@@ -2012,7 +2422,11 @@ until x >= 10
     fn test_state_without_default() {
         let prog = parse("state x : f64").unwrap();
         match &prog[0] {
-            Stmt::State { name, type_name, default } => {
+            Stmt::State {
+                name,
+                type_name,
+                default,
+            } => {
                 assert_eq!(name, "x");
                 assert_eq!(type_name, "f64");
                 assert!(default.is_none());
@@ -2065,7 +2479,12 @@ until x >= 10
     fn test_fn_typed_with_empty_body() {
         let prog = parse("fn empty() -> i64 {}").unwrap();
         match &prog[0] {
-            Stmt::FnDecl { name, return_type, body, .. } => {
+            Stmt::FnDecl {
+                name,
+                return_type,
+                body,
+                ..
+            } => {
                 assert_eq!(name, "empty");
                 assert_eq!(return_type, "i64");
                 assert!(body.is_empty());
@@ -2095,7 +2514,9 @@ on eval() {
 
     #[test]
     fn test_feature_and_signal_in_event_handler() {
-        let prog = parse("feature f = 1.0 + 2.0\nsignal s = 1.0 > 0.5\non eval() { quince.log(\"ok\") }").unwrap();
+        let prog =
+            parse("feature f = 1.0 + 2.0\nsignal s = 1.0 > 0.5\non eval() { quince.log(\"ok\") }")
+                .unwrap();
         assert_eq!(prog.len(), 3);
     }
 

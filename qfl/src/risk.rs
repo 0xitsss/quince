@@ -3,7 +3,6 @@
 /// Intercepts orders before they reach the exchange connector.
 /// Rejects orders that violate configured limits.
 /// Limits are set externally (from strategy config or CLI).
-
 use quince_core::types::Order;
 
 /// Runtime-enforced risk limits.
@@ -141,7 +140,7 @@ mod tests {
     fn order_exceeding_max_position_rejected() {
         let mut engine = RiskEngine::new(RiskLimits::default());
         engine.current_position = 9.5; // near limit
-        // Buying 1.0 more would make position 10.5 > 10.0
+                                       // Buying 1.0 more would make position 10.5 > 10.0
         let order = make_order(Side::Buy, 1.0, Some(50000.0));
         let result = engine.check_order(&order);
         assert!(matches!(result, RiskVerdict::Rejected(_)));

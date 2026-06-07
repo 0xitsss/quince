@@ -18,16 +18,24 @@ impl<T, const N: usize> RingBuffer<T, N> {
     }
 
     #[inline]
-    pub fn len(&self) -> usize { self.len }
+    pub fn len(&self) -> usize {
+        self.len
+    }
 
     #[inline]
-    pub const fn capacity(&self) -> usize { N }
+    pub const fn capacity(&self) -> usize {
+        N
+    }
 
     #[inline]
-    pub fn is_empty(&self) -> bool { self.len == 0 }
+    pub fn is_empty(&self) -> bool {
+        self.len == 0
+    }
 
     #[inline]
-    pub fn is_full(&self) -> bool { self.len == N }
+    pub fn is_full(&self) -> bool {
+        self.len == N
+    }
 
     #[inline]
     fn idx(&self, i: usize) -> usize {
@@ -40,7 +48,9 @@ impl<T, const N: usize> RingBuffer<T, N> {
             self.len += 1;
         } else {
             let slot = self.head;
-            unsafe { ptr::drop_in_place(self.buf[slot].as_mut_ptr()); }
+            unsafe {
+                ptr::drop_in_place(self.buf[slot].as_mut_ptr());
+            }
             self.buf[slot] = MaybeUninit::new(val);
             self.head = (self.head + 1) % N;
         }
@@ -55,13 +65,18 @@ impl<T, const N: usize> RingBuffer<T, N> {
     }
 
     pub fn last(&self) -> Option<&T> {
-        if self.len == 0 { None }
-        else { Some(unsafe { self.buf[self.idx(self.len - 1)].assume_init_ref() }) }
+        if self.len == 0 {
+            None
+        } else {
+            Some(unsafe { self.buf[self.idx(self.len - 1)].assume_init_ref() })
+        }
     }
 
     pub fn clear(&mut self) {
         for i in 0..self.len {
-            unsafe { ptr::drop_in_place(self.buf[self.idx(i)].as_mut_ptr()); }
+            unsafe {
+                ptr::drop_in_place(self.buf[self.idx(i)].as_mut_ptr());
+            }
         }
         self.head = 0;
         self.len = 0;
@@ -81,7 +96,9 @@ impl<T, const N: usize> Default for RingBuffer<T, N> {
 impl<T, const N: usize> Drop for RingBuffer<T, N> {
     fn drop(&mut self) {
         for i in 0..self.len {
-            unsafe { ptr::drop_in_place(self.buf[self.idx(i)].as_mut_ptr()); }
+            unsafe {
+                ptr::drop_in_place(self.buf[self.idx(i)].as_mut_ptr());
+            }
         }
     }
 }
@@ -121,16 +138,24 @@ impl RingVec {
     }
 
     #[inline]
-    pub fn len(&self) -> usize { self.len }
+    pub fn len(&self) -> usize {
+        self.len
+    }
 
     #[inline]
-    pub fn capacity(&self) -> usize { self.cap }
+    pub fn capacity(&self) -> usize {
+        self.cap
+    }
 
     #[inline]
-    pub fn is_empty(&self) -> bool { self.len == 0 }
+    pub fn is_empty(&self) -> bool {
+        self.len == 0
+    }
 
     #[inline]
-    pub fn is_full(&self) -> bool { self.len == self.cap }
+    pub fn is_full(&self) -> bool {
+        self.len == self.cap
+    }
 
     /// Push a value. Returns the evicted value if buffer was full.
     pub fn push(&mut self, val: f64) -> Option<f64> {
@@ -146,7 +171,9 @@ impl RingVec {
         } else {
             self.data[self.head] = val;
             self.head += 1;
-            if self.head >= self.cap { self.head = 0; }
+            if self.head >= self.cap {
+                self.head = 0;
+            }
         }
 
         evicted
@@ -165,8 +192,9 @@ impl RingVec {
 
     #[inline]
     pub fn last(&self) -> Option<f64> {
-        if self.len == 0 { None }
-        else {
+        if self.len == 0 {
+            None
+        } else {
             let idx = self.head + self.len - 1;
             Some(self.data[if idx >= self.cap { idx - self.cap } else { idx }])
         }
@@ -233,7 +261,9 @@ mod tests {
     #[test]
     fn ringvec_evict_on_overflow() {
         let mut rv = RingVec::new(3);
-        rv.push(1.0); rv.push(2.0); rv.push(3.0);
+        rv.push(1.0);
+        rv.push(2.0);
+        rv.push(3.0);
         assert_eq!(rv.push(4.0), Some(1.0));
         assert_eq!(rv.len(), 3);
     }
@@ -241,7 +271,9 @@ mod tests {
     #[test]
     fn ringvec_get_logical_order() {
         let mut rv = RingVec::new(3);
-        rv.push(10.0); rv.push(20.0); rv.push(30.0);
+        rv.push(10.0);
+        rv.push(20.0);
+        rv.push(30.0);
         rv.push(40.0); // evicts 10.0
         assert_eq!(rv.get(0), Some(20.0));
         assert_eq!(rv.get(1), Some(30.0));
@@ -265,7 +297,9 @@ mod tests {
     #[test]
     fn ringvec_iter() {
         let mut rv = RingVec::new(3);
-        rv.push(1.0); rv.push(2.0); rv.push(3.0);
+        rv.push(1.0);
+        rv.push(2.0);
+        rv.push(3.0);
         let vals: Vec<f64> = rv.iter().collect();
         assert_eq!(vals, vec![1.0, 2.0, 3.0]);
     }
@@ -273,7 +307,9 @@ mod tests {
     #[test]
     fn ringvec_iter_after_eviction() {
         let mut rv = RingVec::new(3);
-        rv.push(1.0); rv.push(2.0); rv.push(3.0);
+        rv.push(1.0);
+        rv.push(2.0);
+        rv.push(3.0);
         rv.push(4.0); // evicts 1
         let vals: Vec<f64> = rv.iter().collect();
         assert_eq!(vals, vec![2.0, 3.0, 4.0]);
@@ -282,14 +318,17 @@ mod tests {
     #[test]
     fn ringvec_iter_sum() {
         let mut rv = RingVec::new(4);
-        for v in [1.0, 2.0, 3.0, 4.0] { rv.push(v); }
+        for v in [1.0, 2.0, 3.0, 4.0] {
+            rv.push(v);
+        }
         assert!((rv.iter().sum::<f64>() - 10.0).abs() < 1e-10);
     }
 
     #[test]
     fn ringvec_clear() {
         let mut rv = RingVec::new(3);
-        rv.push(1.0); rv.push(2.0);
+        rv.push(1.0);
+        rv.push(2.0);
         rv.clear();
         assert_eq!(rv.len(), 0);
         assert!(rv.is_empty());
@@ -299,7 +338,9 @@ mod tests {
     #[test]
     fn ringvec_clear_reuse() {
         let mut rv = RingVec::new(3);
-        rv.push(1.0); rv.push(2.0); rv.push(3.0);
+        rv.push(1.0);
+        rv.push(2.0);
+        rv.push(3.0);
         rv.clear();
         rv.push(10.0);
         assert_eq!(rv.get(0), Some(10.0));
@@ -320,7 +361,10 @@ mod tests {
     #[test]
     fn ringbuffer_push_until_full() {
         let mut rb: RingBuffer<f64, 4> = RingBuffer::new();
-        rb.push(1.0); rb.push(2.0); rb.push(3.0); rb.push(4.0);
+        rb.push(1.0);
+        rb.push(2.0);
+        rb.push(3.0);
+        rb.push(4.0);
         assert!(rb.is_full());
         assert_eq!(rb.len(), 4);
     }
@@ -328,7 +372,10 @@ mod tests {
     #[test]
     fn ringbuffer_evict_on_overflow() {
         let mut rb: RingBuffer<f64, 4> = RingBuffer::new();
-        rb.push(1.0); rb.push(2.0); rb.push(3.0); rb.push(4.0);
+        rb.push(1.0);
+        rb.push(2.0);
+        rb.push(3.0);
+        rb.push(4.0);
         rb.push(5.0);
         assert_eq!(rb.len(), 4);
         assert_eq!(rb.get(0), Some(&2.0));
@@ -340,7 +387,10 @@ mod tests {
     #[test]
     fn ringbuffer_get_logical_order() {
         let mut rb: RingBuffer<f64, 4> = RingBuffer::new();
-        rb.push(10.0); rb.push(20.0); rb.push(30.0); rb.push(40.0);
+        rb.push(10.0);
+        rb.push(20.0);
+        rb.push(30.0);
+        rb.push(40.0);
         rb.push(50.0); // evicts 10.0
         assert_eq!(rb.get(0), Some(&20.0));
         assert_eq!(rb.get(1), Some(&30.0));
@@ -366,7 +416,10 @@ mod tests {
     #[test]
     fn ringbuffer_iter() {
         let mut rb: RingBuffer<f64, 4> = RingBuffer::new();
-        rb.push(1.0); rb.push(2.0); rb.push(3.0); rb.push(4.0);
+        rb.push(1.0);
+        rb.push(2.0);
+        rb.push(3.0);
+        rb.push(4.0);
         let vals: Vec<&f64> = rb.iter().collect();
         assert_eq!(vals, vec![&1.0, &2.0, &3.0, &4.0]);
     }
@@ -374,7 +427,10 @@ mod tests {
     #[test]
     fn ringbuffer_iter_after_eviction() {
         let mut rb: RingBuffer<f64, 4> = RingBuffer::new();
-        rb.push(1.0); rb.push(2.0); rb.push(3.0); rb.push(4.0);
+        rb.push(1.0);
+        rb.push(2.0);
+        rb.push(3.0);
+        rb.push(4.0);
         rb.push(5.0); // evicts 1
         let vals: Vec<&f64> = rb.iter().collect();
         assert_eq!(vals, vec![&2.0, &3.0, &4.0, &5.0]);
@@ -383,7 +439,8 @@ mod tests {
     #[test]
     fn ringbuffer_clear() {
         let mut rb: RingBuffer<f64, 4> = RingBuffer::new();
-        rb.push(1.0); rb.push(2.0);
+        rb.push(1.0);
+        rb.push(2.0);
         rb.clear();
         assert_eq!(rb.len(), 0);
         assert!(rb.is_empty());
@@ -393,7 +450,9 @@ mod tests {
     #[test]
     fn ringbuffer_clear_reuse() {
         let mut rb: RingBuffer<f64, 4> = RingBuffer::new();
-        rb.push(1.0); rb.push(2.0); rb.push(3.0);
+        rb.push(1.0);
+        rb.push(2.0);
+        rb.push(3.0);
         rb.clear();
         rb.push(10.0);
         assert_eq!(rb.get(0), Some(&10.0));

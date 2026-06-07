@@ -1,8 +1,17 @@
+// --- Section: Imports ---
+
 use std::fmt;
 
+// --- Section: Token Enum ---
+
+/// A single token produced by the QFL lexer.
+///
+/// Covers 73 variants including keywords, literals, operators,
+/// symbols, directives (@persist, @using, @window), and phase-4h
+/// keywords (state, on, fn).
 #[derive(Debug, Clone, PartialEq)]
 pub enum Token {
-    // Keywords
+    // Standard Lua-derived keywords
     Function,
     Local,
     If,
@@ -24,12 +33,12 @@ pub enum Token {
     True,
     False,
 
-    // Literals
+    // Literal values carrying their text content
     Number(String),
     String(String),
     Ident(String),
 
-    // Symbols
+    // Symbols — single- and multi-character operators / punctuation
     Plus,       // +
     Minus,      // -
     Star,       // *
@@ -59,20 +68,25 @@ pub enum Token {
     VarArg,     // ...
     Arrow,      // ->
 
-    // Directives
+    // Directive tokens — QFL-specific @-prefixed markers
     AtPersist, // @persist
     AtUsing,   // @using
     AtWindow,  // @window
 
-    // Phase 4h keywords
-    State,     // state
-    On,        // on
-    Fn,        // fn
+    // Phase-4h syntactic sugar keywords
+    State, // state
+    On,    // on
+    Fn,    // fn
 
+    // Comment content (text after -- or inside --[[ ... ]])
     Comment(String),
 
+    // End-of-file sentinel
     Eof,
 }
+
+// --- Section: Display impl for Token ---
+// Maps each Token variant back to its source-level string representation.
 
 impl fmt::Display for Token {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -140,11 +154,14 @@ impl fmt::Display for Token {
     }
 }
 
+// --- Section: LexerError ---
+
+/// An error produced during lexing with source position information.
 #[derive(Debug, Clone)]
 pub struct LexerError {
-    pub msg: String,
-    pub line: usize,
-    pub col: usize,
+    pub msg: String,   // Human-readable error description
+    pub line: usize,   // 1-based line number where the error occurred
+    pub col: usize,    // 1-based column number where the error occurred
 }
 
 impl fmt::Display for LexerError {
@@ -153,14 +170,18 @@ impl fmt::Display for LexerError {
     }
 }
 
+/// Character-level lexer that scans QFL source text into tokens.
 pub struct Lexer {
-    chars: Vec<char>,
-    pos: usize,
-    line: usize,
-    col: usize,
+    chars: Vec<char>, // The entire source as a vector of chars for O(1) indexing
+    pos: usize,       // Current cursor position within chars
+    line: usize,      // Current 1-based line number (for error reporting)
+    col: usize,       // Current 1-based column number (for error reporting)
 }
 
+// --- Section: Lexer Impl — Core Methods ---
+
 impl Lexer {
+    // Create a new lexer from source text. Initializes cursor at position 0, line 1, col 1.
     pub fn new(input: &str) -> Self {
         Lexer {
             chars: input.chars().collect(),
@@ -170,14 +191,18 @@ impl Lexer {
         }
     }
 
+    // Return the current character without consuming it, or None at EOF.
     fn peek(&self) -> Option<char> {
         self.chars.get(self.pos).copied()
     }
 
+    // Look ahead n characters without consuming, or None if beyond EOF.
     fn peek_ahead(&self, n: usize) -> Option<char> {
         self.chars.get(self.pos + n).copied()
     }
 
+    // Consume and return the current character, advancing position.
+    // Tracks line/col for error reporting — increments line on '\n', resets col.
     fn advance(&mut self) -> Option<char> {
         let c = self.chars.get(self.pos).copied()?;
         self.pos += 1;
@@ -190,6 +215,7 @@ impl Lexer {
         Some(c)
     }
 
+    // Skip over spaces, tabs, newlines, and carriage returns until a non-whitespace char is found.
     fn skip_whitespace(&mut self) {
         while let Some(c) = self.peek() {
             if c == ' ' || c == '\t' || c == '\n' || c == '\r' {
@@ -200,15 +226,20 @@ impl Lexer {
         }
     }
 
+    // Read a numeric literal starting with `first` (the first digit).
+    // Handles decimals (single dot), hex (0x/0X prefix), rejects nan/inf/infinity
+    // as invalid number tokens, and enforces a 100-char length limit.
     fn read_number(&mut self, first: char) -> Result<Token, LexerError> {
         let mut s = String::new();
         s.push(first);
         let mut is_float = false;
+        // Consume digits and at most one decimal point
         while let Some(c) = self.peek() {
             if c.is_ascii_digit() {
                 s.push(c);
                 self.advance();
             } else if c == '.' && !is_float {
+                // Allow one dot for floating-point; second dot stops the number
                 is_float = true;
                 s.push(c);
                 self.advance();
@@ -216,7 +247,7 @@ impl Lexer {
                 break;
             }
         }
-        // hex prefix
+        // If number starts with "0x" or "0X", switch to hex-digit consumption mode
         if first == '0' && (self.peek() == Some('x') || self.peek() == Some('X')) {
             s.push(self.advance().unwrap());
             while let Some(c) = self.peek() {
@@ -228,7 +259,7 @@ impl Lexer {
                 }
             }
         }
-        // Reject nan/infinity as number tokens
+        // Reject nan, inf, infinity as number tokens — they are identifiers, not numbers
         let lower = s.to_lowercase();
         if lower == "nan" || lower == "inf" || lower == "infinity" {
             return Err(LexerError {
@@ -237,6 +268,7 @@ impl Lexer {
                 col: self.col,
             });
         }
+        // Reject absurdly long number literals (safety limit)
         if s.len() > 100 {
             return Err(LexerError {
                 msg: format!("number literal too long ({} chars)", s.len()),
@@ -247,6 +279,9 @@ impl Lexer {
         Ok(Token::Number(s))
     }
 
+    // Read a string literal delimited by `quote` (' or ").
+    // Handles escape sequences: \n, \t, \\, \", \', \r.
+    // Returns an error on unterminated string or unterminated escape.
     fn read_string(&mut self, quote: char) -> Result<Token, LexerError> {
         let mut s = String::new();
         loop {
@@ -258,8 +293,9 @@ impl Lexer {
                         col: self.col,
                     })
                 }
-                Some(c) if c == quote => break,
+                Some(c) if c == quote => break, // Closing quote found — string is complete
                 Some('\\') => {
+                    // Escape sequence: read the next char and map it
                     match self.advance() {
                         Some('n') => s.push('\n'),
                         Some('t') => s.push('\t'),
@@ -267,7 +303,7 @@ impl Lexer {
                         Some('"') => s.push('"'),
                         Some('\'') => s.push('\''),
                         Some('r') => s.push('\r'),
-                        Some(c) => s.push(c),
+                        Some(c) => s.push(c), // Unknown escape: pass through literally
                         None => {
                             return Err(LexerError {
                                 msg: "unterminated escape".into(),
@@ -277,15 +313,19 @@ impl Lexer {
                         }
                     }
                 }
-                Some(c) => s.push(c),
+                Some(c) => s.push(c), // Regular character — append as-is
             }
         }
         Ok(Token::String(s))
     }
 
+    // Read an identifier or keyword starting with `first` (a letter or underscore).
+    // Consumes alphanumeric + underscore characters, then matches against known
+    // keyword strings. If no keyword matches, returns an Ident token.
     fn read_ident_or_keyword(&mut self, first: char) -> Token {
         let mut s = String::new();
         s.push(first);
+        // Collect all alphanumeric and underscore characters
         while let Some(c) = self.peek() {
             if c.is_alphanumeric() || c == '_' {
                 s.push(c);
@@ -294,6 +334,7 @@ impl Lexer {
                 break;
             }
         }
+        // Match against keyword table; anything else is a plain identifier
         match s.as_str() {
             "function" => Token::Function,
             "local" => Token::Local,
@@ -322,20 +363,36 @@ impl Lexer {
         }
     }
 
+    // --- Section: Token Dispatch ---
+
+    // Scan and return the next token from the input stream.
+    // Dispatches to specialized readers: comments, directives, numbers,
+    // identifiers/keywords, strings, and multi-char symbols.
+    // Returns Eof when input is exhausted, or an error for invalid characters.
     pub fn next_token(&mut self) -> Result<Token, LexerError> {
+        // Skip any leading whitespace before examining the next character
         self.skip_whitespace();
 
+        // Check for end of input
         let c = match self.peek() {
             None => return Ok(Token::Eof),
             Some(c) => c,
         };
 
-        // Multi-line comment --[[ ... ]] (check BEFORE single-line)
-        if c == '-' && self.peek_ahead(1) == Some('-')
-            && self.peek_ahead(2) == Some('[') && self.peek_ahead(3) == Some('[')
+        // Multi-line comment --[[ ... ]] (check BEFORE single-line --)
+        // Requires four characters of lookahead: --[[
+        if c == '-'
+            && self.peek_ahead(1) == Some('-')
+            && self.peek_ahead(2) == Some('[')
+            && self.peek_ahead(3) == Some('[')
         {
-            self.advance(); self.advance(); self.advance(); self.advance();
+            // Consume the four opening characters: --[[
+            self.advance();
+            self.advance();
+            self.advance();
+            self.advance();
             let mut content = String::new();
+            // Read until closing ]] is found, or error on unterminated comment
             loop {
                 if self.peek() == Some(']') && self.peek_ahead(1) == Some(']') {
                     self.advance();
@@ -343,21 +400,25 @@ impl Lexer {
                     break;
                 }
                 match self.advance() {
-                    None => return Err(LexerError {
-                        msg: "unterminated multi-line comment".into(),
-                        line: self.line, col: self.col,
-                    }),
+                    None => {
+                        return Err(LexerError {
+                            msg: "unterminated multi-line comment".into(),
+                            line: self.line,
+                            col: self.col,
+                        })
+                    }
                     Some(c) => content.push(c),
                 }
             }
             return Ok(Token::Comment(content));
         }
 
-        // Single-line comment
+        // Single-line comment: -- until end of line
         if c == '-' && self.peek_ahead(1) == Some('-') {
             self.advance(); // first -
             self.advance(); // second -
             let mut content = String::new();
+            // Consume everything up to (but not including) the next newline
             while let Some(ch) = self.peek() {
                 if ch == '\n' {
                     break;
@@ -368,7 +429,10 @@ impl Lexer {
             return Ok(Token::Comment(content));
         }
 
-        // @persist / @using directives
+        // @-prefixed directives: @persist, @using, @window
+        // Consume the @ sign, then read alphanumeric/underscore name.
+        // If the name matches a known directive, emit the specific token;
+        // otherwise fall back to an Ident token with the @ prefix.
         if c == '@' {
             self.advance();
             let mut s = String::new();
@@ -388,25 +452,26 @@ impl Lexer {
             }
         }
 
-        // Numbers
+        // Numeric literal (starts with a digit 0-9)
         if c.is_ascii_digit() {
             self.advance();
             return self.read_number(c);
         }
 
-        // Identifiers / keywords
+        // Identifier or keyword (starts with a letter or underscore)
         if c.is_alphabetic() || c == '_' {
             self.advance();
             return Ok(self.read_ident_or_keyword(c));
         }
 
-        // Strings
+        // String literal (starts with single or double quote)
         if c == '"' || c == '\'' {
             self.advance();
             return self.read_string(c);
         }
 
-        // Multi-char symbols
+        // --- Single- and multi-character symbol tokens ---
+        // Consume the first character; check second character for two-char operators.
         self.advance();
         let next = self.peek();
         match c {
@@ -418,7 +483,7 @@ impl Lexer {
                 } else {
                     Ok(Token::Minus)
                 }
-            },
+            }
             '*' => Ok(Token::Star),
             '/' => {
                 if next == Some('/') {
@@ -440,32 +505,34 @@ impl Lexer {
             '[' => Ok(Token::LBracket),
             ']' => Ok(Token::RBracket),
             ':' => Ok(Token::Colon),
+            // Dot: . (single), .. (concat), ... (vararg)
             '.' => {
                 if next == Some('.') {
                     self.advance();
                     if self.peek() == Some('.') {
                         self.advance();
-                        Ok(Token::VarArg)
+                        Ok(Token::VarArg) // ...
                     } else {
-                        Ok(Token::Concat)
+                        Ok(Token::Concat) // ..
                     }
                 } else {
-                    Ok(Token::Dot)
+                    Ok(Token::Dot) // .
                 }
             }
             '=' => {
                 if next == Some('=') {
                     self.advance();
-                    Ok(Token::EqEq)
+                    Ok(Token::EqEq) // ==
                 } else {
-                    Ok(Token::Eq)
+                    Ok(Token::Eq) // =
                 }
             }
             '~' => {
                 if next == Some('=') {
                     self.advance();
-                    Ok(Token::TildeEq)
+                    Ok(Token::TildeEq) // ~=
                 } else {
+                    // Lone ~ is not valid QFL syntax
                     Err(LexerError {
                         msg: format!("unexpected '~' (did you mean ~=?)"),
                         line: self.line,
@@ -476,19 +543,20 @@ impl Lexer {
             '<' => {
                 if next == Some('=') {
                     self.advance();
-                    Ok(Token::LtEq)
+                    Ok(Token::LtEq) // <=
                 } else {
-                    Ok(Token::Lt)
+                    Ok(Token::Lt) // <
                 }
             }
             '>' => {
                 if next == Some('=') {
                     self.advance();
-                    Ok(Token::GtEq)
+                    Ok(Token::GtEq) // >=
                 } else {
-                    Ok(Token::Gt)
+                    Ok(Token::Gt) // >
                 }
             }
+            // Any other character is not valid QFL syntax
             _ => Err(LexerError {
                 msg: format!("unexpected character '{}'", c),
                 line: self.line,
@@ -497,7 +565,8 @@ impl Lexer {
         }
     }
 
-    /// Collect all tokens
+    // Collect all tokens from the input by calling next_token() until EOF.
+    // Returns the full token vector or the first lexer error encountered.
     pub fn tokenize(&mut self) -> Result<Vec<Token>, LexerError> {
         let mut tokens = Vec::new();
         loop {
@@ -512,22 +581,34 @@ impl Lexer {
     }
 }
 
+// --- Section: Public API — Free Function ---
+
+/// Tokenise a QFL source string into a token vector.
+///
+/// Validates input size (max 1 MiB), rejects null bytes,
+/// and reports line/col on errors.
 pub fn tokenize(input: &str) -> Result<Vec<Token>, LexerError> {
+    // Reject input larger than 1 MiB to cap memory usage
     if input.len() > 1_048_576 {
         return Err(LexerError {
             msg: format!("input too large: {} bytes (max 1MB)", input.len()),
-            line: 1, col: 1,
+            line: 1,
+            col: 1,
         });
     }
+    // Reject null bytes which would interfere with internal string handling
     if input.contains('\0') {
         return Err(LexerError {
             msg: "input contains null bytes".into(),
-            line: 1, col: 1,
+            line: 1,
+            col: 1,
         });
     }
     let mut lexer = Lexer::new(input);
     lexer.tokenize()
 }
+
+// --- Section: Tests ---
 
 #[cfg(test)]
 mod tests {
@@ -560,7 +641,8 @@ mod tests {
 
     #[test]
     fn test_operators() {
-        let tokens = tokenize("+ - * / // % ^ .. == ~= < > <= >= # , ; : ( ) { } [ ] = ...").unwrap();
+        let tokens =
+            tokenize("+ - * / // % ^ .. == ~= < > <= >= # , ; : ( ) { } [ ] = ...").unwrap();
         assert_eq!(tokens[0], Token::Plus);
         assert_eq!(tokens[3], Token::Slash);
         assert_eq!(tokens[4], Token::SlashSlash);
@@ -786,7 +868,10 @@ mod tests {
     #[test]
     fn test_very_long_number() {
         let tokens = tokenize("999999999999999999999999999999").unwrap();
-        assert_eq!(tokens[0], Token::Number("999999999999999999999999999999".into()));
+        assert_eq!(
+            tokens[0],
+            Token::Number("999999999999999999999999999999".into())
+        );
     }
 
     #[test]

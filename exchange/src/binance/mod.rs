@@ -1,6 +1,6 @@
 pub mod public;
-pub mod ws;
 pub mod types;
+pub mod ws;
 
 use crate::r#trait::{Exchange, ExchangeError, OrderStatus, Result, Stream};
 use crossbeam_channel;
@@ -33,9 +33,7 @@ impl Binance {
     }
 
     fn parse_account_info(result: Value) -> Result<AccountInfo> {
-        let mut balances = Vec::with_capacity(
-            result["assets"].as_array().map_or(0, |a| a.len()),
-        );
+        let mut balances = Vec::with_capacity(result["assets"].as_array().map_or(0, |a| a.len()));
         if let Some(assets) = result["assets"].as_array() {
             for a in assets {
                 balances.push(Balance {
@@ -54,9 +52,8 @@ impl Binance {
             }
         }
 
-        let mut positions = Vec::with_capacity(
-            result["positions"].as_array().map_or(0, |a| a.len()),
-        );
+        let mut positions =
+            Vec::with_capacity(result["positions"].as_array().map_or(0, |a| a.len()));
         if let Some(poss) = result["positions"].as_array() {
             for p in poss {
                 let size: f64 = p["positionAmt"]
@@ -89,7 +86,10 @@ impl Binance {
             }
         }
 
-        Ok(AccountInfo { balances, positions })
+        Ok(AccountInfo {
+            balances,
+            positions,
+        })
     }
 }
 
@@ -104,10 +104,7 @@ impl Exchange for Binance {
 
     async fn place_order(&self, order: Order) -> Result<String> {
         let mut params = Map::new();
-        params.insert(
-            "symbol".into(),
-            Value::String(order.symbol.to_uppercase()),
-        );
+        params.insert("symbol".into(), Value::String(order.symbol.to_uppercase()));
         params.insert(
             "side".into(),
             Value::String(match order.side {
@@ -149,10 +146,7 @@ impl Exchange for Binance {
 
     async fn cancel_order(&self, symbol: &str, order_id: &str) -> Result<()> {
         let mut params = Map::new();
-        params.insert(
-            "symbol".into(),
-            Value::String(symbol.to_uppercase()),
-        );
+        params.insert("symbol".into(), Value::String(symbol.to_uppercase()));
         params.insert("orderId".into(), Value::String(order_id.into()));
         let req_tx = self.req_tx()?;
         let (tx, rx) = tokio::sync::oneshot::channel();
@@ -169,10 +163,7 @@ impl Exchange for Binance {
 
     async fn order_status(&self, symbol: &str, order_id: &str) -> Result<OrderStatus> {
         let mut params = Map::new();
-        params.insert(
-            "symbol".into(),
-            Value::String(symbol.to_uppercase()),
-        );
+        params.insert("symbol".into(), Value::String(symbol.to_uppercase()));
         params.insert("orderId".into(), Value::String(order_id.into()));
         let req_tx = self.req_tx()?;
         let (tx, rx) = tokio::sync::oneshot::channel();
@@ -232,10 +223,7 @@ impl Exchange for Binance {
 
     async fn current_price(&self, symbol: &str) -> Result<f64> {
         let mut params = Map::new();
-        params.insert(
-            "symbol".into(),
-            Value::String(symbol.to_uppercase()),
-        );
+        params.insert("symbol".into(), Value::String(symbol.to_uppercase()));
         let req_tx = self.req_tx()?;
         let (tx, rx) = tokio::sync::oneshot::channel();
         req_tx

@@ -1,5 +1,12 @@
 use crate::opcodes::Opcode;
 
+/// A recorded event for post-hoc analysis of strategy execution.
+///
+/// Each variant carries domain-specific payload:
+/// - `Signal`: a strategy signal (opcode comparison result)
+/// - `Feature`: a computed feature value (e.g. EMA, SMA)
+/// - `Fill`: an executed order fill
+/// - `RiskAction`: a risk engine verdict
 #[derive(Debug, Clone)]
 pub enum TraceEvent {
     Signal { kind: String, result: bool },
@@ -9,6 +16,7 @@ pub enum TraceEvent {
 }
 
 impl TraceEvent {
+    /// Returns the event category as a static string: "signal", "feature", "fill", or "risk".
     pub fn kind(&self) -> &str {
         match self {
             TraceEvent::Signal { .. } => "signal",
@@ -19,6 +27,10 @@ impl TraceEvent {
     }
 }
 
+/// Ring-buffer event tracer for strategy execution.
+///
+/// Records signals, features, fills, and risk actions for post-hoc analysis.
+/// Zero-allocation in the hot path when capacity is 0.
 #[derive(Debug, Clone)]
 pub struct Tracer {
     events: Vec<TraceEvent>,
@@ -26,10 +38,17 @@ pub struct Tracer {
 }
 
 impl Tracer {
+    /// Create a new tracer with the given ring-buffer capacity.
+    /// A capacity of 0 disables all recording (zero-allocation).
     pub fn new(capacity: usize) -> Self {
-        Tracer { events: Vec::with_capacity(capacity), capacity }
+        Tracer {
+            events: Vec::with_capacity(capacity),
+            capacity,
+        }
     }
 
+    /// Record an event into the ring buffer. Drops oldest if at capacity.
+    /// No-op when capacity is 0.
     pub fn record(&mut self, event: TraceEvent) {
         if self.capacity == 0 {
             return;
@@ -40,16 +59,33 @@ impl Tracer {
         self.events.push(event);
     }
 
+    /// Take all recorded events, clearing the buffer.
     pub fn drain(&mut self) -> Vec<TraceEvent> {
         std::mem::take(&mut self.events)
     }
 
-    pub fn len(&self) -> usize { self.events.len() }
-    pub fn is_empty(&self) -> bool { self.events.is_empty() }
-    pub fn clear(&mut self) { self.events.clear(); }
-    pub fn events(&self) -> &[TraceEvent] { &self.events }
-    pub fn capacity(&self) -> usize { self.capacity }
+    /// Number of events currently in the buffer.
+    pub fn len(&self) -> usize {
+        self.events.len()
+    }
+    /// True when no events have been recorded.
+    pub fn is_empty(&self) -> bool {
+        self.events.is_empty()
+    }
+    /// Remove all events from the buffer.
+    pub fn clear(&mut self) {
+        self.events.clear();
+    }
+    /// Return a slice of all buffered events.
+    pub fn events(&self) -> &[TraceEvent] {
+        &self.events
+    }
+    /// Maximum number of events the buffer can hold.
+    pub fn capacity(&self) -> usize {
+        self.capacity
+    }
 
+    /// Record a strategy signal event from an opcode comparison.
     pub fn record_signal(&mut self, op: Opcode, result: bool) {
         self.record(TraceEvent::Signal {
             kind: format!("{:?}", op),
@@ -57,6 +93,7 @@ impl Tracer {
         });
     }
 
+    /// Record a feature computation event (e.g. an indicator value).
     pub fn record_feature(&mut self, name: &str, value: f64) {
         self.record(TraceEvent::Feature {
             name: name.to_string(),
@@ -64,6 +101,7 @@ impl Tracer {
         });
     }
 
+    /// Record an order fill event.
     pub fn record_fill(&mut self, price: f64, qty: f64, side: &str) {
         self.record(TraceEvent::Fill {
             price,
@@ -72,6 +110,7 @@ impl Tracer {
         });
     }
 
+    /// Record a risk engine verdict event.
     pub fn record_risk(&mut self, verdict: &str, reason: &str) {
         self.record(TraceEvent::RiskAction {
             verdict: verdict.to_string(),
@@ -80,6 +119,7 @@ impl Tracer {
     }
 }
 
+/// Default tracer with a capacity of 1024 events.
 impl Default for Tracer {
     fn default() -> Self {
         Tracer::new(1024)
@@ -101,7 +141,10 @@ mod tests {
     #[test]
     fn record_signal_event() {
         let mut t = Tracer::new(1024);
-        t.record(TraceEvent::Signal { kind: "Gt".into(), result: true });
+        t.record(TraceEvent::Signal {
+            kind: "Gt".into(),
+            result: true,
+        });
         assert_eq!(t.len(), 1);
         assert_eq!(t.events()[0].kind(), "signal");
     }
@@ -109,7 +152,10 @@ mod tests {
     #[test]
     fn record_feature_event() {
         let mut t = Tracer::new(1024);
-        t.record(TraceEvent::Feature { name: "ema".into(), value: 50000.0 });
+        t.record(TraceEvent::Feature {
+            name: "ema".into(),
+            value: 50000.0,
+        });
         assert_eq!(t.len(), 1);
         assert_eq!(t.events()[0].kind(), "feature");
     }
@@ -117,7 +163,11 @@ mod tests {
     #[test]
     fn record_fill_event() {
         let mut t = Tracer::new(1024);
-        t.record(TraceEvent::Fill { price: 50000.0, qty: 0.1, side: "Buy".into() });
+        t.record(TraceEvent::Fill {
+            price: 50000.0,
+            qty: 0.1,
+            side: "Buy".into(),
+        });
         assert_eq!(t.len(), 1);
         assert_eq!(t.events()[0].kind(), "fill");
     }
@@ -125,7 +175,10 @@ mod tests {
     #[test]
     fn record_risk_event() {
         let mut t = Tracer::new(1024);
-        t.record(TraceEvent::RiskAction { verdict: "allowed".into(), reason: "".into() });
+        t.record(TraceEvent::RiskAction {
+            verdict: "allowed".into(),
+            reason: "".into(),
+        });
         assert_eq!(t.len(), 1);
         assert_eq!(t.events()[0].kind(), "risk");
     }
@@ -133,8 +186,14 @@ mod tests {
     #[test]
     fn drain_returns_all_events_and_clears() {
         let mut t = Tracer::new(1024);
-        t.record(TraceEvent::Signal { kind: "Gt".into(), result: true });
-        t.record(TraceEvent::Feature { name: "ema".into(), value: 1.0 });
+        t.record(TraceEvent::Signal {
+            kind: "Gt".into(),
+            result: true,
+        });
+        t.record(TraceEvent::Feature {
+            name: "ema".into(),
+            value: 1.0,
+        });
         assert_eq!(t.drain().len(), 2);
         assert_eq!(t.len(), 0);
     }
@@ -142,10 +201,22 @@ mod tests {
     #[test]
     fn tracer_respects_capacity_drops_oldest() {
         let mut t = Tracer::new(3);
-        t.record(TraceEvent::Signal { kind: "a".into(), result: true });
-        t.record(TraceEvent::Signal { kind: "b".into(), result: false });
-        t.record(TraceEvent::Signal { kind: "c".into(), result: true });
-        t.record(TraceEvent::Signal { kind: "d".into(), result: false });
+        t.record(TraceEvent::Signal {
+            kind: "a".into(),
+            result: true,
+        });
+        t.record(TraceEvent::Signal {
+            kind: "b".into(),
+            result: false,
+        });
+        t.record(TraceEvent::Signal {
+            kind: "c".into(),
+            result: true,
+        });
+        t.record(TraceEvent::Signal {
+            kind: "d".into(),
+            result: false,
+        });
         assert_eq!(t.len(), 3);
         let events = t.drain();
         assert_eq!(events[0].kind(), "signal");
@@ -156,7 +227,10 @@ mod tests {
     #[test]
     fn clear_empties_tracer() {
         let mut t = Tracer::new(1024);
-        t.record(TraceEvent::Signal { kind: "Gt".into(), result: true });
+        t.record(TraceEvent::Signal {
+            kind: "Gt".into(),
+            result: true,
+        });
         t.clear();
         assert_eq!(t.len(), 0);
     }
@@ -248,7 +322,10 @@ mod tests {
     #[test]
     fn capacity_zero_never_stores_events() {
         let mut t = Tracer::new(0);
-        t.record(TraceEvent::Signal { kind: "Gt".into(), result: true });
+        t.record(TraceEvent::Signal {
+            kind: "Gt".into(),
+            result: true,
+        });
         assert_eq!(t.len(), 0);
     }
 

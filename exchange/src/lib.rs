@@ -1,2 +1,2 @@
-pub mod r#trait;
 pub mod binance;
+pub mod r#trait;

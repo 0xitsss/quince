@@ -1,10 +1,14 @@
+// --- Imports ---
+
 use crate::ast::*;
 use crate::ir::{self, QfrProgram};
 use crate::opcodes::{Instruction, Opcode as O};
-use crate::vm::{REG_SEND_SIDE, REG_SEND_QTY, REG_SEND_PRICE, REG_SEND_TYPE, REG_SEND_REDUCE};
+use crate::vm::{REG_SEND_PRICE, REG_SEND_QTY, REG_SEND_REDUCE, REG_SEND_SIDE, REG_SEND_TYPE};
 use std::collections::HashMap;
 
-/// Compile a QFL Program into a QfrProgram (bytecode).
+// --- Section: Public API ---
+
+/// Top-level entry point: compile a QFL AST Program into a QfrProgram (bytecode).
 /// Returns `Err(Vec<TypeError>)` if compilation errors occur (e.g. register overflow).
 pub fn compile(program: &Program) -> Result<QfrProgram, Vec<crate::types::TypeError>> {
     let mut c = Compiler::new();
@@ -15,49 +19,76 @@ pub fn compile(program: &Program) -> Result<QfrProgram, Vec<crate::types::TypeEr
     Ok(c.prog)
 }
 
-/// Type-check then compile.
+/// Type-check the program first, then compile if it passes.
 /// Returns `Err(Vec<TypeError>)` if type checking or compilation fails.
 pub fn compile_checked(program: &Program) -> Result<QfrProgram, Vec<crate::types::TypeError>> {
     crate::types::type_check(program)?;
     compile(program)
 }
 
+// --- Section: Compiler Struct ---
+
+/// Core compiler state: holds the output bytecode, symbol tables, register allocators,
+/// scope tracking, persist variable mappings, fused indicator info, and error accumulator.
 struct Compiler {
     prog: QfrProgram,
+    /// Stack of scopes, each containing (var_name, register, is_float) tuples
     symbols: Vec<Vec<(String, u8, bool)>>,
+    /// Next available integer register (regs 0-191)
     next_int_reg: u8,
+    /// Next available float register (regs 192-255)
     next_float_reg: u8,
+    /// Total count of integer registers allocated so far
     int_reg_count: u16,
+    /// Total count of float registers allocated so far
     float_reg_count: u16,
+    /// Saved register marks for inner scope pop/restore
+    scope_saved_marks: Vec<(u8, u8, u16, u16)>,
+    /// Persist variables: (name, slot_index)
     persist_slots: Vec<(String, u8)>,
+    /// Next available persist slot index
     next_persist_slot: u8,
+    /// Name of the function currently being compiled (for handler-context lookups)
     current_fn: Option<String>,
-    handler_param: Option<String>, // param name for on_trade/on_fill/on_depth
-    state_types: HashMap<String, bool>, // name → is_float
-    fused_indicators: HashMap<String, FusedInfo>, // name → fused indicator info
+    /// Name of the handler parameter (e.g. "trade", "fill") for field access resolution
+    handler_param: Option<String>,
+    /// Maps state variable names to their floatness (true = f64, false = i64)
+    state_types: HashMap<String, bool>,
+    /// Maps indicator names (e.g. "ema5") to their FusedInfo (e.g. which state ID)
+    fused_indicators: HashMap<String, FusedInfo>,
+    /// Next available EMA state ID (for fused EMA lowering)
     next_ema_state: u8,
-    // Mov elimination: track which register holds each variable's value.
-    // Keys: variable name. Values: register number.
-    // Validated against lookup_var on each read; self-corrects on scope changes.
+    /// Cache of int registers for active variables (avoids redundant Mov)
     active_int_regs: HashMap<String, u8>,
+    /// Cache of float registers for active variables
     active_float_regs: HashMap<String, u8>,
+    /// Accumulated compilation errors
     errors: Vec<crate::types::TypeError>,
 }
 
+/// Describes a fused (compiler-lowered) indicator.
+/// Currently only EMA is fused; the VM executes the EMA state update inline.
 #[derive(Clone)]
 enum FusedInfo {
     Ema { state_id: u8 },
 }
 
+// --- Section: Compiler Implementation ---
+
 impl Compiler {
+    // --- Constructor ---
+
     fn new() -> Self {
         Compiler {
             prog: QfrProgram::new(),
             symbols: vec![Vec::new()],
+            // Integer registers start at 0 and go up
             next_int_reg: 0,
+            // Float registers start at 192 (after 192 int regs) and go up
             next_float_reg: 192,
             int_reg_count: 0,
             float_reg_count: 0,
+            scope_saved_marks: Vec::new(),
             persist_slots: Vec::new(),
             next_persist_slot: 0,
             current_fn: None,
@@ -71,20 +102,24 @@ impl Compiler {
         }
     }
 
+    // --- Section: Top-Level Program Compilation ---
+
+    /// Compile every statement in the program sequentially.
     fn compile_program(&mut self, program: &Program) {
         for stmt in program {
             self.compile_stmt(stmt);
         }
     }
 
-    // --- Register allocation ---
+    // --- Section: Register Allocation ---
 
+    /// Allocate an integer register (0-191).
+    /// Pushes a register overflow error if we exceed the limit.
+    /// Returns the allocated register number.
     fn alloc_int(&mut self) -> u8 {
         if self.int_reg_count >= 192 {
             self.errors.push(crate::types::TypeError {
-                msg: format!(
-                    "register overflow: integer register limit (max 192)",
-                ),
+                msg: format!("register overflow: integer register limit (max 192)",),
             });
             return 0;
         }
@@ -94,12 +129,13 @@ impl Compiler {
         r
     }
 
+    /// Allocate a float register (192-255).
+    /// Pushes a register overflow error if we exceed the limit.
+    /// Returns the allocated register number.
     fn alloc_float(&mut self) -> u8 {
         if self.float_reg_count >= 64 {
             self.errors.push(crate::types::TypeError {
-                msg: format!(
-                    "register overflow: float register limit (max 64)",
-                ),
+                msg: format!("register overflow: float register limit (max 64)",),
             });
             return 192;
         }
@@ -109,10 +145,17 @@ impl Compiler {
         r
     }
 
+    /// Allocate a register of the appropriate type (int or float).
     fn alloc_type(&mut self, is_float: bool) -> u8 {
-        if is_float { self.alloc_float() } else { self.alloc_int() }
+        if is_float {
+            self.alloc_float()
+        } else {
+            self.alloc_int()
+        }
     }
 
+    /// Look up a variable by name across all scopes (innermost first).
+    /// Returns `(register, is_float)` if found.
     fn lookup_var(&mut self, name: &str) -> Option<(u8, bool)> {
         for scope in self.symbols.iter().rev() {
             for (n, reg, is_float) in scope.iter().rev() {
@@ -124,20 +167,53 @@ impl Compiler {
         None
     }
 
+    /// Define a new variable in the current (innermost) scope.
     fn define_var(&mut self, name: &str, reg: u8, is_float: bool) {
         if let Some(scope) = self.symbols.last_mut() {
             scope.push((name.to_string(), reg, is_float));
         }
     }
 
+    // --- Section: Scope Management ---
+
+    /// Push a new empty scope (no register marks saved — variables survive pop).
     fn push_scope(&mut self) {
         self.symbols.push(Vec::new());
     }
 
+    /// Pop the innermost scope (variables are forgotten but registers NOT freed).
     fn pop_scope(&mut self) {
         self.symbols.pop();
     }
 
+    /// Push a scope AND save the current register marks so that all registers
+    /// allocated within this scope can be reclaimed (reused) on pop.
+    fn push_inner_scope(&mut self) {
+        self.scope_saved_marks.push((
+            self.next_int_reg,
+            self.next_float_reg,
+            self.int_reg_count,
+            self.float_reg_count,
+        ));
+        self.symbols.push(Vec::new());
+    }
+
+    /// Pop an inner scope and restore the saved register marks,
+    /// effectively freeing all registers allocated within that scope.
+    fn pop_inner_scope(&mut self) {
+        self.symbols.pop();
+        let (saved_int, saved_float, saved_int_cnt, saved_float_cnt) =
+            self.scope_saved_marks.pop().unwrap();
+        self.next_int_reg = saved_int;
+        self.next_float_reg = saved_float;
+        self.int_reg_count = saved_int_cnt;
+        self.float_reg_count = saved_float_cnt;
+    }
+
+    // --- Section: Persist Variable Slots ---
+
+    /// Get or assign a persistent storage slot for the given variable name.
+    /// Persist slots are indexed 0..N and are used by PersistGet/PersistSet opcodes.
     fn persist_slot(&mut self, name: &str) -> u8 {
         for (n, slot) in &self.persist_slots {
             if n == name {
@@ -150,25 +226,38 @@ impl Compiler {
         slot
     }
 
-    // --- Emit ---
+    // --- Section: Bytecode Emission Helpers ---
 
+    /// Append an instruction to the end of the code buffer.
     fn emit(&mut self, instr: Instruction) {
         self.prog.code.push(instr);
     }
 
+    /// Overwrite an instruction at a specific index (used for patching jumps).
     fn emit_at(&mut self, idx: usize, instr: Instruction) {
-        debug_assert!(idx < self.prog.code.len(), "emit_at {idx} >= code.len() {}", self.prog.code.len());
+        debug_assert!(
+            idx < self.prog.code.len(),
+            "emit_at {idx} >= code.len() {}",
+            self.prog.code.len()
+        );
         self.prog.code[idx] = instr;
     }
 
+    /// Return the current code length as an offset (used for jump calculations).
     fn current_offset(&self) -> u32 {
         self.prog.code.len() as u32
     }
 
+    /// Register an entry point (function/handler) with its code offset.
+    /// Validates that the entry name does not exceed 8 characters.
     fn register_entry(&mut self, name: &str, offset: u32) {
         if name.len() > 8 {
             self.errors.push(crate::types::TypeError {
-                msg: format!("entry name '{}' exceeds 8 character limit (len={})", name, name.len()),
+                msg: format!(
+                    "entry name '{}' exceeds 8 character limit (len={})",
+                    name,
+                    name.len()
+                ),
             });
         }
         self.prog.entries.push(crate::ir::EntryPoint {
@@ -177,17 +266,28 @@ impl Compiler {
         });
     }
 
-    // --- Statement compilation ---
+    // --- Section: Statement Compilation ---
 
+    /// Dispatch compilation of a single statement based on its variant.
     fn compile_stmt(&mut self, stmt: &Stmt) {
         match stmt {
-            Stmt::VarDecl { names, init, is_local: _, persist } => {
+            Stmt::VarDecl {
+                names,
+                init,
+                is_local: _,
+                persist,
+            } => {
                 self.compile_var_decl(names, init.as_ref(), *persist);
             }
             Stmt::Assign { targets, exprs } => {
                 self.compile_assign(targets, exprs);
             }
-            Stmt::If { cond, then_body, elseif_branches, else_body } => {
+            Stmt::If {
+                cond,
+                then_body,
+                elseif_branches,
+                else_body,
+            } => {
                 self.compile_if(cond, then_body, elseif_branches, else_body);
             }
             Stmt::While { cond, body } => {
@@ -196,7 +296,13 @@ impl Compiler {
             Stmt::Repeat { body, until } => {
                 self.compile_repeat(body, until);
             }
-            Stmt::ForNum { var, from, to, step, body } => {
+            Stmt::ForNum {
+                var,
+                from,
+                to,
+                step,
+                body,
+            } => {
                 self.compile_for_num(var, from, to, step, body);
             }
             Stmt::ForIn { vars, exprs, body } => {
@@ -212,17 +318,22 @@ impl Compiler {
                 self.compile_expr_discard(expr);
             }
             Stmt::Using { indicators } => {
+                // Lower each `using` directive: pre-allocate fused indicator state IDs.
+                // Currently only supports EMA as a fused indicator.
                 for entry in indicators {
                     let name = entry.name.as_str();
                     for &period in &entry.params {
                         match name {
                             "ema" => {
+                                // Assign a new state ID for this EMA; the VM will
+                                // update this state on each tick using the EMA opcode.
                                 let sid = self.next_ema_state;
                                 self.next_ema_state += 1;
                                 let alpha = 2.0 / (period + 1.0);
                                 self.prog.ema_alphas.push(alpha);
                                 let ind_name = format!("ema{}", period as i64);
-                                self.fused_indicators.insert(ind_name, FusedInfo::Ema { state_id: sid });
+                                self.fused_indicators
+                                    .insert(ind_name, FusedInfo::Ema { state_id: sid });
                             }
                             _ => {}
                         }
@@ -232,44 +343,63 @@ impl Compiler {
             Stmt::Window { .. } => {
                 // setup directive — no bytecode emitted
             }
-            Stmt::State { name, type_name, default: _ } => {
-                // Allocate persist slot — compile_ident/compile_assign handle
-                // PersistGet/PersistSet lazily on first use in any function.
+            Stmt::State {
+                name,
+                type_name,
+                default: _,
+            } => {
+                // Allocate a persist slot for the state variable and record its type.
+                // Actual PersistGet/PersistSet ops are emitted lazily on first use
+                // in compile_ident/compile_assign.
                 self.persist_slot(name);
                 let is_float = crate::types::parse_state_type(type_name).is_float();
                 self.state_types.insert(name.clone(), is_float);
             }
-            Stmt::FnDecl { name, params, return_type: _, body } => {
+            Stmt::FnDecl {
+                name,
+                params,
+                return_type: _,
+                body,
+            } => {
+                // Compile a typed function declaration.
                 let offset = self.prog.code.len() as u32;
                 self.register_entry(name, offset);
                 self.current_fn = Some(name.clone());
                 self.handler_param = None;
+                // Allocate registers for each parameter based on its declared type
                 self.push_scope();
                 for p in params {
                     let is_float = crate::types::parse_state_type(&p.type_name).is_float();
-                    let pr = if is_float { self.alloc_float() } else { self.alloc_int() };
+                    let pr = if is_float {
+                        self.alloc_float()
+                    } else {
+                        self.alloc_int()
+                    };
                     self.define_var(&p.name, pr, is_float);
                 }
                 for stmt in body {
                     self.compile_stmt(stmt);
                 }
+                // Emit Ret at end to prevent fall-through
                 self.emit(Instruction::single(O::Ret));
                 self.pop_scope();
                 self.current_fn = None;
             }
             Stmt::EventHandler { event, param, body } => {
+                // Compile a block-style event handler (e.g. `on eval() { ... }`).
                 let fn_name = format!("on_{}", event);
                 let offset = self.prog.code.len() as u32;
                 self.register_entry(&fn_name, offset);
                 self.current_fn = Some(fn_name);
                 self.handler_param = param.clone();
                 self.push_scope();
+                // Allocate a register for the handler parameter (e.g. "t" for on_trade(t))
                 if let Some(ref p) = param {
                     let pr = self.alloc_int();
                     self.define_var(p, pr, false);
                 }
                 // Reserve registers 0-4: pre-loaded by runtime with handler param fields
-                // (price→r0, qty→r1, side→r2, trade_id→r3, time→r4)
+                // (price->r0, qty->r1, side->r2, trade_id->r3, time->r4)
                 if self.next_int_reg < 5 {
                     self.next_int_reg = 5;
                 }
@@ -282,39 +412,52 @@ impl Compiler {
                 self.handler_param = None;
             }
             Stmt::Feature { name, expr } => {
+                // Compile a feature expression; result register is float by convention.
                 let (r, _) = self.compile_expr(expr);
                 self.define_var(name, r, true);
             }
             Stmt::Signal { name, expr } => {
+                // Compile a signal expression; result register is int (boolean) by convention.
                 let (r, _) = self.compile_expr(expr);
                 self.define_var(name, r, false);
             }
         }
     }
 
+    // --- Section: Variable Declaration Compilation ---
+
+    /// Compile a variable declaration (local or persist).
+    /// For persist: loads the persisted value via PersistGet; skips init (persist carries across calls).
+    /// For local with init: compiles the init expression and defines the variable.
+    /// For local without init: defaults to 0.
     fn compile_var_decl(&mut self, names: &[String], init: Option<&Vec<Expr>>, persist: bool) {
         if persist {
+            // For persist variables, emit PersistGet to load stored value.
+            // Init values are NOT applied since persist slots carry state across calls.
             for (i, name) in names.iter().enumerate() {
                 let slot = self.persist_slot(name);
+                // Determine type from init expression if available
                 let is_float = init.map_or(false, |exprs| {
-                    exprs.get(i).map_or(false, |e| matches!(e, Expr::Literal(Literal::F64(_))))
+                    exprs
+                        .get(i)
+                        .map_or(false, |e| matches!(e, Expr::Literal(Literal::F64(_))))
                 });
-                let r = if is_float { self.alloc_float() } else { self.alloc_int() };
+                let r = if is_float {
+                    self.alloc_float()
+                } else {
+                    self.alloc_int()
+                };
                 self.emit(Instruction::rri(O::PersistGet, r, 0, slot as u32));
                 self.define_var(name, r, is_float);
                 if is_float {
                     self.state_types.insert(name.clone(), true);
                 }
             }
-            // Note: init values are NOT applied on every call.
-            // Persist variables carry their value across calls.
-            // The init in source is documentation / default for a fresh state,
-            // but we skip it here since persist slots default to 0.
             return;
         }
 
         if init.is_none() {
-            // local x — declare but no init (default to 0/nil)
+            // local x — declare without init, default to 0
             for name in names {
                 let r = self.alloc_int();
                 self.emit(Instruction::rri(O::Ldi, r, 0, 0));
@@ -323,11 +466,13 @@ impl Compiler {
             return;
         }
 
+        // local x = expr — compile the init expression(s) and define variables
         let exprs = init.unwrap();
         for (i, name) in names.iter().enumerate() {
             let (r, is_float) = if i < exprs.len() {
                 self.compile_expr(&exprs[i])
             } else {
+                // More names than expressions: pad with 0
                 let r = self.alloc_int();
                 self.emit(Instruction::rri(O::Ldi, r, 0, 0));
                 (r, false)
@@ -336,13 +481,21 @@ impl Compiler {
         }
     }
 
+    // --- Section: Assignment Compilation ---
+
+    /// Compile assignment: evaluate RHS expressions, then move results to LHS targets.
+    /// For persist variables, also emits PersistSet to store back to persistent memory.
+    /// Supports field-assign targets (e.g. `obj.field = val`) via compile_quince_set.
     fn compile_assign(&mut self, targets: &[Expr], exprs: &[Expr]) {
+        // Evaluate all RHS expressions first (left-to-right)
         let rhs_regs: Vec<(u8, bool)> = exprs.iter().map(|e| self.compile_expr(e)).collect();
 
+        // Assign each RHS result to its corresponding LHS target
         for (i, target) in targets.iter().enumerate() {
             let (r, is_float) = rhs_regs.get(i).copied().unwrap_or((0, false));
             match target {
                 Expr::Ident(name) => {
+                    // Resolve or lazily allocate the target register
                     let vr = if let Some((vr, _)) = self.lookup_var(name) {
                         vr
                     } else {
@@ -351,7 +504,7 @@ impl Compiler {
                         nr
                     };
                     self.emit(Instruction::rr(O::Mov, vr, r));
-                    // Persist back if this is a persist variable
+                    // If this is a persist variable, write the value back to its persist slot
                     for (pn, slot) in &self.persist_slots {
                         if pn == name {
                             self.emit(Instruction::rri(O::PersistSet, vr, 0, *slot as u32));
@@ -363,6 +516,7 @@ impl Compiler {
                     self.compile_quince_set(obj, field, r, is_float);
                 }
                 Expr::Index { obj, index } => {
+                    // Index assignment is not supported yet
                     let _ = (obj, index);
                 }
                 _ => {}
@@ -370,24 +524,36 @@ impl Compiler {
         }
     }
 
-    fn compile_if(&mut self, cond: &Expr, then_body: &[Stmt],
-                  elseif_branches: &[(Box<Expr>, Vec<Stmt>)], else_body: &[Stmt])
-    {
-        // Compile condition → get boolean result in int reg
+    // --- Section: If/Elseif/Else Compilation ---
+
+    /// Compile an if/then/elseif/else statement chain.
+    /// Uses conditional jumps (Jz) to skip branches and Jmp to skip past them.
+    /// Patches placeholder offsets after each branch body is compiled.
+    fn compile_if(
+        &mut self,
+        cond: &Expr,
+        then_body: &[Stmt],
+        elseif_branches: &[(Box<Expr>, Vec<Stmt>)],
+        else_body: &[Stmt],
+    ) {
+        // Compile condition → boolean int register
         let cond_reg = self.compile_cond(cond);
         let jz_to_else = self.current_offset() as usize;
-        self.emit(Instruction::rri(O::Jz, 0, cond_reg, 0)); // placeholder
+        self.emit(Instruction::rri(O::Jz, 0, cond_reg, 0)); // placeholder, patched below
 
-        self.push_scope();
+        // Compile the then-body in an inner scope (registers reclaimed after)
+        self.push_inner_scope();
         for stmt in then_body {
             self.compile_stmt(stmt);
         }
-        self.pop_scope();
+        self.pop_inner_scope();
 
+        // Check if the then-body ended with a terminal (Ret/Halt/Jmp)
         let then_ended_terminal = self.prog.code.last().map_or(false, |i| {
             let op = i.opcode();
             op == O::Ret || op == O::Halt || op == O::Jmp
         });
+        // Emit a Jmp over the else/elseif branches (if there are any and then didn't end terminal)
         let jmp_to_end = if !else_body.is_empty() || !elseif_branches.is_empty() {
             if then_ended_terminal {
                 None
@@ -400,24 +566,25 @@ impl Compiler {
             None
         };
 
-        // Patch JZ: jump to else/elseif/end
+        // Patch the JZ: jump to else/elseif/end
         let after_then = self.current_offset();
         let jz_offset = after_then - jz_to_else as u32 - 1;
         self.emit_at(jz_to_else, Instruction::rri(O::Jz, 0, cond_reg, jz_offset));
 
-        // Collect all JMP-over jumps from elseif branches to patch at the end
+        // Collect JMP-over offsets from elseif branches for patching later
         let mut elseif_jmps: Vec<(usize, u8)> = Vec::new();
         for (econd, ebody) in elseif_branches {
             let econd_reg = self.compile_cond(econd);
             let jz_to_elseif = self.current_offset() as usize;
-            self.emit(Instruction::rri(O::Jz, 0, econd_reg, 0));
+            self.emit(Instruction::rri(O::Jz, 0, econd_reg, 0)); // placeholder
 
-            self.push_scope();
+            self.push_inner_scope();
             for stmt in ebody {
                 self.compile_stmt(stmt);
             }
-            self.pop_scope();
+            self.pop_inner_scope();
 
+            // If this elseif body ended terminal, mark it (no Jmp needed)
             let ebody_ended_terminal = self.prog.code.last().map_or(false, |i| {
                 let op = i.opcode();
                 op == O::Ret || op == O::Halt || op == O::Jmp
@@ -426,15 +593,16 @@ impl Compiler {
                 elseif_jmps.push((usize::MAX, econd_reg));
             } else {
                 let jmp = self.current_offset() as usize;
-                self.emit(Instruction::rri(O::Jmp, 0, 0, 0));
+                self.emit(Instruction::rri(O::Jmp, 0, 0, 0)); // placeholder
                 elseif_jmps.push((jmp, econd_reg));
             }
 
+            // Patch the JZ for this elseif to skip its body if condition is false
             let after_ebody = self.current_offset();
             let jz_off = after_ebody - jz_to_elseif as u32 - 1;
             self.emit_at(jz_to_elseif, Instruction::rri(O::Jz, 0, econd_reg, jz_off));
         }
-        // Patch all elseif JMPs to point past else/end
+        // Patch all elseif JMPs to point past the else/end
         let after_elseif = self.current_offset();
         for (jmp_pos, _) in &elseif_jmps {
             if *jmp_pos != usize::MAX {
@@ -443,15 +611,16 @@ impl Compiler {
             }
         }
 
+        // Compile the else body if present
         if !else_body.is_empty() {
-            self.push_scope();
+            self.push_inner_scope();
             for stmt in else_body {
                 self.compile_stmt(stmt);
             }
-            self.pop_scope();
+            self.pop_inner_scope();
         }
 
-        // Patch JMP to end (skip else/elseif) if it was emitted
+        // Patch the then-to-end JMP (skip else/elseif)
         let after_else = self.current_offset();
         if let Some(jmp_pos) = jmp_to_end {
             let jmp_off = after_else - jmp_pos as u32 - 1;
@@ -459,94 +628,124 @@ impl Compiler {
         }
     }
 
+    // --- Section: While Loop Compilation ---
+
+    /// Compile a while loop:
+    ///   loop_start: evaluate condition; if false, jump to after_loop
+    ///   body; jump back to loop_start; after_loop:
     fn compile_while(&mut self, cond: &Expr, body: &[Stmt]) {
         let loop_start = self.current_offset();
         let cond_reg = self.compile_cond(cond);
         let jz_exit = self.current_offset() as usize;
-        self.emit(Instruction::rri(O::Jz, 0, cond_reg, 0));
+        self.emit(Instruction::rri(O::Jz, 0, cond_reg, 0)); // placeholder
 
-        self.push_scope();
+        // Body in inner scope (registers freed after body)
+        self.push_inner_scope();
         for stmt in body {
             self.compile_stmt(stmt);
         }
-        self.pop_scope();
+        self.pop_inner_scope();
 
-        // Jump back to condition
+        // Jump back to loop start to re-evaluate condition
         let jmp_back = self.current_offset();
         let back_offset = loop_start as i64 - jmp_back as i64 - 1;
         self.emit(Instruction::rri(O::Jmp, 0, 0, back_offset as u32));
 
-        // Patch JZ
+        // Patch JZ to exit the loop
         let after_loop = self.current_offset();
         let jz_off = after_loop - jz_exit as u32 - 1;
         self.emit_at(jz_exit, Instruction::rri(O::Jz, 0, cond_reg, jz_off));
     }
 
+    // --- Section: Repeat-Until Loop Compilation ---
+
+    /// Compile a repeat-until loop:
+    ///   loop_start: body; evaluate condition; if false, jump back to loop_start
     fn compile_repeat(&mut self, body: &[Stmt], until: &Expr) {
         let loop_start = self.current_offset();
 
-        self.push_scope();
+        self.push_inner_scope();
         for stmt in body {
             self.compile_stmt(stmt);
         }
-        self.pop_scope();
+        self.pop_inner_scope();
 
+        // Evaluate condition; Jz (false) loops back to repeat (repeat-until ≡ while-not)
         let cond_reg = self.compile_cond(until);
-        // JZ loops back (repeat until cond == true → loop while cond == false)
         let jz_back = self.current_offset();
         let back_offset = loop_start as i64 - jz_back as i64 - 1;
         self.emit(Instruction::rri(O::Jz, 0, cond_reg, back_offset as u32));
     }
 
-    fn compile_for_num(&mut self, var: &str, from: &Expr, to: &Expr, step: &Option<Box<Expr>>, body: &[Stmt]) {
+    // --- Section: Numeric For Loop Compilation ---
+
+    /// Compile a numeric for loop:
+    ///   for var = from, to, step do body end
+    /// Translated to: var = from; while var <= to: body; var += step
+    fn compile_for_num(
+        &mut self,
+        var: &str,
+        from: &Expr,
+        to: &Expr,
+        step: &Option<Box<Expr>>,
+        body: &[Stmt],
+    ) {
+        // Evaluate from, to, step expressions
         let (from_r, _) = self.compile_expr(from);
         let (to_r, _) = self.compile_expr(to);
         let step_r = if let Some(s) = step {
             let (r, _) = self.compile_expr(s);
             r
         } else {
+            // Default step is 1
             let r = self.alloc_int();
             self.emit(Instruction::rri(O::Ldi, r, 0, 1));
             r
         };
 
-        // for i = from, to, step → i = from; while i <= to: body; i += step
+        // Initialize loop variable: var = from
         let i_reg = self.alloc_int();
         self.emit(Instruction::rr(O::Mov, i_reg, from_r));
         self.define_var(var, i_reg, false);
 
         let loop_start = self.current_offset();
-        // i <= to ? If not, break
+        // Check condition: i <= to? If i > to, exit
         let cmp = self.alloc_int();
         self.emit(Instruction::rrr(O::Gt, cmp, i_reg, to_r));
         let jz_exit = self.current_offset() as usize;
-        self.emit(Instruction::rri(O::Jz, 0, cmp, 0));
+        self.emit(Instruction::rri(O::Jz, 0, cmp, 0)); // placeholder: jumps if i > to is false (i <= to)
 
-        self.push_scope();
+        // Body in inner scope
+        self.push_inner_scope();
         for stmt in body {
             self.compile_stmt(stmt);
         }
-        self.pop_scope();
+        self.pop_inner_scope();
 
-        // i = i + step
+        // Step: i = i + step
         let tmp = self.alloc_int();
         self.emit(Instruction::rrr(O::Add, tmp, i_reg, step_r));
         self.emit(Instruction::rr(O::Mov, i_reg, tmp));
 
-        // Jump back
+        // Jump back to loop start
         let jmp_back = self.current_offset();
         let back_offset = loop_start as i64 - jmp_back as i64 - 1;
         self.emit(Instruction::rri(O::Jmp, 0, 0, back_offset as u32));
 
+        // Patch the exit jump
         let after_loop = self.current_offset();
         let jz_off = after_loop - jz_exit as u32 - 1;
         self.emit_at(jz_exit, Instruction::rri(O::Jz, 0, cmp, jz_off));
     }
 
+    // --- Section: For-In Loop Compilation (Stub) ---
+
+    /// Compile a for-in loop.
+    /// Currently a stub: allocates variables, compiles body once but does not iterate.
     fn compile_for_in(&mut self, vars: &[String], _exprs: &[Expr], body: &[Stmt]) {
-        // Stub: for-in is complex (requires iterator protocol)
-        // For now, just compile the body once
-        self.push_scope();
+        // For-in is complex (requires iterator protocol) — not yet implemented.
+        // For now, initialize loop vars to 0 and compile body once.
+        self.push_inner_scope();
         for v in vars {
             let r = self.alloc_int();
             self.emit(Instruction::rri(O::Ldi, r, 0, 0));
@@ -555,16 +754,20 @@ impl Compiler {
         for stmt in body {
             self.compile_stmt(stmt);
         }
-        self.pop_scope();
+        self.pop_inner_scope();
     }
 
+    // --- Section: Function Declaration Compilation ---
+
+    /// Compile a function declaration (legacy style: `function name(params) body end`).
+    /// Registers the entry point, allocates parameter registers, compiles the body,
+    /// and emits a trailing Ret if the body doesn't end with one.
+    /// Handles special entry conventions for on_trade/on_fill (registers 0-4 pre-loaded).
     fn compile_fn_decl(&mut self, name: &str, params: &[String], body: &[Stmt]) {
-        // Register entry point
         let offset = self.current_offset();
         self.register_entry(name, offset);
 
-        // Pre-define function parameters as registers
-        // Check for special entry point names to use trade convention
+        // Check if this is a trade/fill handler using the legacy convention
         let is_trade_entry = name == "on_trade";
         let is_fill_entry = name == "on_fill";
         let saved_fn = self.current_fn.replace(name.to_string());
@@ -572,31 +775,39 @@ impl Compiler {
         self.push_scope();
         for (i, param) in params.iter().enumerate() {
             if (is_trade_entry || is_fill_entry) && i < 5 {
-                // Trade entry convention: r0-r4 pre-loaded by VM
+                // Trade entry convention: registers r0-r4 are pre-loaded by the VM with:
+                // r0=price(float), r1=qty(float), r2=side(int), r3=trade_id(int), r4=time(int)
                 let src = i as u8;
                 let is_float = i < 2; // price, qty are floats; side, id, time are ints
-                let dst = if is_float { self.alloc_float() } else { self.alloc_int() };
+                let dst = if is_float {
+                    self.alloc_float()
+                } else {
+                    self.alloc_int()
+                };
                 self.emit(Instruction::rr(O::Mov, dst, src));
                 self.define_var(param, dst, is_float);
             } else {
+                // Regular parameter: allocate int register
                 let r = self.alloc_int();
                 self.define_var(param, r, false);
             }
         }
 
+        // Set handler_param for on_trade/on_fill/on_depth for field access resolution
         if (name == "on_trade" || name == "on_fill" || name == "on_depth") && !params.is_empty() {
             self.handler_param = Some(params[0].clone());
         }
 
-        // Reserve registers 0-4: pre-loaded by runtime with handler param fields
+        // Reserve registers 0-4 (they're pre-loaded by runtime for trade event handlers)
         if (is_trade_entry || is_fill_entry) && self.next_int_reg < 5 {
             self.next_int_reg = 5;
         }
 
+        // Compile the function body
         for stmt in body {
             self.compile_stmt(stmt);
         }
-        // Emit Ret at end of function to prevent fall-through
+        // Emit Ret at end to prevent fall-through (unless body already ends with Ret)
         let last_op = self.prog.code.last().map(|i| i.opcode());
         if last_op != Some(O::Ret) {
             self.emit(Instruction::single(O::Ret));
@@ -606,6 +817,10 @@ impl Compiler {
         self.current_fn = saved_fn;
     }
 
+    // --- Section: Return Statement Compilation ---
+
+    /// Compile a return statement. Evaluates the first expression (if any),
+    /// then emits Ret. Multiple return values beyond the first are ignored.
     fn compile_return(&mut self, exprs: &[Expr]) {
         if let Some(expr) = exprs.first() {
             let (_r, _) = self.compile_expr(expr);
@@ -613,10 +828,10 @@ impl Compiler {
         self.emit(Instruction::single(O::Ret));
     }
 
-    // --- Expression compilation ---
+    // --- Section: Expression Compilation ---
 
-    /// Compile an expression, return (register, is_float).
-    /// The caller owns the register (it's a temp).
+    /// Compile an expression, returning `(register, is_float)`.
+    /// The caller owns the returned register (it is a temp / SSA-like value).
     fn compile_expr(&mut self, expr: &Expr) -> (u8, bool) {
         match expr {
             Expr::Literal(lit) => self.compile_literal(lit),
@@ -627,14 +842,19 @@ impl Compiler {
             Expr::Unary { op, expr: inner } => self.compile_unary(op, inner),
             Expr::FieldAccess { obj, field } => self.compile_field_access(obj, field),
             Expr::Index { obj, index } => {
+                // Index expressions are not supported
                 self.errors.push(crate::types::TypeError {
-                    msg: format!("index expression is not supported (index {:?} on {:?})", index, obj),
+                    msg: format!(
+                        "index expression is not supported (index {:?} on {:?})",
+                        index, obj
+                    ),
                 });
                 let r = self.alloc_int();
                 self.emit(Instruction::rri(O::Ldi, r, 0, 0));
                 (r, false)
             }
             Expr::Table(_) => {
+                // Table literals are not supported
                 self.errors.push(crate::types::TypeError {
                     msg: "table literal is not supported".into(),
                 });
@@ -645,24 +865,31 @@ impl Compiler {
         }
     }
 
-    /// Compile expression but discard result (for expression statements)
+    /// Compile an expression but discard its result (used for expression statements).
+    /// Special-cases `quince.order(...)` / `order(...)` and method calls with side effects
+    /// (order, log, get) to ensure they still execute.
     fn compile_expr_discard(&mut self, expr: &Expr) {
-        // Check if it's a quince.order() call (side-effectful)
+        // Check for standalone `quince.order()` or `order()` calls (side-effectful)
         if let Expr::FnCall { name, args } = expr {
             if name == "quince.order" || name == "order" {
                 self.compile_send_order(args);
                 return;
             }
         }
+        // Check for side-effectful method calls
         if let Expr::MethodCall { obj, method, args } = expr {
             if method == "order" || method == "log" || method == "get" {
                 self.compile_method_call(obj, method, args);
                 return;
             }
         }
+        // Otherwise, compile and discard normally (result register is just lost)
         self.compile_expr(expr);
     }
 
+    // --- Section: Literal Compilation ---
+
+    /// Compile a literal value, allocating a register and loading the constant.
     fn compile_literal(&mut self, lit: &Literal) -> (u8, bool) {
         match lit {
             Literal::Nil => {
@@ -683,18 +910,22 @@ impl Compiler {
             Literal::F64(n) => {
                 let r = self.alloc_float();
                 let idx = self.prog.intern_f64(*n);
-                self.emit(Instruction::rri(O::Ldc, r, 0, idx));
+                self.emit(Instruction::rri(O::LdcF64, r, 0, idx));
                 (r, true)
             }
             Literal::String(s) => {
                 let r = self.alloc_int();
                 let idx = self.prog.intern_string(s);
-                self.emit(Instruction::rri(O::Ldc, r, 0, idx));
+                self.emit(Instruction::rri(O::LdcStr, r, 0, idx));
                 (r, false)
             }
         }
     }
 
+    /// Emit an Ldi or Ldi64 instruction, selecting the optimal encoding for the immediate value.
+    /// - 32-bit signed fits → Ldi (3-byte encoding)
+    /// - 40-bit signed fits → Ldi64 with ri40 encoding
+    /// - Otherwise → intern into i64 constant pool and use LdI64
     fn emit_ldi(&mut self, r: u8, val: i64) {
         if val >= i32::MIN as i64 && val <= i32::MAX as i64 {
             self.emit(Instruction::rri(O::Ldi, r, 0, val as u32));
@@ -708,18 +939,28 @@ impl Compiler {
         }
     }
 
+    // --- Section: Identifier / Variable Access Compilation ---
+
+    /// Compile a variable/identifier reference.
+    /// Checks: persist slots → trade-convention builtins (on_trade only) → symbol table
+    /// When found in the symbol table, caches the register for reuse (avoids redundant Mov).
+    /// If not found anywhere, defaults to 0.
     fn compile_ident(&mut self, name: &str) -> (u8, bool) {
         // Check persist/state first — lazy PersistGet on first use
         for (pn, _) in &self.persist_slots {
             if pn == name {
                 let is_float = self.state_types.get(name).copied().unwrap_or(false);
-                let r = if is_float { self.alloc_float() } else { self.alloc_int() };
+                let r = if is_float {
+                    self.alloc_float()
+                } else {
+                    self.alloc_int()
+                };
                 let slot = self.persist_slot(name);
                 self.emit(Instruction::rri(O::PersistGet, r, 0, slot as u32));
                 return (r, is_float);
             }
         }
-        // Trade convention builtins
+        // In on_trade handler, map built-in field names directly to pre-loaded registers
         if let Some(fname) = &self.current_fn {
             if fname == "on_trade" {
                 match name {
@@ -752,28 +993,42 @@ impl Compiler {
                 }
             }
         }
+        // Look up in the symbol table
         if let Some((reg, is_float)) = self.lookup_var(name) {
-            let cache = if is_float { &mut self.active_float_regs } else { &mut self.active_int_regs };
+            // Check the active-register cache to avoid redundant Mov when reusing
+            let cache = if is_float {
+                &mut self.active_float_regs
+            } else {
+                &mut self.active_int_regs
+            };
             if cache.get(name) == Some(&reg) {
-                // Cache hit — variable still in same register, reuse directly
+                // Cache hit — variable is still in the same register, return directly
                 return (reg, is_float);
             }
-            // First read or register changed — cache source register, return directly
+            // First read or register was reassigned — cache and return
             cache.insert(name.to_string(), reg);
             (reg, is_float)
         } else {
+            // Unknown variable: default to 0
             let r = self.alloc_int();
             self.emit(Instruction::rri(O::Ldi, r, 0, 0));
             (r, false)
         }
     }
 
+    // --- Section: Binary Expression Compilation ---
+
+    /// Compile a binary operation (arithmetic, comparison, logical, concatenation).
+    /// Handles operand type promotion (int→float in mixed-type operations).
+    /// For logical AND/OR: uses short-circuit evaluation with conditional jumps.
+    /// For float IDiv/Mod: converts to ints, divides, converts back.
     fn compile_binary(&mut self, lhs: &Expr, op: &BinOp, rhs: &Expr) -> (u8, bool) {
+        // Compile both operands
         let (left_r, left_float) = self.compile_expr(lhs);
         let (right_r, right_float) = self.compile_expr(rhs);
         let is_float = left_float || right_float;
 
-        // Promote if mixed types
+        // If one operand is int and the other is float, promote the int to float
         let (l_final, r_final) = if left_float != right_float {
             if left_float {
                 let conv = self.alloc_float();
@@ -790,6 +1045,7 @@ impl Compiler {
 
         let rd = self.alloc_type(is_float);
 
+        // Dispatch to the correct opcode based on operator and floatness
         match (op, is_float) {
             (BinOp::Add, false) => self.emit(Instruction::rrr(O::Add, rd, l_final, r_final)),
             (BinOp::Sub, false) => self.emit(Instruction::rrr(O::Sub, rd, l_final, r_final)),
@@ -798,8 +1054,7 @@ impl Compiler {
             (BinOp::IDiv, false) => self.emit(Instruction::rrr(O::Div, rd, l_final, r_final)),
             (BinOp::Mod, false) => self.emit(Instruction::rrr(O::Mod, rd, l_final, r_final)),
             (BinOp::Pow, false) => {
-                // Stub: pow not implemented in VM
-                self.emit(Instruction::rri(O::Ldi, rd, 0, 0));
+                self.emit(Instruction::rrr(O::Pow, rd, l_final, r_final));
             }
             (BinOp::Add, true) => self.emit(Instruction::rrr(O::FAdd, rd, l_final, r_final)),
             (BinOp::Sub, true) => self.emit(Instruction::rrr(O::FSub, rd, l_final, r_final)),
@@ -816,6 +1071,7 @@ impl Compiler {
                 self.emit(Instruction::rr(O::I2F, rd, tmp));
             }
             (BinOp::Mod, true) => {
+                // Float modulo: convert to int, mod, convert back
                 let tmp_i = self.alloc_int();
                 self.emit(Instruction::rr(O::F2I, tmp_i, l_final));
                 let tmp_i2 = self.alloc_int();
@@ -825,9 +1081,9 @@ impl Compiler {
                 self.emit(Instruction::rr(O::I2F, rd, tmp));
             }
             (BinOp::Pow, true) => {
-                self.emit(Instruction::rri(O::Ldi, rd, 0, 0));
+                self.emit(Instruction::rrr(O::FPow, rd, l_final, r_final));
             }
-            // Comparisons
+            // Comparisons (all produce int result regardless of operand types)
             (BinOp::Eq, false) => self.emit(Instruction::rrr(O::Eq, rd, l_final, r_final)),
             (BinOp::Ne, false) => self.emit(Instruction::rrr(O::Ne, rd, l_final, r_final)),
             (BinOp::Lt, false) => self.emit(Instruction::rrr(O::Lt, rd, l_final, r_final)),
@@ -841,7 +1097,7 @@ impl Compiler {
             (BinOp::Le, true) => self.emit(Instruction::rrr(O::FLe, rd, l_final, r_final)),
             (BinOp::Ge, true) => self.emit(Instruction::rrr(O::FGe, rd, l_final, r_final)),
             (BinOp::And, _) => {
-                // a and b: if a is truthy, return b; else return a
+                // Short-circuit AND: if left is falsy, return left; else evaluate and return right
                 let check_r = if is_float {
                     let conv = self.alloc_int();
                     self.emit(Instruction::rr(O::F2I, conv, l_final));
@@ -849,6 +1105,7 @@ impl Compiler {
                 } else {
                     l_final
                 };
+                // If left is falsy (jz), jump over the right-side evaluation
                 let jz = self.current_offset() as usize;
                 self.emit(Instruction::rri(O::Jz, 0, check_r, 0));
                 self.emit(Instruction::rr(O::Mov, rd, r_final));
@@ -857,12 +1114,12 @@ impl Compiler {
                 let after = self.current_offset();
                 let jz_off = after - jz as u32 - 1;
                 self.emit_at(jz, Instruction::rri(O::Jz, 0, check_r, jz_off));
-                // patch jmp
+                // Patch the JMP to skip over the right-side result
                 let jmp_off = after - jmp as u32 - 1;
                 self.emit_at(jmp, Instruction::rri(O::Jmp, 0, 0, jmp_off));
-                // Fall-through: rd already set from Mov
             }
             (BinOp::Or, _) => {
+                // Short-circuit OR: if left is truthy, return left; else evaluate and return right
                 let check_r = if is_float {
                     let conv = self.alloc_int();
                     self.emit(Instruction::rr(O::F2I, conv, l_final));
@@ -870,6 +1127,7 @@ impl Compiler {
                 } else {
                     l_final
                 };
+                // If left is truthy (jnz), jump over the right-side evaluation
                 let jnz = self.current_offset() as usize;
                 self.emit(Instruction::rri(O::Jnz, 0, check_r, 0));
                 self.emit(Instruction::rr(O::Mov, rd, r_final));
@@ -882,6 +1140,7 @@ impl Compiler {
                 self.emit_at(jmp, Instruction::rri(O::Jmp, 0, 0, jmp_off));
             }
             (BinOp::Concat, _) => {
+                // String concatenation: just Mov left into result (stub)
                 self.emit(Instruction::rr(O::Mov, rd, l_final));
             }
         }
@@ -889,6 +1148,10 @@ impl Compiler {
         (rd, is_float)
     }
 
+    // --- Section: Unary Expression Compilation ---
+
+    /// Compile a unary expression (negation, logical not, length).
+    /// Handles float/int dispatch and type conversion for `not`.
     fn compile_unary(&mut self, op: &UnaryOp, inner: &Expr) -> (u8, bool) {
         let (r, is_float) = self.compile_expr(inner);
         let rd = self.alloc_type(is_float);
@@ -896,6 +1159,7 @@ impl Compiler {
             (UnaryOp::Neg, false) => self.emit(Instruction::rr(O::Neg, rd, r)),
             (UnaryOp::Neg, true) => self.emit(Instruction::rr(O::FNeg, rd, r)),
             (UnaryOp::Not, _) => {
+                // Convert float to int first if needed, then compare with 0
                 let tmp = if is_float {
                     let t = self.alloc_int();
                     self.emit(Instruction::rr(O::F2I, t, r));
@@ -906,17 +1170,24 @@ impl Compiler {
                 self.emit(Instruction::rri(O::EqI, rd, tmp, 0));
             }
             (UnaryOp::Len, _) => {
+                // Length operator: stub returning 0
                 self.emit(Instruction::rri(O::Ldi, rd, 0, 0));
             }
         }
         (rd, is_float)
     }
 
+    // --- Section: Function Call Compilation ---
+
+    /// Compile a function call expression.
+    /// Handles built-in quince.* functions (get, price, position, balance, etc.)
+    /// and unknown function calls (errors).
+    /// Special case: `quince.get("emaN")` is lowered to inline EMA opcode if fused.
     fn compile_fn_call(&mut self, name: &str, args: &[Expr]) -> (u8, bool) {
         match name {
             "quince.get" | "get" => {
                 let r = self.alloc_float();
-                // Check if this is a fused indicator (string literal name)
+                // Check if the argument is a string literal naming a fused indicator
                 let fused = args.first().and_then(|a| {
                     if let Expr::Literal(Literal::String(name)) = a {
                         self.fused_indicators.get(name).cloned()
@@ -925,12 +1196,13 @@ impl Compiler {
                     }
                 });
                 if let Some(FusedInfo::Ema { state_id }) = fused {
+                    // Inline the EMA computation: get current price, run EMA opcode
                     let val_r = self.alloc_float();
                     self.emit(Instruction::ri(O::GetPrice, val_r, 0));
                     self.emit(Instruction::rrr(O::Ema, r, val_r, state_id));
                     return (r, true);
                 }
-                // Fallback: runtime GetInd
+                // Non-fused indicator: delegate to runtime GetInd
                 let arg_r = if args.is_empty() {
                     self.compile_literal(&Literal::String(String::new())).0
                 } else {
@@ -988,21 +1260,26 @@ impl Compiler {
                 if let Some(arg) = args.first() {
                     let (arg_r, _) = self.compile_expr(arg);
                     if args.len() >= 2 {
+                        // Two-argument log: (label, value) — uses Log2 opcode
                         let (val_r, is_float) = self.compile_expr(&args[1]);
-                        // Ensure value is in float register for Log2
-                        let val_f = if is_float { val_r } else {
+                        let val_f = if is_float {
+                            val_r
+                        } else {
+                            // Log2 requires float value, so convert if needed
                             let fr = self.alloc_float();
                             self.emit(Instruction::rr(O::I2F, fr, val_r));
                             fr
                         };
                         self.emit(Instruction::rrr(O::Log2, r, arg_r, val_f));
                     } else {
+                        // Single-argument log — uses Log opcode
                         self.emit(Instruction::rr(O::Log, r, arg_r));
                     }
                 }
                 (r, false)
             }
             _ => {
+                // Unknown function: emit error and default to 0
                 let r = self.alloc_int();
                 self.errors.push(crate::types::TypeError {
                     msg: format!("unknown function call: {}", name),
@@ -1013,10 +1290,11 @@ impl Compiler {
         }
     }
 
+    // --- Section: Method Call Compilation ---
+
+    /// Compile a method call expression (e.g. `quince:get("name")`).
+    /// Dispatches to the corresponding compile_fn_call or compile_send_order.
     fn compile_method_call(&mut self, obj: &str, method: &str, args: &[Expr]) -> (u8, bool) {
-        // quince:get("name") → GetInd
-        // quince:order(...) → SendOrder
-        // quince:log(...) → Log
         match (obj, method) {
             ("quince", "get") => {
                 return self.compile_fn_call("quince.get", args);
@@ -1059,26 +1337,35 @@ impl Compiler {
         }
     }
 
+    // --- Section: Send Order Compilation (quince.order) ---
+
+    /// Compile a `quince.order(side, qty, price, type?, reduce_only?)` call.
+    /// Moves each argument into the designated send registers (REG_SEND_*),
+    /// then emits the SendOrder opcode.
     fn compile_send_order(&mut self, args: &[Expr]) {
-        // quince.order(side, qty, price, type?, reduce_only?)
+        // Arg 0: side (int) → REG_SEND_SIDE
         if let Some(arg) = args.get(0) {
             let (r, _) = self.compile_expr(arg);
             self.emit(Instruction::rr(O::Mov, REG_SEND_SIDE, r));
         }
+        // Arg 1: quantity (float) → REG_SEND_QTY
         if let Some(arg) = args.get(1) {
             let (r, _) = self.compile_expr(arg);
             self.emit(Instruction::rr(O::Mov, REG_SEND_QTY, r));
         }
+        // Arg 2: price (float) → REG_SEND_PRICE
         if let Some(arg) = args.get(2) {
             let (r, _) = self.compile_expr(arg);
             self.emit(Instruction::rr(O::Mov, REG_SEND_PRICE, r));
         }
+        // Arg 3: order type (int, optional) → REG_SEND_TYPE, defaults to 0
         if let Some(arg) = args.get(3) {
             let (r, _) = self.compile_expr(arg);
             self.emit(Instruction::rr(O::Mov, REG_SEND_TYPE, r));
         } else {
             self.emit(Instruction::rri(O::Ldi, REG_SEND_TYPE, 0, 0));
         }
+        // Arg 4: reduce_only (int, optional) → REG_SEND_REDUCE, defaults to 0
         if let Some(arg) = args.get(4) {
             let (r, _) = self.compile_expr(arg);
             self.emit(Instruction::rr(O::Mov, REG_SEND_REDUCE, r));
@@ -1088,20 +1375,34 @@ impl Compiler {
         self.emit(Instruction::single(O::SendOrder));
     }
 
+    // --- Section: Field Access Compilation ---
+
+    /// Compile a field access expression (e.g. `trade.price`, `fill.qty`, `depth.bids`).
+    /// Resolves handler parameter fields to pre-loaded registers (r0-r4).
+    /// Also handles `quince.xxx` dot-style access as builtins.
     fn compile_field_access(&mut self, obj: &Expr, field: &str) -> (u8, bool) {
-    // Handle `trade.price`, `t.qty`, `fill.price`, `depth.bids` etc.
+        // If we're in a handler function (on_trade/on_fill/on_depth), check if the object
+        // is the handler parameter — if so, map its fields to pre-loaded registers.
         if let Some(fname) = &self.current_fn {
             let is_trade_fill = match (fname.as_str(), obj) {
                 ("on_trade" | "on_fill", Expr::Ident(n))
-                    if self.handler_param.as_ref().map_or(false, |p| p == n) => true,
+                    if self.handler_param.as_ref().map_or(false, |p| p == n) =>
+                {
+                    true
+                }
                 _ => false,
             };
             let is_depth = match (fname.as_str(), obj) {
                 ("on_depth", Expr::Ident(n))
-                    if self.handler_param.as_ref().map_or(false, |p| p == n) => true,
+                    if self.handler_param.as_ref().map_or(false, |p| p == n) =>
+                {
+                    true
+                }
                 _ => false,
             };
             if is_trade_fill {
+                // Map trade/fill fields to the pre-loaded registers:
+                // r0=price(float), r1=qty(float), r2=side(int), r3=trade_id(int), r4=time(int)
                 match field {
                     "price" => {
                         let r = self.alloc_float();
@@ -1132,6 +1433,7 @@ impl Compiler {
                 }
             }
             if is_depth {
+                // Map depth fields: r2=bids(int), r3=asks(int), r0=price(float), r1=qty(float)
                 match field {
                     "bids" => {
                         let r = self.alloc_int();
@@ -1153,6 +1455,7 @@ impl Compiler {
                         self.emit(Instruction::rr(O::Mov, r, 1));
                         return (r, true);
                     }
+                    // side, trade_id, time are not meaningful for depth — stub to 0
                     "side" | "trade_id" | "time" => {
                         let r = self.alloc_int();
                         self.emit(Instruction::rri(O::Ldi, r, 0, 0));
@@ -1162,8 +1465,8 @@ impl Compiler {
                 }
             }
         }
+        // Handle `quince.xxx` as builtin calls (dot notation)
         if let Expr::Ident(obj_name) = obj {
-            // quince.xxx → builtin calls
             if obj_name == "quince" {
                 match field {
                     "get" => {
@@ -1184,19 +1487,25 @@ impl Compiler {
             }
         }
 
-        // For other field accesses, this might be a table lookup
-        // For now, return 0 as stub
+        // Fallback: stub (e.g. table field access not yet implemented)
         let r = self.alloc_int();
         self.emit(Instruction::rri(O::Ldi, r, 0, 0));
         (r, false)
     }
 
+    // --- Section: Field Assignment Compilation (Stub) ---
+
+    /// Compile assignment to a field (e.g. `obj.field = value`).
+    /// Currently a stub — no bytecode emitted for non-trivial field targets.
     fn compile_quince_set(&mut self, obj: &Expr, field: &str, _val_reg: u8, _is_float: bool) {
-        // Stub for quince.xxx = value assignments
         let _ = (obj, field);
     }
 
-    /// Compile condition into a boolean int register
+    // --- Section: Condition Compilation ---
+
+    /// Compile an expression used as a condition, ensuring the result is
+    /// in an integer register (converting float to int if needed).
+    /// Returns the integer register holding the boolean result.
     fn compile_cond(&mut self, expr: &Expr) -> u8 {
         let (r, is_float) = self.compile_expr(expr);
         if is_float {
@@ -1209,16 +1518,21 @@ impl Compiler {
     }
 }
 
+// --- Section: Tests ---
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::ir::serialize;
     use crate::parser;
 
+    /// Helper: parse and compile a source string into a QfrProgram.
     fn compile_str(input: &str) -> QfrProgram {
         let program = parser::parse(input).unwrap();
         compile(&program).unwrap()
     }
+
+    // --- Basic compilation tests ---
 
     #[test]
     fn test_empty_program() {
@@ -1238,7 +1552,7 @@ mod tests {
     fn test_literal_f64() {
         let prog = compile_str("3.14");
         assert!(prog.code.len() >= 1);
-        assert_eq!(prog.code[0].opcode(), O::Ldc);
+        assert_eq!(prog.code[0].opcode(), O::LdcF64);
     }
 
     #[test]
@@ -1274,24 +1588,30 @@ mod tests {
     #[test]
     fn test_mov_reuse_same_var() {
         // Repeated reads of the same variable should reuse register (no Mov)
-        let prog = compile_str("
+        let prog = compile_str(
+            "
 function on_eval()
     local a = 42
     b = a + 1
     c = a + 2
     d = a + 3
 end
-");
+",
+        );
         let mov_count = prog.code.iter().filter(|i| i.opcode() == O::Mov).count();
         // Without optimization: 6 Movs (3 var reads + 3 writes)
         // With optimization:   <=4 Movs (only writes, reads reuse register)
-        assert!(mov_count <= 4, "expected <=4 Mov instructions with reuse, got {mov_count}");
+        assert!(
+            mov_count <= 4,
+            "expected <=4 Mov instructions with reuse, got {mov_count}"
+        );
     }
 
     #[test]
     fn test_mov_reuse_shadowed_var() {
         // Shadowed var in inner scope must not cause stale cache hits
-        let prog = compile_str("
+        let prog = compile_str(
+            "
 function on_eval()
     local a = 10
     if a > 0 then
@@ -1300,10 +1620,13 @@ function on_eval()
     end
     c = a + 1
 end
-");
+",
+        );
         let mov_count = prog.code.iter().filter(|i| i.opcode() == O::Mov).count();
-        // Must compile and use correct registers (no stale cache)
-        assert!(mov_count <= 5, "expected <=5 Mov with shadowed vars, got {mov_count}");
+        assert!(
+            mov_count <= 5,
+            "expected <=5 Mov with shadowed vars, got {mov_count}"
+        );
     }
 
     #[test]
@@ -1334,7 +1657,10 @@ end
     fn test_for_num() {
         let prog = compile_str("for i = 1, 10 do end");
         let instructions = prog.code.iter().map(|i| i.opcode()).collect::<Vec<_>>();
-        assert!(instructions.contains(&O::Add), "for must emit Add (i += step)");
+        assert!(
+            instructions.contains(&O::Add),
+            "for must emit Add (i += step)"
+        );
         assert!(instructions.contains(&O::Gt), "for must emit Gt (i <= to)");
     }
 
@@ -1461,14 +1787,36 @@ on eval() {
 }
 ";
         let mut prog = crate::compiler::compile_checked(&parser::parse(src).unwrap()).unwrap();
-        eprintln!("=== simple_test BEFORE optimize ({} instr) ===", prog.code.len());
+        eprintln!(
+            "=== simple_test BEFORE optimize ({} instr) ===",
+            prog.code.len()
+        );
         for (i, instr) in prog.code.iter().enumerate() {
-            eprintln!("  {:3}: {:?} rd={} rs1={} rs2={} imm={}", i, instr.opcode(), instr.rd(), instr.rs1(), instr.rs2(), instr.imm());
+            eprintln!(
+                "  {:3}: {:?} rd={} rs1={} rs2={} imm={}",
+                i,
+                instr.opcode(),
+                instr.rd(),
+                instr.rs1(),
+                instr.rs2(),
+                instr.imm()
+            );
         }
         crate::optimize::optimize(&mut prog);
-        eprintln!("=== simple_test AFTER optimize ({} instr) ===", prog.code.len());
+        eprintln!(
+            "=== simple_test AFTER optimize ({} instr) ===",
+            prog.code.len()
+        );
         for (i, instr) in prog.code.iter().enumerate() {
-            eprintln!("  {:3}: {:?} rd={} rs1={} rs2={} imm={}", i, instr.opcode(), instr.rd(), instr.rs1(), instr.rs2(), instr.imm());
+            eprintln!(
+                "  {:3}: {:?} rd={} rs1={} rs2={} imm={}",
+                i,
+                instr.opcode(),
+                instr.rd(),
+                instr.rs1(),
+                instr.rs2(),
+                instr.imm()
+            );
         }
         for e in &prog.entries {
             eprintln!("entry: {} @{}", e.name, e.code_offset);
@@ -1513,7 +1861,11 @@ end
 ";
         let prog = compile_str(src);
         assert_eq!(prog.entries.len(), 2);
-        assert!(prog.code.len() > 20, "scalper should produce >20 instructions, got {}", prog.code.len());
+        assert!(
+            prog.code.len() > 20,
+            "scalper should produce >20 instructions, got {}",
+            prog.code.len()
+        );
     }
 
     #[test]
@@ -1549,7 +1901,11 @@ end
 ";
         let prog = compile_str(src);
         assert_eq!(prog.entries.len(), 2);
-        assert!(prog.code.len() > 15, "ema_cross should produce >15 instructions, got {}", prog.code.len());
+        assert!(
+            prog.code.len() > 15,
+            "ema_cross should produce >15 instructions, got {}",
+            prog.code.len()
+        );
     }
 
     #[test]
@@ -1596,10 +1952,14 @@ end
 ";
         let prog = compile_str(src);
         assert_eq!(prog.entries.len(), 4);
-        assert!(prog.code.len() > 15, "test_all should produce >15 instructions, got {}", prog.code.len());
+        assert!(
+            prog.code.len() > 15,
+            "test_all should produce >15 instructions, got {}",
+            prog.code.len()
+        );
     }
 
-    // ── 10 strategy compilation tests ──
+    // ── Macro: strategy compilation tests ──
 
     macro_rules! strategy_compiles {
         ($name:ident, $src:expr, $entries:expr, $min_instr:expr) => {
@@ -1608,7 +1968,12 @@ end
                 let prog = compile_str($src);
                 assert_eq!(prog.entries.len(), $entries);
                 assert!(!prog.code.is_empty(), "strategy must emit code");
-                assert!(prog.code.len() >= $min_instr, "strategy must emit >= {} instructions, got {}", $min_instr, prog.code.len());
+                assert!(
+                    prog.code.len() >= $min_instr,
+                    "strategy must emit >= {} instructions, got {}",
+                    $min_instr,
+                    prog.code.len()
+                );
             }
         };
         ($name:ident, $src:expr, $entries:expr) => {
@@ -1616,7 +1981,11 @@ end
         };
     }
 
-    strategy_compiles!(test_sma_cross, "
+    // ── Strategy compilation tests ──
+
+    strategy_compiles!(
+        test_sma_cross,
+        "
 @persist local position_size = 0
 function on_trade(trade)
     local fast = quince.get(\"sma10\")
@@ -1625,9 +1994,13 @@ function on_trade(trade)
     if fast < slow and position_size > 0 then quince.order(1, 1.0, 0) position_size = 0 end
 end
 function on_eval() quince.log(\"eval\") end
-", 2);
+",
+        2
+    );
 
-    strategy_compiles!(test_rsi_reversion, "
+    strategy_compiles!(
+        test_rsi_reversion,
+        "
 @persist local position_size = 0
 function on_trade(trade)
     local rsi = quince.get(\"rsi\")
@@ -1635,9 +2008,13 @@ function on_trade(trade)
     if rsi > 70 and position_size > 0 then quince.order(1, 1.0, 0) position_size = 0 end
 end
 function on_eval() quince.log(\"eval\") end
-", 2);
+",
+        2
+    );
 
-    strategy_compiles!(test_bb_bounce, "
+    strategy_compiles!(
+        test_bb_bounce,
+        "
 @persist local position_size = 0
 function on_trade(trade)
     local price = trade.price
@@ -1648,9 +2025,13 @@ function on_trade(trade)
     if price > mid and position_size > 0 then quince.order(1, 0.5, 0) position_size = 0 end
 end
 function on_eval() quince.log(\"eval\") end
-", 2);
+",
+        2
+    );
 
-    strategy_compiles!(test_macd_cross, "
+    strategy_compiles!(
+        test_macd_cross,
+        "
 @persist local position_size = 0
 function on_trade(trade)
     local macd = quince.get(\"macd.macd\")
@@ -1659,7 +2040,9 @@ function on_trade(trade)
     if macd < signal and position_size > 0 then quince.order(1, 1.0, 0) position_size = 0 end
 end
 function on_eval() quince.log(\"eval\") end
-", 2);
+",
+        2
+    );
 
     strategy_compiles!(test_atr_trail, "
 @persist local position_size = 0
@@ -1672,7 +2055,9 @@ end
 function on_eval() quince.log(\"eval\") end
 ", 2);
 
-    strategy_compiles!(test_grid_trade, "
+    strategy_compiles!(
+        test_grid_trade,
+        "
 @persist local grid_level = 0
 function on_trade(trade)
     local price = trade.price
@@ -1682,9 +2067,13 @@ function on_trade(trade)
     if price - quince.get(\"ema\") < -step then quince.order(0, 0.2, 0) end
 end
 function on_eval() quince.log(\"eval\") end
-", 2);
+",
+        2
+    );
 
-    strategy_compiles!(test_momentum, "
+    strategy_compiles!(
+        test_momentum,
+        "
 @persist local position_size = 0
 function on_trade(trade)
     local roc = quince.get(\"roc\")
@@ -1692,25 +2081,37 @@ function on_trade(trade)
     if roc < -2 and position_size > 0 then quince.order(1, 1.0, 0) position_size = 0 end
 end
 function on_eval() quince.log(\"eval\") end
-", 2);
+",
+        2
+    );
 
-    strategy_compiles!(test_persist_multi, "
+    strategy_compiles!(
+        test_persist_multi,
+        "
 @persist local a = 0
 @persist local b = 0
 @persist local c = 0
 function on_eval() a = a + 1 b = b + 2 c = c + 3 end
-", 1);
+",
+        1
+    );
 
-    strategy_compiles!(test_quince_chained, "
+    strategy_compiles!(
+        test_quince_chained,
+        "
 function on_trade(trade)
     local p = quince.price()
     local pos = quince.position()
     local bal = quince.balance(\"USDT\")
     quince.log(\"test\")
 end
-", 1);
+",
+        1
+    );
 
-    strategy_compiles!(test_trade_fields, "
+    strategy_compiles!(
+        test_trade_fields,
+        "
 function on_trade(trade)
     local p = trade.price
     local q = trade.qty
@@ -1718,17 +2119,24 @@ function on_trade(trade)
     local id = trade.trade_id
     local t = trade.time
 end
-", 1, 4); // at least 4 instr (5 field accesses via Mov)
+",
+        1,
+        4
+    ); // at least 4 instr (5 field accesses via Mov)
 
-    // ── Expression tests ──
+    // ── Expression compilation tests ──
 
     macro_rules! expr_compiles {
         ($name:ident, $src:expr, $opcode:path) => {
             #[test]
             fn $name() {
                 let prog = compile_str($src);
-                assert!(prog.code.iter().any(|i| i.opcode() == $opcode),
-                    "{} must emit {:?}", $src, $opcode);
+                assert!(
+                    prog.code.iter().any(|i| i.opcode() == $opcode),
+                    "{} must emit {:?}",
+                    $src,
+                    $opcode
+                );
             }
         };
     }
@@ -1738,7 +2146,7 @@ end
     expr_compiles!(test_bin_mul, "3 * 4", O::Mul);
     expr_compiles!(test_bin_div, "10 / 3", O::Div);
     expr_compiles!(test_bin_mod, "10 % 3", O::Mod);
-    expr_compiles!(test_bin_pow, "2 ^ 3", O::Ldi);
+    expr_compiles!(test_bin_pow, "2 ^ 3", O::Pow);
     expr_compiles!(test_bin_idiv, "10 // 3", O::Div);
     expr_compiles!(test_bin_eq, "1 == 2", O::Eq);
     expr_compiles!(test_bin_ne, "1 ~= 2", O::Ne);
@@ -1759,7 +2167,6 @@ end
     expr_compiles!(test_bin_fgt, "2.0 > 1.0", O::FGt);
     expr_compiles!(test_bin_fle, "1.0 <= 2.0", O::FLe);
     expr_compiles!(test_bin_fge, "2.0 >= 1.0", O::FGe);
-    // unary_neg, quince_get, quince_price already tested above
     expr_compiles!(test_expr_not, "not 1", O::EqI);
     expr_compiles!(test_expr_len, "#\"hello\"", O::Ldi);
     expr_compiles!(test_expr_fneg, "-1.5", O::FNeg);
@@ -1771,7 +2178,7 @@ end
     expr_compiles!(test_expr_log_str, "quince.log(\"msg\")", O::Log);
     expr_compiles!(test_expr_log_ident, "quince.log(\"x\")", O::Log);
 
-    // ── Edge cases ──
+    // ── Edge-case tests ──
 
     #[test]
     fn test_if_elseif_else() {
@@ -1802,7 +2209,6 @@ end
     #[test]
     fn test_var_reassign() {
         let prog = compile_str("local x = 1 x = x + 1 x = x * 2");
-        // Last instruction is Mov (assign result back to x)
         let ops: Vec<O> = prog.code.iter().map(|i| i.opcode()).collect();
         assert!(ops.contains(&O::Add));
         assert!(ops.contains(&O::Mul));
@@ -1885,7 +2291,6 @@ end
 
     #[test]
     fn test_parse_error_empty_fn_body() {
-        // Should be valid: empty fn body
         let result = crate::parser::parse("function foo() end");
         assert!(result.is_ok());
     }
@@ -1953,7 +2358,6 @@ end
 
     #[test]
     fn test_while_true_body() {
-        // while true with body that halts
         let prog = compile_str("while 1 do return 42 end");
         assert!(prog.code.iter().any(|i| i.opcode() == O::Ret));
     }
@@ -2060,7 +2464,7 @@ end
         assert_eq!(prog.code[0].opcode(), O::Ldi);
     }
 
-    // ── compile_checked (type-checked compilation) ──
+    // ── compile_checked (type-checked compilation) tests ──
 
     #[test]
     fn compile_checked_valid_program_ok() {
@@ -2089,37 +2493,60 @@ end
         ";
         let program = parser::parse(src).unwrap();
         let result = compile_checked(&program);
-        assert!(result.is_ok(), "strategy should type-check: {:?}", result.err());
+        assert!(
+            result.is_ok(),
+            "strategy should type-check: {:?}",
+            result.err()
+        );
     }
 
-    // ── Phase 4g: feature/signal compilation ──
+    // ── Phase 4g: feature/signal compilation tests ──
 
-    strategy_compiles!(test_feature_signal, "
+    strategy_compiles!(
+        test_feature_signal,
+        "
 feature f1 = 1.0 + 2.0
 signal s1 = 1.0 > 0.5
 function on_eval() quince.log(\"ok\") end
-", 1, 4);
+",
+        1,
+        4
+    );
 
-    strategy_compiles!(test_state_persist_simple, "
+    strategy_compiles!(
+        test_state_persist_simple,
+        "
 state x : f64 = 0.0
 function on_trade(t)
     x = t
 end
-", 1, 3);
+",
+        1,
+        3
+    );
 
-    strategy_compiles!(test_state_event_handler, "
+    strategy_compiles!(
+        test_state_event_handler,
+        "
 state acc : f64 = 0.0
 on eval() {
     quince.log(\"ok\")
 }
-", 1, 3);
+",
+        1,
+        3
+    );
 
     #[test]
     fn test_state_typed_compiles() {
         let src = "state price : f64 = 100.0\nfunction on_eval() quince.log(\"ok\") end";
         let program = parser::parse(src).unwrap();
         let result = compile_checked(&program);
-        assert!(result.is_ok(), "state decl should type-check: {:?}", result.err());
+        assert!(
+            result.is_ok(),
+            "state decl should type-check: {:?}",
+            result.err()
+        );
     }
 
     #[test]
@@ -2127,7 +2554,11 @@ on eval() {
         let src = "fn add(x: f64, y: f64) -> f64 { return x + y }\nfunction on_eval() quince.log(\"ok\") end";
         let program = parser::parse(src).unwrap();
         let result = compile_checked(&program);
-        assert!(result.is_ok(), "fn decl should type-check: {:?}", result.err());
+        assert!(
+            result.is_ok(),
+            "fn decl should type-check: {:?}",
+            result.err()
+        );
     }
 
     #[test]
@@ -2135,7 +2566,11 @@ on eval() {
         let src = "on eval() { quince.log(\"ok\") }\nfunction on_old() quince.log(\"done\") end";
         let program = parser::parse(src).unwrap();
         let result = compile_checked(&program);
-        assert!(result.is_ok(), "event handler should type-check: {:?}", result.err());
+        assert!(
+            result.is_ok(),
+            "event handler should type-check: {:?}",
+            result.err()
+        );
     }
 
     #[test]
@@ -2152,13 +2587,26 @@ end
 ";
         let program = parser::parse(src).unwrap();
         let result = compile_checked(&program);
-        assert!(result.is_ok(), "state cross-fn should type-check: {:?}", result.err());
+        assert!(
+            result.is_ok(),
+            "state cross-fn should type-check: {:?}",
+            result.err()
+        );
         let prog = compile(&program).unwrap();
         // Should have 2 entry points
-        assert!(prog.entries.len() >= 2, "should have at least 2 entries (on_trade + on_eval)");
-        // Should contain PersistGet opcode (54)
-        let has_persist_get = prog.code.iter().any(|i| i.opcode() == crate::opcodes::Opcode::PersistGet);
-        let has_persist_set = prog.code.iter().any(|i| i.opcode() == crate::opcodes::Opcode::PersistSet);
+        assert!(
+            prog.entries.len() >= 2,
+            "should have at least 2 entries (on_trade + on_eval)"
+        );
+        // Should contain PersistGet opcode
+        let has_persist_get = prog
+            .code
+            .iter()
+            .any(|i| i.opcode() == crate::opcodes::Opcode::PersistGet);
+        let has_persist_set = prog
+            .code
+            .iter()
+            .any(|i| i.opcode() == crate::opcodes::Opcode::PersistSet);
         assert!(has_persist_get, "state must emit PersistGet");
         assert!(has_persist_set, "state x = x + 1.0 must emit PersistSet");
     }
@@ -2174,7 +2622,11 @@ function on_old() quince.log(\"ok\") end
 ";
         let program = parser::parse(src).unwrap();
         let result = compile_checked(&program);
-        assert!(result.is_ok(), "event handler should type-check: {:?}", result.err());
+        assert!(
+            result.is_ok(),
+            "event handler should type-check: {:?}",
+            result.err()
+        );
     }
 
     #[test]
@@ -2182,7 +2634,11 @@ function on_old() quince.log(\"ok\") end
         let src = "function on_fill(fill) local p = fill.price local q = fill.qty end";
         let program = parser::parse(src).unwrap();
         let result = compile_checked(&program);
-        assert!(result.is_ok(), "on_fill with field access: {:?}", result.err());
+        assert!(
+            result.is_ok(),
+            "on_fill with field access: {:?}",
+            result.err()
+        );
     }
 
     #[test]
@@ -2206,7 +2662,10 @@ on eval() {
         let program = parser::parse("local t = {}").unwrap();
         let result = compile_checked(&program);
         assert!(result.is_err(), "table literal should be rejected");
-        assert!(result.unwrap_err().iter().any(|e| e.msg.contains("table literal")));
+        assert!(result
+            .unwrap_err()
+            .iter()
+            .any(|e| e.msg.contains("table literal")));
     }
 
     #[test]

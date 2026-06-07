@@ -9,7 +9,11 @@ pub struct Sma {
 impl Sma {
     pub fn new(period: usize) -> Self {
         assert!(period > 0, "SMA period must be > 0");
-        Self { period, buffer: RingVec::new(period), sum: 0.0 }
+        Self {
+            period,
+            buffer: RingVec::new(period),
+            sum: 0.0,
+        }
     }
 
     pub fn update(&mut self, value: f64) -> Option<f64> {
@@ -29,7 +33,9 @@ impl Sma {
         self.sum = 0.0;
     }
 
-    pub fn is_ready(&self) -> bool { self.buffer.len() == self.period }
+    pub fn is_ready(&self) -> bool {
+        self.buffer.len() == self.period
+    }
 }
 
 pub struct Ema {
@@ -40,7 +46,10 @@ pub struct Ema {
 impl Ema {
     pub fn new(period: usize) -> Self {
         assert!(period > 0, "EMA period must be > 0");
-        Self { multiplier: 2.0 / (period + 1) as f64, current: None }
+        Self {
+            multiplier: 2.0 / (period + 1) as f64,
+            current: None,
+        }
     }
 
     pub fn update(&mut self, value: f64) -> f64 {
@@ -51,8 +60,12 @@ impl Ema {
         self.current.unwrap()
     }
 
-    pub fn reset(&mut self) { self.current = None; }
-    pub fn value(&self) -> Option<f64> { self.current }
+    pub fn reset(&mut self) {
+        self.current = None;
+    }
+    pub fn value(&self) -> Option<f64> {
+        self.current
+    }
 }
 
 pub struct Wma {
@@ -65,13 +78,20 @@ impl Wma {
     pub fn new(period: usize) -> Self {
         assert!(period > 0, "WMA period must be > 0");
         let denominator = (period * (period + 1) / 2) as f64;
-        Self { period, buffer: RingVec::new(period), denominator }
+        Self {
+            period,
+            buffer: RingVec::new(period),
+            denominator,
+        }
     }
 
     pub fn update(&mut self, value: f64) -> Option<f64> {
         self.buffer.push(value);
         if self.buffer.len() == self.period {
-            let weighted: f64 = self.buffer.iter().enumerate()
+            let weighted: f64 = self
+                .buffer
+                .iter()
+                .enumerate()
                 .map(|(i, v)| v * (i + 1) as f64)
                 .sum();
             Some(weighted / self.denominator)
@@ -80,8 +100,12 @@ impl Wma {
         }
     }
 
-    pub fn reset(&mut self) { self.buffer.clear(); }
-    pub fn is_ready(&self) -> bool { self.buffer.len() == self.period }
+    pub fn reset(&mut self) {
+        self.buffer.clear();
+    }
+    pub fn is_ready(&self) -> bool {
+        self.buffer.len() == self.period
+    }
 }
 
 pub struct Vwma {
@@ -95,7 +119,13 @@ pub struct Vwma {
 impl Vwma {
     pub fn new(period: usize) -> Self {
         assert!(period > 0, "VWMA period must be > 0");
-        Self { period, price_buffer: RingVec::new(period), vol_buffer: RingVec::new(period), pv_sum: 0.0, v_sum: 0.0 }
+        Self {
+            period,
+            price_buffer: RingVec::new(period),
+            vol_buffer: RingVec::new(period),
+            pv_sum: 0.0,
+            v_sum: 0.0,
+        }
     }
 
     pub fn update(&mut self, price: f64, volume: f64) -> Option<f64> {
@@ -111,7 +141,9 @@ impl Vwma {
         }
 
         if self.price_buffer.len() == self.period {
-            if self.v_sum == 0.0 { return None }
+            if self.v_sum == 0.0 {
+                return None;
+            }
             Some(self.pv_sum / self.v_sum)
         } else {
             None
@@ -119,10 +151,14 @@ impl Vwma {
     }
 
     pub fn reset(&mut self) {
-        self.price_buffer.clear(); self.vol_buffer.clear();
-        self.pv_sum = 0.0; self.v_sum = 0.0;
+        self.price_buffer.clear();
+        self.vol_buffer.clear();
+        self.pv_sum = 0.0;
+        self.v_sum = 0.0;
     }
-    pub fn is_ready(&self) -> bool { self.price_buffer.len() == self.period }
+    pub fn is_ready(&self) -> bool {
+        self.price_buffer.len() == self.period
+    }
 }
 
 pub struct Lsma {
@@ -138,7 +174,12 @@ impl Lsma {
         let n = period as f64;
         let sum_x = n * (n - 1.0) / 2.0;
         let sum_x2 = (n - 1.0) * n * (2.0 * n - 1.0) / 6.0;
-        Self { period, buffer: RingVec::new(period), sum_x, sum_x2 }
+        Self {
+            period,
+            buffer: RingVec::new(period),
+            sum_x,
+            sum_x2,
+        }
     }
 
     pub fn update(&mut self, value: f64) -> Option<f64> {
@@ -146,8 +187,14 @@ impl Lsma {
         if self.buffer.len() == self.period {
             let n = self.period as f64;
             let sum_y: f64 = self.buffer.iter().sum();
-            let sum_xy: f64 = self.buffer.iter().enumerate().map(|(i, v)| v * i as f64).sum();
-            let slope = (n * sum_xy - self.sum_x * sum_y) / (n * self.sum_x2 - self.sum_x * self.sum_x);
+            let sum_xy: f64 = self
+                .buffer
+                .iter()
+                .enumerate()
+                .map(|(i, v)| v * i as f64)
+                .sum();
+            let slope =
+                (n * sum_xy - self.sum_x * sum_y) / (n * self.sum_x2 - self.sum_x * self.sum_x);
             let intercept = (sum_y - slope * self.sum_x) / n;
             Some(intercept + slope * (n - 1.0))
         } else {
@@ -155,8 +202,12 @@ impl Lsma {
         }
     }
 
-    pub fn reset(&mut self) { self.buffer.clear(); }
-    pub fn is_ready(&self) -> bool { self.buffer.len() == self.period }
+    pub fn reset(&mut self) {
+        self.buffer.clear();
+    }
+    pub fn is_ready(&self) -> bool {
+        self.buffer.len() == self.period
+    }
 }
 
 #[cfg(test)]
@@ -173,14 +224,17 @@ mod tests {
     #[test]
     fn sma_returns_value_when_ready() {
         let mut sma = Sma::new(3);
-        sma.update(1.0); sma.update(2.0);
+        sma.update(1.0);
+        sma.update(2.0);
         assert_eq!(sma.update(3.0), Some(2.0));
     }
 
     #[test]
     fn sma_sliding_window() {
         let mut sma = Sma::new(3);
-        sma.update(1.0); sma.update(2.0); sma.update(3.0);
+        sma.update(1.0);
+        sma.update(2.0);
+        sma.update(3.0);
         assert_eq!(sma.update(4.0), Some(3.0));
         assert_eq!(sma.update(5.0), Some(4.0));
     }
@@ -194,7 +248,8 @@ mod tests {
     #[test]
     fn sma_reset() {
         let mut sma = Sma::new(3);
-        sma.update(1.0); sma.update(2.0);
+        sma.update(1.0);
+        sma.update(2.0);
         sma.reset();
         assert_eq!(sma.update(10.0), None);
         assert_eq!(sma.is_ready(), false);
@@ -203,20 +258,24 @@ mod tests {
     #[test]
     fn sma_zero_values() {
         let mut sma = Sma::new(3);
-        sma.update(0.0); sma.update(0.0);
+        sma.update(0.0);
+        sma.update(0.0);
         assert_eq!(sma.update(0.0), Some(0.0));
     }
 
     #[test]
     fn sma_negative_values() {
         let mut sma = Sma::new(3);
-        sma.update(-1.0); sma.update(-2.0);
+        sma.update(-1.0);
+        sma.update(-2.0);
         assert_eq!(sma.update(-3.0), Some(-2.0));
     }
 
     #[test]
     #[should_panic]
-    fn sma_zero_period_panics() { Sma::new(0); }
+    fn sma_zero_period_panics() {
+        Sma::new(0);
+    }
 
     #[test]
     fn ema_first_value_equals_input() {
@@ -243,7 +302,9 @@ mod tests {
     #[test]
     fn ema_after_many_identical_values() {
         let mut ema = Ema::new(5);
-        for _ in 0..100 { ema.update(42.0); }
+        for _ in 0..100 {
+            ema.update(42.0);
+        }
         assert!((ema.value().unwrap() - 42.0).abs() < 1e-10);
     }
 
@@ -266,37 +327,44 @@ mod tests {
 
     #[test]
     #[should_panic]
-    fn ema_zero_period_panics() { Ema::new(0); }
+    fn ema_zero_period_panics() {
+        Ema::new(0);
+    }
 
     #[test]
     fn wma_known_values() {
         let mut wma = Wma::new(3);
-        wma.update(1.0); wma.update(2.0);
+        wma.update(1.0);
+        wma.update(2.0);
         let v = wma.update(3.0);
-        let expected = (1.0*1.0 + 2.0*2.0 + 3.0*3.0) / 6.0;
+        let expected = (1.0 * 1.0 + 2.0 * 2.0 + 3.0 * 3.0) / 6.0;
         assert!((v.unwrap() - expected).abs() < 1e-10);
     }
 
     #[test]
     fn wma_sliding() {
         let mut wma = Wma::new(2);
-        wma.update(1.0); wma.update(2.0);
+        wma.update(1.0);
+        wma.update(2.0);
         let v = wma.update(3.0);
-        let expected = (2.0*1.0 + 3.0*2.0) / 3.0;
+        let expected = (2.0 * 1.0 + 3.0 * 2.0) / 3.0;
         assert!((v.unwrap() - expected).abs() < 1e-10);
     }
 
     #[test]
     fn wma_not_enough_data() {
         let mut wma = Wma::new(5);
-        for i in 1..=4 { assert_eq!(wma.update(i as f64), None); }
+        for i in 1..=4 {
+            assert_eq!(wma.update(i as f64), None);
+        }
         assert!(wma.update(5.0).is_some());
     }
 
     #[test]
     fn wma_reset() {
         let mut wma = Wma::new(3);
-        wma.update(1.0); wma.update(2.0);
+        wma.update(1.0);
+        wma.update(2.0);
         wma.reset();
         assert_eq!(wma.update(10.0), None);
     }
@@ -309,7 +377,9 @@ mod tests {
 
     #[test]
     #[should_panic]
-    fn wma_zero_period_panics() { Wma::new(0); }
+    fn wma_zero_period_panics() {
+        Wma::new(0);
+    }
 
     #[test]
     fn vwma_known_values() {
@@ -317,7 +387,7 @@ mod tests {
         vwma.update(10.0, 100.0);
         vwma.update(20.0, 200.0);
         let v = vwma.update(30.0, 300.0);
-        let expected = (10.0*100.0 + 20.0*200.0 + 30.0*300.0) / (100.0+200.0+300.0);
+        let expected = (10.0 * 100.0 + 20.0 * 200.0 + 30.0 * 300.0) / (100.0 + 200.0 + 300.0);
         assert!((v.unwrap() - expected).abs() < 1e-10);
     }
 
@@ -331,34 +401,40 @@ mod tests {
     #[test]
     fn vwma_sliding() {
         let mut vwma = Vwma::new(2);
-        vwma.update(10.0, 100.0); vwma.update(20.0, 200.0);
+        vwma.update(10.0, 100.0);
+        vwma.update(20.0, 200.0);
         let v = vwma.update(30.0, 300.0);
-        assert!((v.unwrap() - (20.0*200.0 + 30.0*300.0) / 500.0).abs() < 1e-10);
+        assert!((v.unwrap() - (20.0 * 200.0 + 30.0 * 300.0) / 500.0).abs() < 1e-10);
     }
 
     #[test]
     fn vwma_zero_volume_returns_none() {
         let mut vwma = Vwma::new(2);
-        vwma.update(10.0, 0.0); vwma.update(20.0, 0.0);
+        vwma.update(10.0, 0.0);
+        vwma.update(20.0, 0.0);
         assert_eq!(vwma.update(30.0, 0.0), None);
     }
 
     #[test]
     fn vwma_reset() {
         let mut vwma = Vwma::new(3);
-        vwma.update(1.0, 1.0); vwma.update(2.0, 1.0);
+        vwma.update(1.0, 1.0);
+        vwma.update(2.0, 1.0);
         vwma.reset();
         assert_eq!(vwma.update(10.0, 10.0), None);
     }
 
     #[test]
     #[should_panic]
-    fn vwma_zero_period_panics() { Vwma::new(0); }
+    fn vwma_zero_period_panics() {
+        Vwma::new(0);
+    }
 
     #[test]
     fn lsma_known_values() {
         let mut lsma = Lsma::new(3);
-        lsma.update(1.0); lsma.update(2.0);
+        lsma.update(1.0);
+        lsma.update(2.0);
         let v = lsma.update(3.0);
         assert!((v.unwrap() - 3.0).abs() < 1e-10);
     }
@@ -366,7 +442,9 @@ mod tests {
     #[test]
     fn lsma_linear_trend() {
         let mut lsma = Lsma::new(4);
-        lsma.update(1.0); lsma.update(2.0); lsma.update(3.0);
+        lsma.update(1.0);
+        lsma.update(2.0);
+        lsma.update(3.0);
         let v = lsma.update(4.0);
         assert!((v.unwrap() - 4.0).abs() < 1e-10);
     }
@@ -374,14 +452,17 @@ mod tests {
     #[test]
     fn lsma_not_enough_data() {
         let mut lsma = Lsma::new(5);
-        for i in 1..=4 { assert_eq!(lsma.update(i as f64), None); }
+        for i in 1..=4 {
+            assert_eq!(lsma.update(i as f64), None);
+        }
         assert!(lsma.update(5.0).is_some());
     }
 
     #[test]
     fn lsma_reset() {
         let mut lsma = Lsma::new(3);
-        lsma.update(1.0); lsma.update(2.0);
+        lsma.update(1.0);
+        lsma.update(2.0);
         lsma.reset();
         assert_eq!(lsma.update(10.0), None);
     }
@@ -389,7 +470,8 @@ mod tests {
     #[test]
     fn lsma_constant_values() {
         let mut lsma = Lsma::new(3);
-        lsma.update(5.0); lsma.update(5.0);
+        lsma.update(5.0);
+        lsma.update(5.0);
         let v = lsma.update(5.0);
         assert!((v.unwrap() - 5.0).abs() < 1e-10);
     }
@@ -397,19 +479,24 @@ mod tests {
     #[test]
     fn lsma_negative_values() {
         let mut lsma = Lsma::new(3);
-        lsma.update(-1.0); lsma.update(-2.0);
+        lsma.update(-1.0);
+        lsma.update(-2.0);
         let v = lsma.update(-3.0);
         assert!((v.unwrap() - (-3.0)).abs() < 1e-10);
     }
 
     #[test]
     #[should_panic]
-    fn lsma_period_one_panics() { Lsma::new(1); }
+    fn lsma_period_one_panics() {
+        Lsma::new(1);
+    }
 
     #[test]
     fn lsma_sliding() {
         let mut lsma = Lsma::new(3);
-        lsma.update(1.0); lsma.update(2.0); lsma.update(3.0);
+        lsma.update(1.0);
+        lsma.update(2.0);
+        lsma.update(3.0);
         let v = lsma.update(10.0);
         assert!(v.unwrap() > 5.0);
     }

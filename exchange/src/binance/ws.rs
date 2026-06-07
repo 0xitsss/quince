@@ -19,18 +19,11 @@ pub struct WsRequest {
     pub response_tx: oneshot::Sender<Result<Value>>,
 }
 
-fn sign_params(
-    api_key: &str,
-    secret_key: &str,
-    params: &mut Map<String, Value>,
-) {
+fn sign_params(api_key: &str, secret_key: &str, params: &mut Map<String, Value>) {
     use hmac::{Hmac, Mac};
     use sha2::Sha256;
 
-    params.insert(
-        "apiKey".into(),
-        Value::String(api_key.to_string()),
-    );
+    params.insert("apiKey".into(), Value::String(api_key.to_string()));
     let ts = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap()

@@ -9,37 +9,54 @@
 /// - Price + Duration → Price (valid — offset in time)
 /// - Price * Qty → Price (valid — notional)
 /// - Price + Side → TypeError (invalid)
-
 use std::fmt;
+
+// --- Section: QflType enum — domain-specific type system for trading strategies ---
 
 /// Strongly-typed domain value.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum QflType {
-    I64,
-    F64,
-    Bool,
-    Timestamp,
-    Duration,
-    Price,
-    Qty,
-    Symbol,
-    Side,
-    OrderId,
+    I64,        // raw 64-bit signed integer
+    F64,        // raw double-precision float
+    Bool,       // boolean (true/false)
+    Timestamp,  // nanosecond-precision time point
+    Duration,   // time interval (nanoseconds)
+    Price,      // asset price (float-like, domain-typed)
+    Qty,        // asset quantity (float-like, domain-typed)
+    Symbol,     // string symbol (e.g. "btcusdt")
+    Side,       // order side (buy/sell, stored as i64)
+    OrderId,    // order identifier (stored as i64)
 }
 
 impl QflType {
+    // Returns true if this type supports arithmetic operations
     pub fn is_numeric(self) -> bool {
-        matches!(self, QflType::I64 | QflType::F64 | QflType::Price
-            | QflType::Qty | QflType::Timestamp | QflType::Duration)
+        matches!(
+            self,
+            QflType::I64
+                | QflType::F64
+                | QflType::Price
+                | QflType::Qty
+                | QflType::Timestamp
+                | QflType::Duration
+        )
     }
 
+    // Returns true if this type is represented as a floating-point value
     pub fn is_float(self) -> bool {
         matches!(self, QflType::F64 | QflType::Price | QflType::Qty)
     }
 
+    // Returns true if this type is represented as an integer value
     pub fn is_integer(self) -> bool {
-        matches!(self, QflType::I64 | QflType::Timestamp | QflType::Duration
-            | QflType::Side | QflType::OrderId)
+        matches!(
+            self,
+            QflType::I64
+                | QflType::Timestamp
+                | QflType::Duration
+                | QflType::Side
+                | QflType::OrderId
+        )
     }
 }
 
@@ -60,6 +77,8 @@ impl fmt::Display for QflType {
     }
 }
 
+// --- Section: Type parsing from declarations ---
+
 /// Parse a state declaration type string to QflType.
 /// e.g. "f64" → QflType::F64, "qty" → QflType::Qty, "i32" → QflType::I64
 pub fn parse_state_type(s: &str) -> QflType {
@@ -78,6 +97,8 @@ pub fn parse_state_type(s: &str) -> QflType {
     }
 }
 
+// --- Section: TypeError ---
+
 /// A type error with a message.
 #[derive(Debug, Clone, PartialEq)]
 pub struct TypeError {
@@ -95,13 +116,16 @@ impl fmt::Display for TypeError {
 /// Result type for binary operations, or a TypeError.
 pub type TypeResult = Result<QflType, TypeError>;
 
+// --- Section: bin_op_type — binary operation type inference rules ---
+
 /// Determine the result type for `lhs op rhs`.
 /// Returns `Err(TypeError)` if the operation is invalid.
 pub fn bin_op_type(lhs: QflType, op: &crate::ast::BinOp, rhs: QflType) -> TypeResult {
     use crate::ast::BinOp;
     use QflType::*;
 
-    // Comparison ops always return Bool
+    // --- Comparison ops always return Bool ---
+    // Comparison requires same types or both numeric
     match op {
         BinOp::Eq | BinOp::Ne | BinOp::Lt | BinOp::Gt | BinOp::Le | BinOp::Ge => {
             if lhs == rhs || (lhs.is_numeric() && rhs.is_numeric()) {
@@ -111,6 +135,7 @@ pub fn bin_op_type(lhs: QflType, op: &crate::ast::BinOp, rhs: QflType) -> TypeRe
                 msg: format!("cannot compare {} with {}", lhs, rhs),
             });
         }
+        // Logical ops (And, Or) require both sides to be Bool
         BinOp::And | BinOp::Or => {
             if lhs == Bool && rhs == Bool {
                 return Ok(Bool);
@@ -122,31 +147,37 @@ pub fn bin_op_type(lhs: QflType, op: &crate::ast::BinOp, rhs: QflType) -> TypeRe
         _ => {}
     }
 
-    // Arithmetic ops (Add, Sub, Mul, Div, IDiv, Mod, Pow, Concat)
+    // --- Arithmetic ops (Add, Sub, Mul, Div, IDiv, Mod, Pow, Concat) ---
+
     match (lhs, rhs) {
         // Same type → same type (numeric)
         (a, b) if a == b && a.is_numeric() => Ok(a),
 
-        // Price + Duration → Price (time offset)
+        // Price + Duration → Price (time offset: adding an interval to a price timestamp)
         (Price, Duration) | (Duration, Price) => Ok(Price),
 
-        // Price * Qty → Price (notional)
+        // Price * Qty → Price (notional: quantity times price gives total value)
         (Price, Qty) | (Qty, Price) if matches!(op, BinOp::Mul) => Ok(Price),
 
-        // Promotion: I64 + F64/Price/Qty → F64/Price/Qty
+        // I64 promotion: I64 promotes to the wider type when paired with a domain float
         (I64, F64) | (F64, I64) => Ok(F64),
         (I64, Price) | (Price, I64) => Ok(Price),
         (I64, Qty) | (Qty, I64) => Ok(Qty),
+        // I64 also promotes to Duration and Timestamp
         (I64, Duration) | (Duration, I64) => Ok(Duration),
         (I64, Timestamp) | (Timestamp, I64) => Ok(Timestamp),
 
         // Concat requires Symbol or String-like types
         (Symbol, Symbol) if matches!(op, BinOp::Concat) => Ok(Symbol),
+
+        // Everything else is a type error
         _ => Err(TypeError {
             msg: format!("invalid operation {} {} {}", lhs, op, rhs),
         }),
     }
 }
+
+// --- Section: unary_op_type — unary operation type inference rules ---
 
 /// Determine the result type for `op expr`.
 pub fn unary_op_type(op: &crate::ast::UnaryOp, expr: QflType) -> TypeResult {
@@ -154,6 +185,7 @@ pub fn unary_op_type(op: &crate::ast::UnaryOp, expr: QflType) -> TypeResult {
     use QflType::*;
 
     match op {
+        // Negation: works on any numeric type, preserves the type
         UnaryOp::Neg => {
             if expr.is_numeric() {
                 Ok(expr)
@@ -163,6 +195,7 @@ pub fn unary_op_type(op: &crate::ast::UnaryOp, expr: QflType) -> TypeResult {
                 })
             }
         }
+        // Logical NOT: only valid on Bool
         UnaryOp::Not => {
             if expr == Bool {
                 Ok(Bool)
@@ -172,6 +205,7 @@ pub fn unary_op_type(op: &crate::ast::UnaryOp, expr: QflType) -> TypeResult {
                 })
             }
         }
+        // Length operator: works on Symbol (string), returns I64
         UnaryOp::Len => {
             // Length works on symbols (strings)
             if expr == Symbol {
@@ -184,6 +218,8 @@ pub fn unary_op_type(op: &crate::ast::UnaryOp, expr: QflType) -> TypeResult {
         }
     }
 }
+
+// --- Section: literal_type — infer type from AST literal ---
 
 /// Infer the type of an AST literal.
 pub fn literal_type(lit: &crate::ast::Literal) -> QflType {
@@ -198,69 +234,95 @@ pub fn literal_type(lit: &crate::ast::Literal) -> QflType {
 
 // ── Program-level type checker ──
 
+// Helper: returns true if the type is compatible with 'side' (Side or I64)
 fn is_side_compat(t: QflType) -> bool {
     t == QflType::Side || t == QflType::I64
 }
 
+// Helper: returns true if the type is compatible with 'qty' (Qty, F64, I64, or Price)
 fn is_qty_compat(t: QflType) -> bool {
     t == QflType::Qty || t == QflType::F64 || t == QflType::I64 || t == QflType::Price
 }
 
+// --- Section: TypeChecker — walks the AST and validates types ---
+
 struct TypeChecker {
-    scopes: Vec<Scope>,
+    scopes: Vec<Scope>,  // stack of lexical scopes (innermost last)
     errors: Vec<TypeError>,
 }
 
 struct Scope {
-    vars: Vec<(String, QflType)>,
+    vars: Vec<(String, QflType)>,  // variable name -> type mapping
 }
 
 impl TypeChecker {
+    // Creates a new TypeChecker with the global scope initialized
     fn new() -> Self {
-        TypeChecker { scopes: vec![Scope { vars: Vec::new() }], errors: Vec::new() }
+        TypeChecker {
+            scopes: vec![Scope { vars: Vec::new() }],
+            errors: Vec::new(),
+        }
     }
 
+    // Looks up a variable's type by walking scopes from innermost to outermost
     fn lookup(&self, name: &str) -> Option<QflType> {
         for scope in self.scopes.iter().rev() {
             for (n, t) in scope.vars.iter().rev() {
-                if n == name { return Some(*t); }
+                if n == name {
+                    return Some(*t);
+                }
             }
         }
         None
     }
 
+    // Defines (or redefines) a variable in the current (innermost) scope
     fn define(&mut self, name: &str, typ: QflType) {
         if let Some(scope) = self.scopes.last_mut() {
             // Replace if already exists in current scope
             for (n, t) in scope.vars.iter_mut() {
-                if n == name { *t = typ; return; }
+                if n == name {
+                    *t = typ;
+                    return;
+                }
             }
             scope.vars.push((name.to_string(), typ));
         }
     }
 
+    // Pushes a new scope for block-level variable isolation
     fn push_scope(&mut self) {
         self.scopes.push(Scope { vars: Vec::new() });
     }
 
+    // Pops the innermost scope, discarding its variables
     fn pop_scope(&mut self) {
         self.scopes.pop();
     }
 
+    // Records a type error
     fn error(&mut self, msg: impl Into<String>) {
         self.errors.push(TypeError { msg: msg.into() });
     }
 
+    // Entry point: type-checks every statement in the program
     fn check_program(&mut self, program: &crate::ast::Program) {
         for stmt in program {
             self.check_stmt(stmt);
         }
     }
 
+    // Type-checks a single statement, dispatching on its variant
     fn check_stmt(&mut self, stmt: &crate::ast::Stmt) {
         use crate::ast::Stmt::*;
         match stmt {
-            VarDecl { names, init, persist: _, is_local: _ } => {
+            // Variable declaration: optionally infer type from initializer
+            VarDecl {
+                names,
+                init,
+                persist: _,
+                is_local: _,
+            } => {
                 if let Some(exprs) = init {
                     for (i, name) in names.iter().enumerate() {
                         let typ = if i < exprs.len() {
@@ -271,11 +333,13 @@ impl TypeChecker {
                         self.define(name, typ);
                     }
                 } else {
+                    // No initializer: default to I64
                     for name in names {
                         self.define(name, QflType::I64);
                     }
                 }
             }
+            // Assignment: validate type compatibility between target and source
             Assign { targets, exprs } => {
                 for expr in exprs {
                     self.infer_expr(expr);
@@ -289,60 +353,92 @@ impl TypeChecker {
                                 continue;
                             };
                             if let Some(var_type) = self.lookup(name) {
+                                // Check compatibility: exact match or both float-like
                                 let compatible = var_type == rhs_type
                                     || (var_type.is_float() && rhs_type.is_float());
                                 if !compatible {
-                                    self.error(format!("cannot assign {} to {} variable '{}'",
-                                        rhs_type, var_type, name));
+                                    self.error(format!(
+                                        "cannot assign {} to {} variable '{}'",
+                                        rhs_type, var_type, name
+                                    ));
                                 }
                             }
                             // Re-declare if not found
                             self.define(name, rhs_type);
                         }
-                        _ => { self.infer_expr(target); }
+                        _ => {
+                            self.infer_expr(target);
+                        }
                     }
                 }
             }
-            If { cond, then_body, elseif_branches, else_body } => {
+            // If statement: condition must be Bool, branches get their own scopes
+            If {
+                cond,
+                then_body,
+                elseif_branches,
+                else_body,
+            } => {
                 let cond_type = self.infer_expr(cond);
                 if cond_type != QflType::Bool {
                     self.error(format!("if condition must be bool, got {}", cond_type));
                 }
                 self.push_scope();
-                for s in then_body { self.check_stmt(s); }
+                for s in then_body {
+                    self.check_stmt(s);
+                }
                 self.pop_scope();
+                // Handle elseif branches: each has its own condition and scope
                 for (econd, ebody) in elseif_branches {
                     let ect = self.infer_expr(econd);
                     if ect != QflType::Bool {
                         self.error(format!("elseif condition must be bool, got {}", ect));
                     }
                     self.push_scope();
-                    for s in ebody { self.check_stmt(s); }
+                    for s in ebody {
+                        self.check_stmt(s);
+                    }
                     self.pop_scope();
                 }
+                // Else block gets its own scope too
                 self.push_scope();
-                for s in else_body { self.check_stmt(s); }
+                for s in else_body {
+                    self.check_stmt(s);
+                }
                 self.pop_scope();
             }
+            // While loop: condition must be Bool, body gets its own scope
             While { cond, body } => {
                 let ct = self.infer_expr(cond);
                 if ct != QflType::Bool {
                     self.error(format!("while condition must be bool, got {}", ct));
                 }
                 self.push_scope();
-                for s in body { self.check_stmt(s); }
+                for s in body {
+                    self.check_stmt(s);
+                }
                 self.pop_scope();
             }
+            // Repeat-until loop: body has its own scope, until condition must be Bool
             Repeat { body, until } => {
                 self.push_scope();
-                for s in body { self.check_stmt(s); }
+                for s in body {
+                    self.check_stmt(s);
+                }
                 self.pop_scope();
                 let ut = self.infer_expr(until);
                 if ut != QflType::Bool {
                     self.error(format!("repeat condition must be bool, got {}", ut));
                 }
             }
-            ForNum { var, from, to, step, body } => {
+            // Numeric for loop: from/to/step must be I64
+            ForNum {
+                var,
+                from,
+                to,
+                step,
+                body,
+            } => {
                 let ft = self.infer_expr(from);
                 if ft != QflType::I64 {
                     self.error(format!("for range start must be i64, got {}", ft));
@@ -359,49 +455,88 @@ impl TypeChecker {
                 }
                 self.define(var, QflType::I64);
                 self.push_scope();
-                for s in body { self.check_stmt(s); }
+                for s in body {
+                    self.check_stmt(s);
+                }
                 self.pop_scope();
             }
-            ForIn { vars: _, exprs, body } => {
-                for e in exprs { self.infer_expr(e); }
+            // For-in loop: infer types of iterables, body gets its own scope
+            ForIn {
+                vars: _,
+                exprs,
+                body,
+            } => {
+                for e in exprs {
+                    self.infer_expr(e);
+                }
                 self.push_scope();
-                for s in body { self.check_stmt(s); }
+                for s in body {
+                    self.check_stmt(s);
+                }
                 self.pop_scope();
             }
+            // Legacy function declaration: assigns trade parameter types if applicable
             FunctionDecl { name, params, body } => {
                 self.push_scope();
                 self.define_trade_params(name, params);
-                for s in body { self.check_stmt(s); }
+                for s in body {
+                    self.check_stmt(s);
+                }
                 self.pop_scope();
             }
+            // Return statement: infer types of all returned expressions
             Return { exprs } => {
-                for e in exprs { self.infer_expr(e); }
+                for e in exprs {
+                    self.infer_expr(e);
+                }
             }
-            ExprStmt(expr) => { self.infer_expr(expr); }
+            // Expression statement: just infer and discard the type
+            ExprStmt(expr) => {
+                self.infer_expr(expr);
+            }
+            // Setup directives — no codegen, no type checking needed
             Using { .. } => { /* setup directive — no codegen */ }
             Window { .. } => { /* setup directive — no codegen */ }
-            State { name, type_name, default } => {
+            // State declaration: validate default expression type matches declaration
+            State {
+                name,
+                type_name,
+                default,
+            } => {
                 let st = parse_state_type(type_name);
                 if let Some(expr) = default {
                     let et = self.infer_expr(expr);
                     if et != st {
-                        self.error(format!("state '{}' declared as {}, default expr is {}", name, st, et));
+                        self.error(format!(
+                            "state '{}' declared as {}, default expr is {}",
+                            name, st, et
+                        ));
                     }
                 }
                 self.define(name, st);
             }
-            FnDecl { name: _, params, return_type: _, body } => {
+            // Modern function declaration: params have declared types
+            FnDecl {
+                name: _,
+                params,
+                return_type: _,
+                body,
+            } => {
                 self.push_scope();
                 for p in params {
                     let pt = parse_state_type(&p.type_name);
                     self.define(&p.name, pt);
                 }
-                for s in body { self.check_stmt(s); }
+                for s in body {
+                    self.check_stmt(s);
+                }
                 self.pop_scope();
             }
+            // Event handler: param type depends on event name
             EventHandler { event, param, body } => {
                 self.push_scope();
                 if let Some(p) = param {
+                    // Map event name to parameter type
                     let param_type = match event.as_str() {
                         "trade" => QflType::Symbol,
                         "depth" => QflType::Symbol,
@@ -413,13 +548,17 @@ impl TypeChecker {
                     };
                     self.define(p, param_type);
                 }
-                for s in body { self.check_stmt(s); }
+                for s in body {
+                    self.check_stmt(s);
+                }
                 self.pop_scope();
             }
+            // Feature declaration: expression determines the value, type is always F64
             Feature { name, expr } => {
                 let _typ = self.infer_expr(expr);
                 self.define(name, QflType::F64);
             }
+            // Signal declaration: expression determines the value, type is always Bool
             Signal { name, expr } => {
                 let _typ = self.infer_expr(expr);
                 self.define(name, QflType::Bool);
@@ -427,15 +566,17 @@ impl TypeChecker {
         }
     }
 
+    // Assigns types to trade function parameters based on position
     fn define_trade_params(&mut self, fn_name: &str, params: &[String]) {
+        // on_trade has typed parameters: price, qty, side, id, timestamp
         let is_trade = fn_name == "on_trade";
         for (i, param) in params.iter().enumerate() {
             let typ = if is_trade {
                 match i {
-                    0 => QflType::Price,   // trade.price
-                    1 => QflType::Qty,     // trade.qty
-                    2 => QflType::Side,    // trade.side
-                    3 => QflType::I64,     // trade.id
+                    0 => QflType::Price,     // trade.price
+                    1 => QflType::Qty,       // trade.qty
+                    2 => QflType::Side,      // trade.side
+                    3 => QflType::I64,       // trade.id
                     4 => QflType::Timestamp, // trade.time
                     _ => QflType::I64,
                 }
@@ -452,91 +593,135 @@ impl TypeChecker {
         }
     }
 
+    // Infers the type of an expression, recursing into sub-expressions
     fn infer_expr(&mut self, expr: &crate::ast::Expr) -> QflType {
         use crate::ast::Expr::*;
         match expr {
+            // Literal: direct type mapping
             Literal(lit) => literal_type(lit),
+            // Identifier: look up in scope, default to I64 if not found
             Ident(name) => {
                 self.lookup(name).unwrap_or_else(|| {
                     // Check persist variables (defined later in compilation)
                     QflType::I64
                 })
             }
+            // Function call: defer to the specialized inference method
             FnCall { name, args } => self.infer_fn_call(name, args),
+            // Method call: defer to the specialized inference method
             MethodCall { obj, method, args } => self.infer_method_call(obj, method, args),
+            // Field access: defer to the specialized inference method
             FieldAccess { obj, field } => self.infer_field_access(obj, field),
+            // Index expression: index and object types checked, result is I64
             Index { obj, index } => {
                 self.infer_expr(obj);
                 self.infer_expr(index);
                 QflType::I64
             }
+            // Unary expression: apply unary_op_type, report errors
             Unary { op, expr } => {
                 let inner = self.infer_expr(expr);
                 match unary_op_type(op, inner) {
                     Ok(t) => t,
-                    Err(e) => { self.error(e.msg); QflType::I64 }
+                    Err(e) => {
+                        self.error(e.msg);
+                        QflType::I64
+                    }
                 }
             }
+            // Binary expression: apply bin_op_type, report errors
             Binary { lhs, op, rhs } => {
                 let l = self.infer_expr(lhs);
                 let r = self.infer_expr(rhs);
                 match bin_op_type(l, op, r) {
                     Ok(t) => t,
-                    Err(e) => { self.error(e.msg); QflType::I64 }
+                    Err(e) => {
+                        self.error(e.msg);
+                        QflType::I64
+                    }
                 }
             }
+            // Table literal: currently always resolves to I64
             Table(_) => QflType::I64,
         }
     }
 
+    // Infers the return type of a built-in function call
     fn infer_fn_call(&mut self, name: &str, args: &[crate::ast::Expr]) -> QflType {
         // Check arg types
         let arg_types: Vec<QflType> = args.iter().map(|a| self.infer_expr(a)).collect();
 
         match name {
+            // quince.get("key") retrieves a named indicator value → F64
             "quince.get" | "get" => {
                 if arg_types.len() >= 1 && arg_types[0] != QflType::Symbol {
-                    self.error(format!("quince.get() arg must be symbol, got {}", arg_types[0]));
+                    self.error(format!(
+                        "quince.get() arg must be symbol, got {}",
+                        arg_types[0]
+                    ));
                 }
                 QflType::F64
             }
+            // quince.price() returns the current market price → Price
             "quince.price" | "price" => QflType::Price,
+            // quince.position() returns the current position → Qty
             "quince.position" | "position" => QflType::Qty,
+            // quince.balance("asset") returns the current balance → F64
             "quince.balance" | "balance" => {
                 if arg_types.len() >= 1 && arg_types[0] != QflType::Symbol {
-                    self.error(format!("quince.balance() arg must be symbol, got {}", arg_types[0]));
+                    self.error(format!(
+                        "quince.balance() arg must be symbol, got {}",
+                        arg_types[0]
+                    ));
                 }
                 QflType::F64
             }
+            // quince.order(side, qty, price) places an order → I64 (order ID)
             "quince.order" | "order" => {
                 if arg_types.len() >= 1 && !is_side_compat(arg_types[0]) {
-                    self.error(format!("quince.order() side must be side or i64, got {}", arg_types[0]));
+                    self.error(format!(
+                        "quince.order() side must be side or i64, got {}",
+                        arg_types[0]
+                    ));
                 }
                 if arg_types.len() >= 2 && !is_qty_compat(arg_types[1]) {
-                    self.error(format!("quince.order() qty must be qty or numeric, got {}", arg_types[1]));
+                    self.error(format!(
+                        "quince.order() qty must be qty or numeric, got {}",
+                        arg_types[1]
+                    ));
                 }
                 QflType::I64
             }
+            // quince.log("message", ...) logs a message → I64
             "quince.log" | "log" => {
                 if let Some(arg_type) = arg_types.first() {
                     if *arg_type != QflType::Symbol {
-                        self.error(format!("quince.log() first arg must be symbol, got {}", arg_type));
+                        self.error(format!(
+                            "quince.log() first arg must be symbol, got {}",
+                            arg_type
+                        ));
                     }
                 }
                 QflType::I64
             }
+            // Unknown function: default to I64
             _ => QflType::I64,
         }
     }
 
+    // Infers the return type of a method call (e.g. quince:get("key"))
     fn infer_method_call(&mut self, obj: &str, method: &str, args: &[crate::ast::Expr]) -> QflType {
         let arg_types: Vec<QflType> = args.iter().map(|a| self.infer_expr(a)).collect();
 
+        // Only the "quince" object has built-in methods
         if obj == "quince" {
             match method {
                 "get" => {
                     if arg_types.len() >= 1 && arg_types[0] != QflType::Symbol {
-                        self.error(format!("quince:get() arg must be symbol, got {}", arg_types[0]));
+                        self.error(format!(
+                            "quince:get() arg must be symbol, got {}",
+                            arg_types[0]
+                        ));
                     }
                     QflType::F64
                 }
@@ -544,25 +729,36 @@ impl TypeChecker {
                 "position" => QflType::Qty,
                 "balance" => {
                     if arg_types.len() >= 1 && arg_types[0] != QflType::Symbol {
-                        self.error(format!("quince:balance() arg must be symbol, got {}", arg_types[0]));
+                        self.error(format!(
+                            "quince:balance() arg must be symbol, got {}",
+                            arg_types[0]
+                        ));
                     }
                     QflType::F64
                 }
                 "log" => {
                     if let Some(arg_type) = arg_types.first() {
                         if *arg_type != QflType::Symbol {
-                            self.error(format!("quince:log() first arg must be symbol, got {}", arg_type));
+                            self.error(format!(
+                                "quince:log() first arg must be symbol, got {}",
+                                arg_type
+                            ));
                         }
                     }
                     QflType::I64
                 }
                 "order" => {
                     if arg_types.len() >= 1 && !is_side_compat(arg_types[0]) {
-                        self.error(format!("quince:order() side must be side or i64, got {}",
-                            arg_types[0]));
+                        self.error(format!(
+                            "quince:order() side must be side or i64, got {}",
+                            arg_types[0]
+                        ));
                     }
                     if arg_types.len() >= 2 && !is_qty_compat(arg_types[1]) {
-                        self.error(format!("quince:order() qty must be qty or numeric, got {}", arg_types[1]));
+                        self.error(format!(
+                            "quince:order() qty must be qty or numeric, got {}",
+                            arg_types[1]
+                        ));
                     }
                     QflType::I64
                 }
@@ -573,6 +769,7 @@ impl TypeChecker {
         }
     }
 
+    // Infers the type of a field access (e.g. trade.price)
     fn infer_field_access(&mut self, obj: &crate::ast::Expr, field: &str) -> QflType {
         let obj_type = self.infer_expr(obj);
         match field {
@@ -588,6 +785,8 @@ impl TypeChecker {
         }
     }
 }
+
+// --- Section: type_check — public entry point for full-program type checking ---
 
 /// Run type-checking on a parsed QFL program.
 /// Returns `Ok(())` if valid, or `Err(Vec<TypeError>)` listing all errors.
@@ -611,38 +810,70 @@ mod tests {
     // ── Basic type properties ──
 
     #[test]
-    fn i64_is_numeric() { assert!(I64.is_numeric()); }
+    fn i64_is_numeric() {
+        assert!(I64.is_numeric());
+    }
     #[test]
-    fn f64_is_numeric() { assert!(F64.is_numeric()); }
+    fn f64_is_numeric() {
+        assert!(F64.is_numeric());
+    }
     #[test]
-    fn price_is_numeric() { assert!(Price.is_numeric()); }
+    fn price_is_numeric() {
+        assert!(Price.is_numeric());
+    }
     #[test]
-    fn qty_is_numeric() { assert!(Qty.is_numeric()); }
+    fn qty_is_numeric() {
+        assert!(Qty.is_numeric());
+    }
     #[test]
-    fn timestamp_is_numeric() { assert!(Timestamp.is_numeric()); }
+    fn timestamp_is_numeric() {
+        assert!(Timestamp.is_numeric());
+    }
     #[test]
-    fn duration_is_numeric() { assert!(Duration.is_numeric()); }
+    fn duration_is_numeric() {
+        assert!(Duration.is_numeric());
+    }
     #[test]
-    fn bool_is_not_numeric() { assert!(!Bool.is_numeric()); }
+    fn bool_is_not_numeric() {
+        assert!(!Bool.is_numeric());
+    }
     #[test]
-    fn symbol_is_not_numeric() { assert!(!Symbol.is_numeric()); }
+    fn symbol_is_not_numeric() {
+        assert!(!Symbol.is_numeric());
+    }
     #[test]
-    fn side_is_not_numeric() { assert!(!Side.is_numeric()); }
+    fn side_is_not_numeric() {
+        assert!(!Side.is_numeric());
+    }
     #[test]
-    fn order_id_is_not_numeric() { assert!(!OrderId.is_numeric()); }
+    fn order_id_is_not_numeric() {
+        assert!(!OrderId.is_numeric());
+    }
 
     #[test]
-    fn price_is_float() { assert!(Price.is_float()); }
+    fn price_is_float() {
+        assert!(Price.is_float());
+    }
     #[test]
-    fn qty_is_float() { assert!(Qty.is_float()); }
+    fn qty_is_float() {
+        assert!(Qty.is_float());
+    }
     #[test]
-    fn i64_is_not_float() { assert!(!I64.is_float()); }
+    fn i64_is_not_float() {
+        assert!(!I64.is_float());
+    }
     #[test]
-    fn timestamp_is_not_float() { assert!(!Timestamp.is_float()); }
+    fn timestamp_is_not_float() {
+        assert!(!Timestamp.is_float());
+    }
     #[test]
-    fn i64_is_integer() { assert!(I64.is_integer()); }
+    fn i64_is_integer() {
+        assert!(I64.is_integer());
+    }
     #[test]
-    fn price_is_not_integer() { assert!(!Price.is_integer()); }
+    fn price_is_not_integer() {
+        assert!(!Price.is_integer());
+    }
 
     // ── Same type arithmetic ──
 
@@ -857,7 +1088,10 @@ mod tests {
     }
     #[test]
     fn literal_string_type() {
-        assert_eq!(literal_type(&crate::ast::Literal::String("hello".into())), Symbol);
+        assert_eq!(
+            literal_type(&crate::ast::Literal::String("hello".into())),
+            Symbol
+        );
     }
     #[test]
     fn literal_nil_type() {
@@ -1045,7 +1279,11 @@ mod tests {
                 quince.log(\"eval\")
             end
         ";
-        assert!(check(src).is_ok(), "scalper should type-check: {:?}", check(src).err());
+        assert!(
+            check(src).is_ok(),
+            "scalper should type-check: {:?}",
+            check(src).err()
+        );
     }
 
     #[test]
@@ -1068,12 +1306,14 @@ mod tests {
     #[test]
     fn check_invalid_strategy_type_error() {
         // position_size (i64) + true (bool) is invalid
-        let errs = check_err("
+        let errs = check_err(
+            "
             @persist local position_size = 0
             function on_trade(trade)
                 local x = position_size + true
             end
-        ");
+        ",
+        );
         assert!(!errs.is_empty(), "i64 + bool should error");
     }
 }

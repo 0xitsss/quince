@@ -26,8 +26,14 @@ pub struct Stream {
 pub enum StreamMsg {
     Trade(Trade),
     Depth(Depth),
-    MarkPrice { price: f64, time: chrono::DateTime<chrono::Utc> },
-    OpenInterest { qty: f64, time: chrono::DateTime<chrono::Utc> },
+    MarkPrice {
+        price: f64,
+        time: chrono::DateTime<chrono::Utc>,
+    },
+    OpenInterest {
+        qty: f64,
+        time: chrono::DateTime<chrono::Utc>,
+    },
     ForceOrder(Trade),
     AccountUpdate(AccountInfo),
     OrderUpdate(OrderFill),

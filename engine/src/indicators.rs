@@ -20,13 +20,20 @@ pub fn parse_using(src: &str) -> Vec<IndicatorEntry> {
         if let Some(rest) = line.strip_prefix("@using ") {
             for token in rest.split_whitespace() {
                 let parts: Vec<&str> = token.split(':').collect();
-                if parts.is_empty() || parts[0].is_empty() { continue; }
+                if parts.is_empty() || parts[0].is_empty() {
+                    continue;
+                }
                 let name = parts[0].to_lowercase();
-                let params: Vec<f64> = parts[1..].iter()
+                let params: Vec<f64> = parts[1..]
+                    .iter()
                     .filter_map(|s| s.parse::<f64>().ok())
                     .collect();
                 let buf = default_buffer(&name, &params);
-                entries.push(IndicatorEntry { name, params, buffer: buf });
+                entries.push(IndicatorEntry {
+                    name,
+                    params,
+                    buffer: buf,
+                });
             }
         }
     }
@@ -59,8 +66,16 @@ enum ActiveIndicator {
     Adx(quince_indicators::structure::Adx),
     Zscore(quince_indicators::structure::ZScore),
     Cvd(f64),
-    Pmdi { value: f64, prev_data: f64, has_prev: bool },
-    Nmdi { value: f64, prev_data: f64, has_prev: bool },
+    Pmdi {
+        value: f64,
+        prev_data: f64,
+        has_prev: bool,
+    },
+    Nmdi {
+        value: f64,
+        prev_data: f64,
+        has_prev: bool,
+    },
 }
 
 // ── IndicatorBank ──
@@ -121,20 +136,53 @@ impl IndicatorBank {
                 "wma" => ActiveIndicator::Wma(quince_indicators::ma::Wma::new(pf(0) as usize)),
                 "vwma" => ActiveIndicator::Vwma(quince_indicators::ma::Vwma::new(pf(0) as usize)),
                 "lsma" => ActiveIndicator::Lsma(quince_indicators::ma::Lsma::new(pf(0) as usize)),
-                "rsi" => ActiveIndicator::Rsi(quince_indicators::oscillator::Rsi::new(pf(0) as usize)),
-                "macd" => ActiveIndicator::Macd(quince_indicators::oscillator::Macd::new(pf(0) as usize, pf(1) as usize, pf(2) as usize)),
-                "cci" => ActiveIndicator::Cci(quince_indicators::oscillator::Cci::new(pf(0) as usize, pf(1))),
-                "roc" => ActiveIndicator::Roc(quince_indicators::oscillator::Roc::new(pf(0) as usize)),
-                "stoch" => ActiveIndicator::Stoch(quince_indicators::oscillator::Stochastic::new(pf(0) as usize)),
-                "bb" => ActiveIndicator::Bb(quince_indicators::volatility::BollingerBands::new(pf(0) as usize, pf(1))),
-                "kc" => ActiveIndicator::Kc(quince_indicators::volatility::KeltnerChannel::new(pf(0) as usize, pf(1))),
-                "atr" => ActiveIndicator::Atr(quince_indicators::volatility::Atr::new(pf(0) as usize)),
+                "rsi" => {
+                    ActiveIndicator::Rsi(quince_indicators::oscillator::Rsi::new(pf(0) as usize))
+                }
+                "macd" => ActiveIndicator::Macd(quince_indicators::oscillator::Macd::new(
+                    pf(0) as usize,
+                    pf(1) as usize,
+                    pf(2) as usize,
+                )),
+                "cci" => ActiveIndicator::Cci(quince_indicators::oscillator::Cci::new(
+                    pf(0) as usize,
+                    pf(1),
+                )),
+                "roc" => {
+                    ActiveIndicator::Roc(quince_indicators::oscillator::Roc::new(pf(0) as usize))
+                }
+                "stoch" => ActiveIndicator::Stoch(quince_indicators::oscillator::Stochastic::new(
+                    pf(0) as usize,
+                )),
+                "bb" => ActiveIndicator::Bb(quince_indicators::volatility::BollingerBands::new(
+                    pf(0) as usize,
+                    pf(1),
+                )),
+                "kc" => ActiveIndicator::Kc(quince_indicators::volatility::KeltnerChannel::new(
+                    pf(0) as usize,
+                    pf(1),
+                )),
+                "atr" => {
+                    ActiveIndicator::Atr(quince_indicators::volatility::Atr::new(pf(0) as usize))
+                }
                 "mfi" => ActiveIndicator::Mfi(quince_indicators::flow::Mfi::new(pf(0) as usize)),
-                "adx" => ActiveIndicator::Adx(quince_indicators::structure::Adx::new(pf(0) as usize)),
-                "zscore" => ActiveIndicator::Zscore(quince_indicators::structure::ZScore::new(pf(0) as usize)),
+                "adx" => {
+                    ActiveIndicator::Adx(quince_indicators::structure::Adx::new(pf(0) as usize))
+                }
+                "zscore" => ActiveIndicator::Zscore(quince_indicators::structure::ZScore::new(
+                    pf(0) as usize,
+                )),
                 "cvd" => ActiveIndicator::Cvd(0.0),
-                "pmdi" => ActiveIndicator::Pmdi { value: 0.0, prev_data: 0.0, has_prev: false },
-                "nmdi" => ActiveIndicator::Nmdi { value: 0.0, prev_data: 0.0, has_prev: false },
+                "pmdi" => ActiveIndicator::Pmdi {
+                    value: 0.0,
+                    prev_data: 0.0,
+                    has_prev: false,
+                },
+                "nmdi" => ActiveIndicator::Nmdi {
+                    value: 0.0,
+                    prev_data: 0.0,
+                    has_prev: false,
+                },
                 _ => continue,
             };
             indicators.push(ind);
@@ -227,15 +275,41 @@ impl IndicatorBank {
     pub fn assign_all_slots(&mut self) {
         let mut next = 0u16;
         for name in &[
-            "sma","ema","wma","vwma","lsma","rsi",
-            "macd","macd.signal","macd.histogram",
-            "cci","roc","stoch",
-            "bb.middle","bb.upper","bb.lower","bb.bandwidth",
-            "kc.middle","kc.upper","kc.lower",
-            "atr","mfi","adx","zscore","cvd","pmdi","nmdi",
-            "price","volume_delta","avg_trade_size","trade_count",
-            "bid_depth","ask_depth","depth_imbalance",
-            "entry_price","unrealized_pnl",
+            "sma",
+            "ema",
+            "wma",
+            "vwma",
+            "lsma",
+            "rsi",
+            "macd",
+            "macd.signal",
+            "macd.histogram",
+            "cci",
+            "roc",
+            "stoch",
+            "bb.middle",
+            "bb.upper",
+            "bb.lower",
+            "bb.bandwidth",
+            "kc.middle",
+            "kc.upper",
+            "kc.lower",
+            "atr",
+            "mfi",
+            "adx",
+            "zscore",
+            "cvd",
+            "pmdi",
+            "nmdi",
+            "price",
+            "volume_delta",
+            "avg_trade_size",
+            "trade_count",
+            "bid_depth",
+            "ask_depth",
+            "depth_imbalance",
+            "entry_price",
+            "unrealized_pnl",
         ] {
             self.set_name_to_slot(name, next);
             next += 1;
@@ -249,16 +323,42 @@ impl IndicatorBank {
         let buy = trade.side == Side::Buy;
 
         self.trades += 1;
-        if buy { self.cum_buy += v } else { self.cum_sell += v }
+        if buy {
+            self.cum_buy += v
+        } else {
+            self.cum_sell += v
+        }
 
         for ind in &mut self.indicators {
             match ind {
-                ActiveIndicator::Sma(ind) => { if let Some(val) = ind.update(p) { self.results.push((self.slot_sma, val)); } }
-                ActiveIndicator::Ema(ind) => { self.results.push((self.slot_ema, ind.update(p))); }
-                ActiveIndicator::Wma(ind) => { if let Some(val) = ind.update(p) { self.results.push((self.slot_wma, val)); } }
-                ActiveIndicator::Vwma(ind) => { if let Some(val) = ind.update(p, v) { self.results.push((self.slot_vwma, val)); } }
-                ActiveIndicator::Lsma(ind) => { if let Some(val) = ind.update(p) { self.results.push((self.slot_lsma, val)); } }
-                ActiveIndicator::Rsi(ind) => { if let Some(val) = ind.update(p) { self.results.push((self.slot_rsi, val)); } }
+                ActiveIndicator::Sma(ind) => {
+                    if let Some(val) = ind.update(p) {
+                        self.results.push((self.slot_sma, val));
+                    }
+                }
+                ActiveIndicator::Ema(ind) => {
+                    self.results.push((self.slot_ema, ind.update(p)));
+                }
+                ActiveIndicator::Wma(ind) => {
+                    if let Some(val) = ind.update(p) {
+                        self.results.push((self.slot_wma, val));
+                    }
+                }
+                ActiveIndicator::Vwma(ind) => {
+                    if let Some(val) = ind.update(p, v) {
+                        self.results.push((self.slot_vwma, val));
+                    }
+                }
+                ActiveIndicator::Lsma(ind) => {
+                    if let Some(val) = ind.update(p) {
+                        self.results.push((self.slot_lsma, val));
+                    }
+                }
+                ActiveIndicator::Rsi(ind) => {
+                    if let Some(val) = ind.update(p) {
+                        self.results.push((self.slot_rsi, val));
+                    }
+                }
                 ActiveIndicator::Macd(ind) => {
                     if let Some(o) = ind.update(p) {
                         self.results.push((self.slot_macd, o.macd_line));
@@ -266,9 +366,21 @@ impl IndicatorBank {
                         self.results.push((self.slot_macd_histogram, o.histogram));
                     }
                 }
-                ActiveIndicator::Cci(ind) => { if let Some(val) = ind.update(p, p, p) { self.results.push((self.slot_cci, val)); } }
-                ActiveIndicator::Roc(ind) => { if let Some(val) = ind.update(p) { self.results.push((self.slot_roc, val)); } }
-                ActiveIndicator::Stoch(ind) => { if let Some(val) = ind.update(p, p, p) { self.results.push((self.slot_stoch, val)); } }
+                ActiveIndicator::Cci(ind) => {
+                    if let Some(val) = ind.update(p, p, p) {
+                        self.results.push((self.slot_cci, val));
+                    }
+                }
+                ActiveIndicator::Roc(ind) => {
+                    if let Some(val) = ind.update(p) {
+                        self.results.push((self.slot_roc, val));
+                    }
+                }
+                ActiveIndicator::Stoch(ind) => {
+                    if let Some(val) = ind.update(p, p, p) {
+                        self.results.push((self.slot_stoch, val));
+                    }
+                }
                 ActiveIndicator::Bb(ind) => {
                     if let Some(o) = ind.update(p) {
                         self.results.push((self.slot_bb_middle, o.middle));
@@ -284,41 +396,86 @@ impl IndicatorBank {
                         self.results.push((self.slot_kc_lower, o.lower));
                     }
                 }
-                ActiveIndicator::Atr(ind) => { if let Some(val) = ind.update(p, p, p) { self.results.push((self.slot_atr, val)); } }
+                ActiveIndicator::Atr(ind) => {
+                    if let Some(val) = ind.update(p, p, p) {
+                        self.results.push((self.slot_atr, val));
+                    }
+                }
                 ActiveIndicator::Mfi(ind) => {
                     let candle = Candle::from_trade(p, v);
-                    if let Some(val) = ind.update(&candle) { self.results.push((self.slot_mfi, val)); }
+                    if let Some(val) = ind.update(&candle) {
+                        self.results.push((self.slot_mfi, val));
+                    }
                 }
                 ActiveIndicator::Adx(ind) => {
                     let candle = Candle::from_trade(p, v);
-                    if let Some(val) = ind.update(&candle) { self.results.push((self.slot_adx, val)); }
+                    if let Some(val) = ind.update(&candle) {
+                        self.results.push((self.slot_adx, val));
+                    }
                 }
-                ActiveIndicator::Zscore(ind) => { if let Some(val) = ind.update(p) { self.results.push((self.slot_zscore, val)); } }
+                ActiveIndicator::Zscore(ind) => {
+                    if let Some(val) = ind.update(p) {
+                        self.results.push((self.slot_zscore, val));
+                    }
+                }
                 ActiveIndicator::Cvd(cum) => {
-                    if buy { *cum += v } else { *cum -= v }
+                    if buy {
+                        *cum += v
+                    } else {
+                        *cum -= v
+                    }
                     self.results.push((self.slot_cvd, *cum));
                 }
-                ActiveIndicator::Pmdi { value, prev_data, has_prev } => {
+                ActiveIndicator::Pmdi {
+                    value,
+                    prev_data,
+                    has_prev,
+                } => {
                     if *has_prev {
-                        if p > *prev_data { *value += value.max(1.0) * ((p + *prev_data) / *prev_data); }
+                        if p > *prev_data {
+                            *value += value.max(1.0) * ((p + *prev_data) / *prev_data);
+                        }
                         *prev_data = p;
-                    } else { *value = p; *prev_data = p; *has_prev = true; }
+                    } else {
+                        *value = p;
+                        *prev_data = p;
+                        *has_prev = true;
+                    }
                     self.results.push((self.slot_pmdi, *value));
                 }
-                ActiveIndicator::Nmdi { value, prev_data, has_prev } => {
+                ActiveIndicator::Nmdi {
+                    value,
+                    prev_data,
+                    has_prev,
+                } => {
                     if *has_prev {
-                        if p < *prev_data { *value += value.max(1.0) * ((p + *prev_data) / *prev_data); }
+                        if p < *prev_data {
+                            *value += value.max(1.0) * ((p + *prev_data) / *prev_data);
+                        }
                         *prev_data = p;
-                    } else { *value = p; *prev_data = p; *has_prev = true; }
+                    } else {
+                        *value = p;
+                        *prev_data = p;
+                        *has_prev = true;
+                    }
                     self.results.push((self.slot_nmdi, *value));
                 }
             }
         }
 
         self.results.push((self.slot_price, p));
-        self.results.push((self.slot_volume_delta, self.cum_buy - self.cum_sell));
-        self.results.push((self.slot_avg_trade_size, if self.trades == 0 { 0.0 } else { (self.cum_buy + self.cum_sell) / self.trades as f64 }));
-        self.results.push((self.slot_trade_count, self.trades as f64));
+        self.results
+            .push((self.slot_volume_delta, self.cum_buy - self.cum_sell));
+        self.results.push((
+            self.slot_avg_trade_size,
+            if self.trades == 0 {
+                0.0
+            } else {
+                (self.cum_buy + self.cum_sell) / self.trades as f64
+            },
+        ));
+        self.results
+            .push((self.slot_trade_count, self.trades as f64));
 
         &self.results
     }
@@ -329,7 +486,11 @@ impl IndicatorBank {
         let ask_vol: f64 = depth.asks.iter().map(|l| l.qty).sum();
         self.results.push((self.slot_bid_depth, bid_vol));
         self.results.push((self.slot_ask_depth, ask_vol));
-        let imb = if bid_vol + ask_vol == 0.0 { 0.0 } else { (bid_vol - ask_vol) / (bid_vol + ask_vol) * 100.0 };
+        let imb = if bid_vol + ask_vol == 0.0 {
+            0.0
+        } else {
+            (bid_vol - ask_vol) / (bid_vol + ask_vol) * 100.0
+        };
         self.results.push((self.slot_depth_imbalance, imb));
         &self.results
     }
@@ -383,7 +544,13 @@ mod tests {
         bank.assign_all_slots();
         assert_eq!(bank.indicators.len(), 5);
 
-        let trade = Trade { price: 100.0, qty: 1.0, time: chrono::Utc::now(), side: Side::Buy, trade_id: 1 };
+        let trade = Trade {
+            price: 100.0,
+            qty: 1.0,
+            time: chrono::Utc::now(),
+            side: Side::Buy,
+            trade_id: 1,
+        };
         let r = bank.on_trade(&trade);
         assert!(!r.is_empty());
         assert!(r.len() >= 7);
@@ -395,8 +562,20 @@ mod tests {
         let mut bank = IndicatorBank::new(&entries);
         bank.assign_all_slots();
         let depth = Depth {
-            bids: vec![DepthLevel { price: 100.0, qty: 10.0 }, DepthLevel { price: 99.0, qty: 20.0 }],
-            asks: vec![DepthLevel { price: 101.0, qty: 15.0 }],
+            bids: vec![
+                DepthLevel {
+                    price: 100.0,
+                    qty: 10.0,
+                },
+                DepthLevel {
+                    price: 99.0,
+                    qty: 20.0,
+                },
+            ],
+            asks: vec![DepthLevel {
+                price: 101.0,
+                qty: 15.0,
+            }],
         };
         let r = bank.on_depth(&depth);
         assert_eq!(r.len(), 3);
@@ -407,7 +586,13 @@ mod tests {
         let entries = parse_using("@using sma:10 ema:10 cvd");
         let mut bank = IndicatorBank::new(&entries);
         bank.assign_all_slots();
-        let trade = Trade { price: 100.0, qty: 1.0, time: chrono::Utc::now(), side: Side::Buy, trade_id: 1 };
+        let trade = Trade {
+            price: 100.0,
+            qty: 1.0,
+            time: chrono::Utc::now(),
+            side: Side::Buy,
+            trade_id: 1,
+        };
 
         // Warmup
         bank.on_trade(&trade);
@@ -466,7 +651,13 @@ mod tests {
     fn indicator_bank_on_trade_all_synthetic() {
         let mut bank = IndicatorBank::new(&[]);
         bank.assign_all_slots();
-        let trade = Trade { price: 100.0, qty: 1.0, time: chrono::Utc::now(), side: Side::Buy, trade_id: 1 };
+        let trade = Trade {
+            price: 100.0,
+            qty: 1.0,
+            time: chrono::Utc::now(),
+            side: Side::Buy,
+            trade_id: 1,
+        };
         let r = bank.on_trade(&trade);
         assert_eq!(r.len(), 4); // price, volume_delta, avg_trade_size, trade_count
     }
@@ -475,7 +666,10 @@ mod tests {
     fn indicator_bank_on_depth_empty() {
         let mut bank = IndicatorBank::new(&[]);
         bank.assign_all_slots();
-        let depth = Depth { bids: vec![], asks: vec![] };
+        let depth = Depth {
+            bids: vec![],
+            asks: vec![],
+        };
         let r = bank.on_depth(&depth);
         assert_eq!(r.len(), 3); // bid_depth, ask_depth, depth_imbalance
         for &(_, v) in r {
@@ -487,7 +681,13 @@ mod tests {
     fn indicator_bank_set_name_to_slot() {
         let mut bank = IndicatorBank::new(&[]);
         bank.set_name_to_slot("custom", 99);
-        let trade = Trade { price: 50.0, qty: 2.0, time: chrono::Utc::now(), side: Side::Sell, trade_id: 2 };
+        let trade = Trade {
+            price: 50.0,
+            qty: 2.0,
+            time: chrono::Utc::now(),
+            side: Side::Sell,
+            trade_id: 2,
+        };
         bank.assign_all_slots();
         let r = bank.on_trade(&trade);
         assert!(r.len() >= 2);
@@ -509,7 +709,13 @@ mod tests {
     fn indicator_bank_on_trade_sell_side() {
         let mut bank = IndicatorBank::new(&[]);
         bank.assign_all_slots();
-        let trade = Trade { price: 100.0, qty: 1.0, time: chrono::Utc::now(), side: Side::Sell, trade_id: 1 };
+        let trade = Trade {
+            price: 100.0,
+            qty: 1.0,
+            time: chrono::Utc::now(),
+            side: Side::Sell,
+            trade_id: 1,
+        };
         let r = bank.on_trade(&trade);
         assert_eq!(r.len(), 4);
         // price=100, volume_delta=-1, avg_trade_size=1, trade_count=1

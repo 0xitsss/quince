@@ -3,7 +3,6 @@ use futures_util::StreamExt;
 use quince_core::types::*;
 use std::sync::atomic::{AtomicU64, Ordering};
 
-
 pub struct BinancePublic {
     order_counter: AtomicU64,
 }
@@ -23,10 +22,7 @@ impl Exchange for BinancePublic {
             .iter()
             .flat_map(|s| {
                 let s = s.to_lowercase();
-                vec![
-                    format!("{}@aggTrade", s),
-                    format!("{}@depth20@100ms", s),
-                ]
+                vec![format!("{}@aggTrade", s), format!("{}@depth20@100ms", s)]
             })
             .collect();
 
@@ -223,10 +219,7 @@ mod tests {
     async fn subscribe_receives_trade() {
         let ex = BinancePublic::new();
         let stream = ex.subscribe(&["btcusdt".into()]).await.unwrap();
-        let msg = tokio::task::spawn_blocking(move || {
-            stream.rx.recv()
-        })
-        .await;
+        let msg = tokio::task::spawn_blocking(move || stream.rx.recv()).await;
         assert!(msg.is_ok(), "should receive a stream message within 30s");
     }
 }

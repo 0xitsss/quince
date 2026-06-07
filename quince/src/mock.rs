@@ -1,8 +1,8 @@
-use crossbeam_channel;
 use chrono::Utc;
+use crossbeam_channel;
+use quince::core::types::*;
 use quince::exchange::binance::public::BinancePublic;
 use quince::exchange::r#trait::{Exchange, OrderStatus, Result, Stream, StreamMsg};
-use quince::core::types::*;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -27,8 +27,16 @@ impl MockExchange {
             positions: vec![],
             last_price: 100.0,
             balances: vec![
-                Balance { asset: "USDT".into(), wallet: 10000.0, cross_wallet: 10000.0 },
-                Balance { asset: "BTC".into(), wallet: 0.1, cross_wallet: 0.1 },
+                Balance {
+                    asset: "USDT".into(),
+                    wallet: 10000.0,
+                    cross_wallet: 10000.0,
+                },
+                Balance {
+                    asset: "BTC".into(),
+                    wallet: 0.1,
+                    cross_wallet: 0.1,
+                },
             ],
         }))
     }
@@ -70,7 +78,9 @@ impl Exchange for MockExchange {
                         }
                         _ => {}
                     }
-                    if tx.try_send(msg).is_err() { break; }
+                    if tx.try_send(msg).is_err() {
+                        break;
+                    }
                 }
             });
             return Ok(Stream { rx });
@@ -87,7 +97,11 @@ impl Exchange for MockExchange {
                 let price = 100.0 + 10.0 * phase.sin();
                 state.lock().unwrap().last_price = price;
                 let qty = 0.1 + 0.05 * (phase * 3.0).sin();
-                let side = if (phase * 2.0).sin() > 0.0 { Side::Buy } else { Side::Sell };
+                let side = if (phase * 2.0).sin() > 0.0 {
+                    Side::Buy
+                } else {
+                    Side::Sell
+                };
                 let ts = SystemTime::now()
                     .duration_since(UNIX_EPOCH)
                     .unwrap()
@@ -105,10 +119,16 @@ impl Exchange for MockExchange {
                 if depth_tick % 5 == 0 {
                     let spread = price * 0.001;
                     let bids: Vec<DepthLevel> = (0..10)
-                        .map(|i| DepthLevel { price: price - spread * (i + 1) as f64, qty: 1.0 - i as f64 * 0.1 })
+                        .map(|i| DepthLevel {
+                            price: price - spread * (i + 1) as f64,
+                            qty: 1.0 - i as f64 * 0.1,
+                        })
                         .collect();
                     let asks: Vec<DepthLevel> = (0..10)
-                        .map(|i| DepthLevel { price: price + spread * (i + 1) as f64, qty: 1.0 - i as f64 * 0.1 })
+                        .map(|i| DepthLevel {
+                            price: price + spread * (i + 1) as f64,
+                            qty: 1.0 - i as f64 * 0.1,
+                        })
                         .collect();
                     let _ = tx.try_send(StreamMsg::Depth(Depth { bids, asks }));
                 }
@@ -117,7 +137,9 @@ impl Exchange for MockExchange {
                 depth_tick += 1;
                 std::thread::sleep(Duration::from_millis(10));
 
-                if tick > 5000 { break; }
+                if tick > 5000 {
+                    break;
+                }
             }
         });
 
@@ -125,7 +147,10 @@ impl Exchange for MockExchange {
     }
 
     async fn place_order(&self, order: Order) -> Result<String> {
-        let id = format!("mock_{}", self.order_counter.fetch_add(1, Ordering::Relaxed));
+        let id = format!(
+            "mock_{}",
+            self.order_counter.fetch_add(1, Ordering::Relaxed)
+        );
         let mut state = self.state.lock().unwrap();
         let fill_price = order.price.unwrap_or(state.last_price);
         let fill = OrderFill {
@@ -165,7 +190,10 @@ impl Exchange for MockExchange {
                 Side::Buy => PositionSide::Long,
                 Side::Sell => PositionSide::Short,
             };
-            let existing = state.positions.iter_mut().find(|p| p.symbol == order.symbol);
+            let existing = state
+                .positions
+                .iter_mut()
+                .find(|p| p.symbol == order.symbol.as_ref());
             if let Some(p) = existing {
                 let old_qty = p.size;
                 p.size = (p.size + order.qty).max(0.0);
@@ -174,13 +202,17 @@ impl Exchange for MockExchange {
                 } else if p.size > 0.0 {
                     p.entry_price = fill_price;
                 }
-                p.side = if p.size > 0.0 { pos_side } else { PositionSide::None };
+                p.side = if p.size > 0.0 {
+                    pos_side
+                } else {
+                    PositionSide::None
+                };
                 if p.size <= 0.0 {
                     p.entry_price = 0.0;
                 }
             } else {
                 state.positions.push(Position {
-                    symbol: order.symbol.clone(),
+                    symbol: order.symbol.to_string(),
                     side: pos_side,
                     size: order.qty,
                     entry_price: fill_price,
@@ -189,7 +221,11 @@ impl Exchange for MockExchange {
             }
             state.positions.retain(|p| p.size > 0.0);
         } else {
-            if let Some(p) = state.positions.iter_mut().find(|p| p.symbol == order.symbol) {
+            if let Some(p) = state
+                .positions
+                .iter_mut()
+                .find(|p| p.symbol == order.symbol.as_ref())
+            {
                 let close_qty = order.qty.min(p.size);
                 p.size = (p.size - close_qty).max(0.0);
             }
@@ -278,7 +314,9 @@ mod tests {
                     Ok(StreamMsg::Depth(_)) => return true,
                     Ok(_) => {
                         count += 1;
-                        if count > 200 { return false; }
+                        if count > 200 {
+                            return false;
+                        }
                         continue;
                     }
                     Err(_) => return false,
@@ -358,12 +396,11 @@ mod tests {
     async fn public_subscribe_connects_to_binance() {
         let ex = MockExchange::new_public();
         let stream = ex.subscribe(&["btcusdt".into()]).await.unwrap();
-        let msg = tokio::task::spawn_blocking(move || {
-            stream.rx.recv_timeout(Duration::from_secs(30))
-        })
-        .await
-        .expect("spawn_blocking panicked")
-        .expect("stream closed");
+        let msg =
+            tokio::task::spawn_blocking(move || stream.rx.recv_timeout(Duration::from_secs(30)))
+                .await
+                .expect("spawn_blocking panicked")
+                .expect("stream closed");
         assert!(matches!(msg, StreamMsg::Trade(_) | StreamMsg::Depth(_)));
     }
 }

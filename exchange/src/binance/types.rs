@@ -7,7 +7,11 @@ pub fn parse_ws_msg(text: String) -> Option<StreamMsg> {
     let mut bytes = text.into_bytes();
     let val = simd_json::to_borrowed_value(&mut bytes).ok()?;
 
-    let inner = if let Some(data) = val.get("data") { data } else { &val };
+    let inner = if let Some(data) = val.get("data") {
+        data
+    } else {
+        &val
+    };
 
     let event = inner.get("e")?.as_str()?;
 
@@ -18,7 +22,11 @@ pub fn parse_ws_msg(text: String) -> Option<StreamMsg> {
                 price: trade.get("p")?.as_str()?.parse().ok()?,
                 qty: trade.get("q")?.as_str()?.parse().ok()?,
                 time: chrono::DateTime::from_timestamp_millis(trade.get("T")?.as_u64()? as i64)?,
-                side: if trade.get("m")?.as_bool()? { Side::Sell } else { Side::Buy },
+                side: if trade.get("m")?.as_bool()? {
+                    Side::Sell
+                } else {
+                    Side::Buy
+                },
                 trade_id: trade.get("t").or_else(|| trade.get("a"))?.as_u64()?,
             }))
         }
@@ -27,39 +35,51 @@ pub fn parse_ws_msg(text: String) -> Option<StreamMsg> {
             let asks = parse_depth_levels(inner.get("a")?.as_array()?);
             Some(StreamMsg::Depth(Depth { bids, asks }))
         }
-        "markPriceUpdate" => {
-            Some(StreamMsg::MarkPrice {
-                price: inner.get("p")?.as_str()?.parse().ok()?,
-                time: chrono::DateTime::from_timestamp_millis(inner.get("E")?.as_u64()? as i64)?,
-            })
-        }
-        "openInterest" => {
-            Some(StreamMsg::OpenInterest {
-                qty: inner.get("o")?.as_str()?.parse().ok()?,
-                time: chrono::DateTime::from_timestamp_millis(inner.get("E")?.as_u64()? as i64)?,
-            })
-        }
+        "markPriceUpdate" => Some(StreamMsg::MarkPrice {
+            price: inner.get("p")?.as_str()?.parse().ok()?,
+            time: chrono::DateTime::from_timestamp_millis(inner.get("E")?.as_u64()? as i64)?,
+        }),
+        "openInterest" => Some(StreamMsg::OpenInterest {
+            qty: inner.get("o")?.as_str()?.parse().ok()?,
+            time: chrono::DateTime::from_timestamp_millis(inner.get("E")?.as_u64()? as i64)?,
+        }),
         "forceOrder" => {
             let order = inner.get("o")?;
             Some(StreamMsg::ForceOrder(Trade {
                 price: order.get("ap")?.as_str()?.parse().ok()?,
                 qty: order.get("z")?.as_str()?.parse().ok()?,
                 time: chrono::DateTime::from_timestamp_millis(order.get("T")?.as_u64()? as i64)?,
-                side: if order.get("S")?.as_str()? == "BUY" { Side::Buy } else { Side::Sell },
+                side: if order.get("S")?.as_str()? == "BUY" {
+                    Side::Buy
+                } else {
+                    Side::Sell
+                },
                 trade_id: inner.get("E")?.as_u64()?,
             }))
         }
         "ORDER_TRADE_UPDATE" => {
             let order = inner.get("o")?;
-            let side = if order.get("S")?.as_str()? == "BUY" { Side::Buy } else { Side::Sell };
+            let side = if order.get("S")?.as_str()? == "BUY" {
+                Side::Buy
+            } else {
+                Side::Sell
+            };
             let filled_qty: f64 = order.get("l")?.as_str()?.parse().ok()?;
             if filled_qty > 0.0 {
                 Some(StreamMsg::OrderUpdate(OrderFill {
-                    order_id: order.get("i")?.as_u64().map(|v| v.to_string()).unwrap_or_default(),
+                    order_id: order
+                        .get("i")?
+                        .as_u64()
+                        .map(|v| v.to_string())
+                        .unwrap_or_default(),
                     side,
                     price: order.get("L")?.as_str()?.parse().ok()?,
                     qty: filled_qty,
-                    fee: order.get("n")?.as_str().and_then(|s| s.parse().ok()).unwrap_or(0.0),
+                    fee: order
+                        .get("n")?
+                        .as_str()
+                        .and_then(|s| s.parse().ok())
+                        .unwrap_or(0.0),
                     fee_asset: order.get("N")?.as_str()?.to_string(),
                     time: chrono::DateTime::from_timestamp_millis(order.get("T")?.as_u64()? as i64)?,
                 }))
@@ -71,7 +91,10 @@ pub fn parse_ws_msg(text: String) -> Option<StreamMsg> {
             let acct = inner.get("a")?;
             let balances = parse_balances(acct.get("B")?.as_array()?);
             let positions = parse_positions(acct.get("P")?.as_array()?);
-            Some(StreamMsg::AccountUpdate(AccountInfo { balances, positions }))
+            Some(StreamMsg::AccountUpdate(AccountInfo {
+                balances,
+                positions,
+            }))
         }
         _ => None,
     }
@@ -98,9 +121,21 @@ fn parse_balances(arr: &[BorrowedValue<'_>]) -> Vec<Balance> {
     let mut out = Vec::with_capacity(arr.len());
     for b in arr {
         out.push(Balance {
-            asset: b.get("a").and_then(|v| v.as_str()).unwrap_or("").to_string(),
-            wallet: b.get("wb").and_then(|v| v.as_str()).and_then(|s| s.parse().ok()).unwrap_or(0.0),
-            cross_wallet: b.get("cw").and_then(|v| v.as_str()).and_then(|s| s.parse().ok()).unwrap_or(0.0),
+            asset: b
+                .get("a")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string(),
+            wallet: b
+                .get("wb")
+                .and_then(|v| v.as_str())
+                .and_then(|s| s.parse().ok())
+                .unwrap_or(0.0),
+            cross_wallet: b
+                .get("cw")
+                .and_then(|v| v.as_str())
+                .and_then(|s| s.parse().ok())
+                .unwrap_or(0.0),
         });
     }
     out
@@ -109,7 +144,11 @@ fn parse_balances(arr: &[BorrowedValue<'_>]) -> Vec<Balance> {
 fn parse_positions(arr: &[BorrowedValue<'_>]) -> Vec<Position> {
     let mut out = Vec::with_capacity(arr.len());
     for p in arr {
-        let size: f64 = p.get("pa").and_then(|v| v.as_str()).and_then(|s| s.parse().ok()).unwrap_or(0.0);
+        let size: f64 = p
+            .get("pa")
+            .and_then(|v| v.as_str())
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(0.0);
         let side = if size > 0.0 {
             PositionSide::Long
         } else if size < 0.0 {
@@ -118,11 +157,23 @@ fn parse_positions(arr: &[BorrowedValue<'_>]) -> Vec<Position> {
             PositionSide::None
         };
         out.push(Position {
-            symbol: p.get("s").and_then(|v| v.as_str()).unwrap_or("").to_string(),
+            symbol: p
+                .get("s")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string(),
             side,
             size: size.abs(),
-            entry_price: p.get("ep").and_then(|v| v.as_str()).and_then(|s| s.parse().ok()).unwrap_or(0.0),
-            unrealized_pnl: p.get("up").and_then(|v| v.as_str()).and_then(|s| s.parse().ok()).unwrap_or(0.0),
+            entry_price: p
+                .get("ep")
+                .and_then(|v| v.as_str())
+                .and_then(|s| s.parse().ok())
+                .unwrap_or(0.0),
+            unrealized_pnl: p
+                .get("up")
+                .and_then(|v| v.as_str())
+                .and_then(|s| s.parse().ok())
+                .unwrap_or(0.0),
         });
     }
     out
@@ -207,5 +258,3 @@ mod tests {
         assert!(parse_ws_msg(json.to_string()).is_none());
     }
 }
-
-
