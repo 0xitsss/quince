@@ -100,8 +100,8 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p dist
-          cp "target/${{ matrix.target }}/release/quince${{ matrix.suffix }}" dist/quince
-          cp "target/${{ matrix.target }}/release/dump_qfl${{ matrix.suffix }}" dist/dump_qfl
+          cp "target/${{ matrix.target }}/release/quince${{ matrix.suffix }}" "dist/quince${{ matrix.suffix }}"
+          cp "target/${{ matrix.target }}/release/dump_qfl${{ matrix.suffix }}" "dist/dump_qfl${{ matrix.suffix }}"
           if [ -n "${{ matrix.strip }}" ]; then
             ${{ matrix.strip }} dist/*
           fi
