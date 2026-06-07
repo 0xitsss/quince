@@ -20,7 +20,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
 
       - name: cargo bench
-        run: cargo bench -p quince-qfl -- --output-format bencher | tee output.txt
+        run: cargo bench -p quince-qfl --bench bench -- --output-format bencher | tee output.txt
 
       - name: Store benchmark results
         uses: benchmark-action/github-action-benchmark@v1
