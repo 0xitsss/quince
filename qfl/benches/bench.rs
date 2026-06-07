@@ -5,7 +5,7 @@ use quince_qfl::*;
 
 // ─── Constants ───────────────────────────────────────────────────────────────
 
-const STRATEGIES_DIR: &str = "D:\\kokosmain\\quince\\strategies";
+const STRATEGIES_DIR: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../strategies/");
 const TICK_ITERS: u64 = 10_000;
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
