@@ -1,5 +1,4 @@
 use chrono::Utc;
-use crossbeam_channel;
 use quince::core::types::*;
 use quince::exchange::binance::public::BinancePublic;
 use quince::exchange::r#trait::{Exchange, OrderStatus, Result, Stream, StreamMsg};
@@ -117,7 +116,7 @@ impl Exchange for MockExchange {
                 tracing::debug!(target: "mock", "StreamMsg::Trade price={price} qty={qty} id={tick}");
                 let _ = tx.try_send(StreamMsg::Trade(trade));
 
-                if depth_tick % 5 == 0 {
+                if depth_tick.is_multiple_of(5) {
                     let spread = price * 0.001;
                     let bids: Vec<DepthLevel> = (0..10)
                         .map(|i| DepthLevel {

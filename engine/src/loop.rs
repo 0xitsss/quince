@@ -73,9 +73,9 @@ impl<E: Exchange> Engine<E> {
         // Load QFL strategy (.qfl = compile+optimize, .qfr = pre-compiled)
         let is_qfr = strategy_path.ends_with(".qfr");
         let mut qfl = if is_qfr {
-            QflRuntime::load_qfr(strategy_path).map_err(|e| EngineError::Strategy(e))?
+            QflRuntime::load_qfr(strategy_path).map_err(EngineError::Strategy)?
         } else {
-            let qfl = QflRuntime::load(strategy_path).map_err(|e| EngineError::Strategy(e))?;
+            let qfl = QflRuntime::load(strategy_path).map_err(EngineError::Strategy)?;
             let qfr_path = strategy_path.replace(".qfl", ".qfr");
             qfl.save_qfr(&qfr_path)
                 .map_err(|e| EngineError::Strategy(format!("save .qfr: {}", e)))?;

@@ -111,7 +111,7 @@ impl Profiler {
                 cycles: self.opcode_cycles[i],
             })
             .collect();
-        profiles.sort_by(|a, b| b.count.cmp(&a.count));
+        profiles.sort_by_key(|a| std::cmp::Reverse(a.count));
         profiles
     }
 

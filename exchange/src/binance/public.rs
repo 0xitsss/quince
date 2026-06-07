@@ -3,6 +3,7 @@ use futures_util::StreamExt;
 use quince_core::types::*;
 use std::sync::atomic::{AtomicU64, Ordering};
 
+#[derive(Default)]
 pub struct BinancePublic {
     order_counter: AtomicU64,
 }

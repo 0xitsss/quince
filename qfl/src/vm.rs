@@ -715,9 +715,9 @@ impl Vm {
     // Copies ordered bid levels into the depth book.
     pub fn set_depth_bids(&mut self, bids: &[quince_core::types::DepthLevel]) {
         let n = bids.len().min(MAX_DEPTH_LEVELS);
-        for i in 0..n {
-            self.cold.depth_bids_price[i] = bids[i].price;
-            self.cold.depth_bids_qty[i] = bids[i].qty;
+        for (i, bid) in bids.iter().enumerate().take(n) {
+            self.cold.depth_bids_price[i] = bid.price;
+            self.cold.depth_bids_qty[i] = bid.qty;
         }
         self.cold.depth_bids_len = n as u8;
     }
@@ -725,9 +725,9 @@ impl Vm {
     // Copies ordered ask levels into the depth book.
     pub fn set_depth_asks(&mut self, asks: &[quince_core::types::DepthLevel]) {
         let n = asks.len().min(MAX_DEPTH_LEVELS);
-        for i in 0..n {
-            self.cold.depth_asks_price[i] = asks[i].price;
-            self.cold.depth_asks_qty[i] = asks[i].qty;
+        for (i, ask) in asks.iter().enumerate().take(n) {
+            self.cold.depth_asks_price[i] = ask.price;
+            self.cold.depth_asks_qty[i] = ask.qty;
         }
         self.cold.depth_asks_len = n as u8;
     }
@@ -921,6 +921,8 @@ pub mod handlers {
     // All integer ops use wrapping arithmetic (no overflow panic).
 
     // rd = rs1 + rs2 (wrapping add)
+    /// # Safety
+    /// Caller must ensure the VM is in a valid state with initialized code pointer and register file.
     #[inline(always)]
     pub unsafe fn vm_add(vm: &mut Vm, instr: u64) {
         let r = rd(instr) as usize;
@@ -933,6 +935,8 @@ pub mod handlers {
     }
 
     // rd = rs1 - rs2 (wrapping sub)
+    /// # Safety
+    /// Caller must ensure the VM is in a valid state with initialized code pointer and register file.
     #[inline(always)]
     pub unsafe fn vm_sub(vm: &mut Vm, instr: u64) {
         let r = rd(instr) as usize;
@@ -947,6 +951,8 @@ pub mod handlers {
     }
 
     // rd = rs1 * rs2 (wrapping mul)
+    /// # Safety
+    /// Caller must ensure the VM is in a valid state with initialized code pointer and register file.
     #[inline(always)]
     pub unsafe fn vm_mul(vm: &mut Vm, instr: u64) {
         let r = rd(instr) as usize;
@@ -961,6 +967,8 @@ pub mod handlers {
     }
 
     // rd = rs1 / rs2 (returns 0 on division by zero)
+    /// # Safety
+    /// Caller must ensure the VM is in a valid state with initialized code pointer and register file.
     #[inline(always)]
     pub unsafe fn vm_div(vm: &mut Vm, instr: u64) {
         let r = rd(instr) as usize;
@@ -976,6 +984,8 @@ pub mod handlers {
     }
 
     // rd = rs1 % rs2 (returns 0 on division by zero)
+    /// # Safety
+    /// Caller must ensure the VM is in a valid state with initialized code pointer and register file.
     #[inline(always)]
     pub unsafe fn vm_mod(vm: &mut Vm, instr: u64) {
         let r = rd(instr) as usize;
@@ -991,6 +1001,8 @@ pub mod handlers {
     }
 
     // rd = -rs1 (wrapping neg)
+    /// # Safety
+    /// Caller must ensure the VM is in a valid state with initialized code pointer and register file.
     #[inline(always)]
     pub unsafe fn vm_neg(vm: &mut Vm, instr: u64) {
         let r = rd(instr) as usize;
@@ -1001,6 +1013,8 @@ pub mod handlers {
     }
 
     // rd = rs1 + imm (wrapping add immediate)
+    /// # Safety
+    /// Caller must ensure the VM is in a valid state with initialized code pointer and register file.
     #[inline(always)]
     pub unsafe fn vm_addi(vm: &mut Vm, instr: u64) {
         let r = rd(instr) as usize;
@@ -1014,6 +1028,8 @@ pub mod handlers {
     }
 
     // rd = rs1 - imm (wrapping sub immediate)
+    /// # Safety
+    /// Caller must ensure the VM is in a valid state with initialized code pointer and register file.
     #[inline(always)]
     pub unsafe fn vm_subi(vm: &mut Vm, instr: u64) {
         let r = rd(instr) as usize;
@@ -1027,6 +1043,8 @@ pub mod handlers {
     }
 
     // rd = rs1 * imm (wrapping mul immediate)
+    /// # Safety
+    /// Caller must ensure the VM is in a valid state with initialized code pointer and register file.
     #[inline(always)]
     pub unsafe fn vm_muli(vm: &mut Vm, instr: u64) {
         let r = rd(instr) as usize;
@@ -1040,6 +1058,8 @@ pub mod handlers {
     }
 
     // rd = rs1 / imm (returns 0 on division by zero)
+    /// # Safety
+    /// Caller must ensure the VM is in a valid state with initialized code pointer and register file.
     #[inline(always)]
     pub unsafe fn vm_divi(vm: &mut Vm, instr: u64) {
         let r = rd(instr) as usize;
@@ -1058,6 +1078,8 @@ pub mod handlers {
     // Macro that generates a float binary-op handler: a $op b
     macro_rules! float_binop {
         ($name:ident, $op:tt) => {
+            /// # Safety
+            /// Caller must ensure the VM is in a valid state with initialized code pointer and register file.
             #[inline(always)]
 pub unsafe fn $name(vm: &mut Vm, instr: u64) {
                 let r = rd(instr) as usize;
@@ -1076,6 +1098,8 @@ pub unsafe fn $name(vm: &mut Vm, instr: u64) {
     float_binop!(vm_fmul, *); // rd = rs1 * rs2 (float)
 
     // rd = rs1 / rs2 (float, returns 0.0 on division by zero)
+    /// # Safety
+    /// Caller must ensure the VM is in a valid state with initialized code pointer and register file.
     #[inline(always)]
     pub unsafe fn vm_fdiv(vm: &mut Vm, instr: u64) {
         let r = rd(instr) as usize;
@@ -1088,6 +1112,8 @@ pub unsafe fn $name(vm: &mut Vm, instr: u64) {
     }
 
     // rd = -rs1 (float negate)
+    /// # Safety
+    /// Caller must ensure the VM is in a valid state with initialized code pointer and register file.
     #[inline(always)]
     pub unsafe fn vm_fneg(vm: &mut Vm, instr: u64) {
         let r = rd(instr) as usize;
@@ -1099,6 +1125,8 @@ pub unsafe fn $name(vm: &mut Vm, instr: u64) {
 
     macro_rules! int_cmp {
         ($name:ident, $cmp:tt) => {
+            /// # Safety
+            /// Caller must ensure the VM is in a valid state with initialized code pointer and register file.
             #[inline(always)]
 pub unsafe fn $name(vm: &mut Vm, instr: u64) {
                 let r = rd(instr) as usize;
@@ -1124,6 +1152,8 @@ pub unsafe fn $name(vm: &mut Vm, instr: u64) {
 
     macro_rules! float_cmp {
         ($name:ident, $cmp:tt) => {
+            /// # Safety
+            /// Caller must ensure the VM is in a valid state with initialized code pointer and register file.
             #[inline(always)]
 pub unsafe fn $name(vm: &mut Vm, instr: u64) {
                 let r = rd(instr) as usize;
@@ -1147,6 +1177,8 @@ pub unsafe fn $name(vm: &mut Vm, instr: u64) {
     // ── Immediate comparison ──
 
     // rd = (rs1 == imm) ? 1 : 0
+    /// # Safety
+    /// Caller must ensure the VM is in a valid state with initialized code pointer and register file.
     #[inline(always)]
     pub unsafe fn vm_eqi(vm: &mut Vm, instr: u64) {
         let r = rd(instr) as usize;
@@ -1155,6 +1187,8 @@ pub unsafe fn $name(vm: &mut Vm, instr: u64) {
     }
 
     // rd = (rs1 < imm) ? 1 : 0
+    /// # Safety
+    /// Caller must ensure the VM is in a valid state with initialized code pointer and register file.
     #[inline(always)]
     pub unsafe fn vm_lti(vm: &mut Vm, instr: u64) {
         let r = rd(instr) as usize;
@@ -1163,6 +1197,8 @@ pub unsafe fn $name(vm: &mut Vm, instr: u64) {
     }
 
     // rd = (rs1 > imm) ? 1 : 0
+    /// # Safety
+    /// Caller must ensure the VM is in a valid state with initialized code pointer and register file.
     #[inline(always)]
     pub unsafe fn vm_gti(vm: &mut Vm, instr: u64) {
         let r = rd(instr) as usize;
@@ -1175,6 +1211,8 @@ pub unsafe fn $name(vm: &mut Vm, instr: u64) {
     // Macro that generates a bitwise binary-op handler.
     macro_rules! bitwise_binop {
         ($name:ident, $op:tt) => {
+            /// # Safety
+            /// Caller must ensure the VM is in a valid state with initialized code pointer and register file.
             #[inline(always)]
 pub unsafe fn $name(vm: &mut Vm, instr: u64) {
                 let r = rd(instr) as usize;
@@ -1193,6 +1231,8 @@ pub unsafe fn $name(vm: &mut Vm, instr: u64) {
     bitwise_binop!(vm_bitxor, ^); // rd = rs1 ^ rs2
 
     // rd = ~rs1 (bitwise NOT)
+    /// # Safety
+    /// Caller must ensure the VM is in a valid state with initialized code pointer and register file.
     #[inline(always)]
     pub unsafe fn vm_bitnot(vm: &mut Vm, instr: u64) {
         let r = rd(instr) as usize;
@@ -1202,6 +1242,8 @@ pub unsafe fn $name(vm: &mut Vm, instr: u64) {
     }
 
     // rd = rs1 << rs2 (wrapping shift left)
+    /// # Safety
+    /// Caller must ensure the VM is in a valid state with initialized code pointer and register file.
     #[inline(always)]
     pub unsafe fn vm_shl(vm: &mut Vm, instr: u64) {
         let r = rd(instr) as usize;
@@ -1214,6 +1256,8 @@ pub unsafe fn $name(vm: &mut Vm, instr: u64) {
     }
 
     // rd = rs1 >> rs2 (logical shift right, zero-extend)
+    /// # Safety
+    /// Caller must ensure the VM is in a valid state with initialized code pointer and register file.
     #[inline(always)]
     pub unsafe fn vm_shr(vm: &mut Vm, instr: u64) {
         let r = rd(instr) as usize;
@@ -1228,6 +1272,8 @@ pub unsafe fn $name(vm: &mut Vm, instr: u64) {
     // ── Control flow ──
 
     // Unconditional jump: PC += imm
+    /// # Safety
+    /// Caller must ensure the VM is in a valid state with initialized code pointer and register file.
     #[inline(always)]
     pub unsafe fn vm_jmp(vm: &mut Vm, instr: u64) {
         let target = (vm.pc as i64).wrapping_add(imm(instr) as i64) as usize;
@@ -1239,6 +1285,8 @@ pub unsafe fn $name(vm: &mut Vm, instr: u64) {
     }
 
     // Conditional jump: PC += imm if rs1 == 0
+    /// # Safety
+    /// Caller must ensure the VM is in a valid state with initialized code pointer and register file.
     #[inline(always)]
     pub unsafe fn vm_jz(vm: &mut Vm, instr: u64) {
         debug_assert!((rs1(instr) as usize) < NUM_REGS);
@@ -1253,6 +1301,8 @@ pub unsafe fn $name(vm: &mut Vm, instr: u64) {
     }
 
     // Conditional jump: PC += imm if rs1 != 0
+    /// # Safety
+    /// Caller must ensure the VM is in a valid state with initialized code pointer and register file.
     #[inline(always)]
     pub unsafe fn vm_jnz(vm: &mut Vm, instr: u64) {
         debug_assert!((rs1(instr) as usize) < NUM_REGS);
@@ -1267,6 +1317,8 @@ pub unsafe fn $name(vm: &mut Vm, instr: u64) {
     }
 
     // Subroutine call: push return address onto call_stack, then PC += imm
+    /// # Safety
+    /// Caller must ensure the VM is in a valid state with initialized code pointer and register file.
     #[inline(always)]
     pub unsafe fn vm_call(vm: &mut Vm, instr: u64) {
         let depth = vm.call_depth as usize;
@@ -1286,6 +1338,8 @@ pub unsafe fn $name(vm: &mut Vm, instr: u64) {
     }
 
     // Return from subroutine: pop return address from call_stack; if depth 0, halt.
+    /// # Safety
+    /// Caller must ensure the VM is in a valid state with initialized code pointer and register file.
     #[inline(always)]
     pub unsafe fn vm_ret(vm: &mut Vm, instr: u64) {
         let _ = instr;
@@ -1300,6 +1354,8 @@ pub unsafe fn $name(vm: &mut Vm, instr: u64) {
     // ── Data movement ──
 
     // rd = rs1 (copy register value, preserves union type)
+    /// # Safety
+    /// Caller must ensure the VM is in a valid state with initialized code pointer and register file.
     #[inline(always)]
     pub unsafe fn vm_mov(vm: &mut Vm, instr: u64) {
         let r = rd(instr) as usize;
@@ -1308,6 +1364,8 @@ pub unsafe fn $name(vm: &mut Vm, instr: u64) {
     }
 
     // rd = imm (load 32-bit signed immediate, sign-extended to i64)
+    /// # Safety
+    /// Caller must ensure the VM is in a valid state with initialized code pointer and register file.
     #[inline(always)]
     pub unsafe fn vm_ldi(vm: &mut Vm, instr: u64) {
         let r = rd(instr) as usize;
@@ -1315,11 +1373,13 @@ pub unsafe fn $name(vm: &mut Vm, instr: u64) {
     }
 
     // rd = 40-bit immediate encoded across imm(32) + rs2(8), sign-extended to i64
+    /// # Safety
+    /// Caller must ensure the VM is in a valid state with initialized code pointer and register file.
     #[inline(always)]
     pub unsafe fn vm_ldi64(vm: &mut Vm, instr: u64) {
         let r = rd(instr) as usize;
-        let low = (instr >> 32) as u64; // imm = bits 32-63 = low 32 of 40-bit val
-        let high = ((instr >> 24) & 0xFF) as u64; // rs2 = bits 24-31 = high 8 of 40-bit val
+        let low = instr >> 32; // imm = bits 32-63 = low 32 of 40-bit val
+        let high = (instr >> 24) & 0xFF; // rs2 = bits 24-31 = high 8 of 40-bit val
         let val = (high << 32) | low;
         let sign = (val >> 39) & 1;
         vm.regs.get_unchecked_mut(r).i = if sign == 1 {
@@ -1330,6 +1390,8 @@ pub unsafe fn $name(vm: &mut Vm, instr: u64) {
     }
 
     // rd = i64_consts[idx]  — load i64 from constant pool by index (immediate)
+    /// # Safety
+    /// Caller must ensure the VM is in a valid state with initialized code pointer and register file.
     #[inline(always)]
     pub unsafe fn vm_ldi64_c(vm: &mut Vm, instr: u64) {
         let r = rd(instr) as usize;
@@ -1341,6 +1403,8 @@ pub unsafe fn $name(vm: &mut Vm, instr: u64) {
     }
 
     // rd = consts[idx]  — load f64 from constant pool by index (immediate)
+    /// # Safety
+    /// Caller must ensure the VM is in a valid state with initialized code pointer and register file.
     #[inline(always)]
     pub unsafe fn vm_ldcf64(vm: &mut Vm, instr: u64) {
         let r = rd(instr) as usize;
@@ -1352,6 +1416,8 @@ pub unsafe fn $name(vm: &mut Vm, instr: u64) {
     }
 
     // rd = idx  — load string constant index into register (as i64)
+    /// # Safety
+    /// Caller must ensure the VM is in a valid state with initialized code pointer and register file.
     #[inline(always)]
     pub unsafe fn vm_ldcstr(vm: &mut Vm, instr: u64) {
         let r = rd(instr) as usize;
@@ -1363,6 +1429,8 @@ pub unsafe fn $name(vm: &mut Vm, instr: u64) {
     // ── Type conversion ──
 
     // rd = (f64)rs1  — convert integer register to float
+    /// # Safety
+    /// Caller must ensure the VM is in a valid state with initialized code pointer and register file.
     #[inline(always)]
     pub unsafe fn vm_i2f(vm: &mut Vm, instr: u64) {
         let r = rd(instr) as usize;
@@ -1371,6 +1439,8 @@ pub unsafe fn $name(vm: &mut Vm, instr: u64) {
     }
 
     // rd = (i64)rs1  — convert float register to integer (truncate)
+    /// # Safety
+    /// Caller must ensure the VM is in a valid state with initialized code pointer and register file.
     #[inline(always)]
     pub unsafe fn vm_f2i(vm: &mut Vm, instr: u64) {
         let r = rd(instr) as usize;
@@ -1381,6 +1451,8 @@ pub unsafe fn $name(vm: &mut Vm, instr: u64) {
     // ── Engine builtins ──
 
     // rd = indicator value at string-constant index rs1 (0.0 if not found)
+    /// # Safety
+    /// Caller must ensure the VM is in a valid state with initialized code pointer and register file.
     #[inline(always)]
     pub unsafe fn vm_getind(vm: &mut Vm, instr: u64) {
         let r = rd(instr) as usize;
@@ -1399,6 +1471,8 @@ pub unsafe fn $name(vm: &mut Vm, instr: u64) {
     }
 
     // rd = last_price (most recent trade price set by engine)
+    /// # Safety
+    /// Caller must ensure the VM is in a valid state with initialized code pointer and register file.
     #[inline(always)]
     pub unsafe fn vm_getprice(vm: &mut Vm, instr: u64) {
         let _ = instr;
@@ -1407,6 +1481,8 @@ pub unsafe fn $name(vm: &mut Vm, instr: u64) {
     }
 
     // rd = position_size (current position set by engine)
+    /// # Safety
+    /// Caller must ensure the VM is in a valid state with initialized code pointer and register file.
     #[inline(always)]
     pub unsafe fn vm_getpos(vm: &mut Vm, instr: u64) {
         let _ = instr;
@@ -1415,6 +1491,8 @@ pub unsafe fn $name(vm: &mut Vm, instr: u64) {
     }
 
     // rd = balance value at string-constant index rs1 (0.0 if not found)
+    /// # Safety
+    /// Caller must ensure the VM is in a valid state with initialized code pointer and register file.
     #[inline(always)]
     pub unsafe fn vm_getbal(vm: &mut Vm, instr: u64) {
         let r = rd(instr) as usize;
@@ -1433,6 +1511,8 @@ pub unsafe fn $name(vm: &mut Vm, instr: u64) {
     }
 
     // rd = bid quantity at depth level rs1 (0.0 if beyond book)
+    /// # Safety
+    /// Caller must ensure the VM is in a valid state with initialized code pointer and register file.
     #[inline(always)]
     pub unsafe fn vm_getdepthbid(vm: &mut Vm, instr: u64) {
         let r = rd(instr) as usize;
@@ -1446,6 +1526,8 @@ pub unsafe fn $name(vm: &mut Vm, instr: u64) {
     }
 
     // rd = ask quantity at depth level rs1 (0.0 if beyond book)
+    /// # Safety
+    /// Caller must ensure the VM is in a valid state with initialized code pointer and register file.
     #[inline(always)]
     pub unsafe fn vm_getdepthask(vm: &mut Vm, instr: u64) {
         let r = rd(instr) as usize;
@@ -1463,6 +1545,8 @@ pub unsafe fn $name(vm: &mut Vm, instr: u64) {
     // sets has_pending_order = true, and logs the order details.
     // Actual order submission is handled by the engine (outside the VM).
 
+    /// # Safety
+    /// Caller must ensure the VM is in a valid state with initialized code pointer and register file.
     #[inline(always)]
     pub unsafe fn vm_sendorder(vm: &mut Vm, instr: u64) {
         let _ = instr;
@@ -1486,6 +1570,8 @@ pub unsafe fn $name(vm: &mut Vm, instr: u64) {
     // Hot-reload-safe state: tagged slots that survive across code reloads.
 
     // rd = persist[imm]  — read persist slot; if tag=0 read int, else read float
+    /// # Safety
+    /// Caller must ensure the VM is in a valid state with initialized code pointer and register file.
     #[inline(always)]
     pub unsafe fn vm_persistget(vm: &mut Vm, instr: u64) {
         let r = rd(instr) as usize;
@@ -1503,6 +1589,8 @@ pub unsafe fn $name(vm: &mut Vm, instr: u64) {
 
     // persist[imm] = rd  — write persist slot; auto-tag based on register number
     // (rd >= INT_REG_COUNT → float, else int)
+    /// # Safety
+    /// Caller must ensure the VM is in a valid state with initialized code pointer and register file.
     #[inline(always)]
     pub unsafe fn vm_persistset(vm: &mut Vm, instr: u64) {
         let slot = immu(instr) as usize;
@@ -1525,6 +1613,8 @@ pub unsafe fn $name(vm: &mut Vm, instr: u64) {
     // Log message from string constant at rs1 (no value).
     // Pushes to ring buffer in debug builds; dumped to qflvm.log on graceful shutdown.
     // No-op in release builds (the ColdVm struct omits log_buffer when cfg(not(debug_assertions))).
+    /// # Safety
+    /// Caller must ensure the VM is in a valid state with initialized code pointer and register file.
     #[inline(always)]
     pub unsafe fn vm_log(vm: &mut Vm, instr: u64) {
         #[cfg(debug_assertions)]
@@ -1549,6 +1639,8 @@ pub unsafe fn $name(vm: &mut Vm, instr: u64) {
     // Log message from string constant at rs1 with f64 value from rs2.
     // Pushes to ring buffer in debug builds; dumped to qflvm.log on graceful shutdown.
     // No-op in release builds (the ColdVm struct omits log_buffer when cfg(not(debug_assertions))).
+    /// # Safety
+    /// Caller must ensure the VM is in a valid state with initialized code pointer and register file.
     #[inline(always)]
     pub unsafe fn vm_log2(vm: &mut Vm, instr: u64) {
         #[cfg(debug_assertions)]
@@ -1575,6 +1667,8 @@ pub unsafe fn $name(vm: &mut Vm, instr: u64) {
     }
 
     // Halts execution by setting running = false.
+    /// # Safety
+    /// Caller must ensure the VM is in a valid state with initialized code pointer and register file.
     #[inline(always)]
     pub unsafe fn vm_halt(vm: &mut Vm, instr: u64) {
         let _ = instr;
@@ -1587,7 +1681,8 @@ pub unsafe fn $name(vm: &mut Vm, instr: u64) {
     // Push value onto window wid. Maintains ring buffer, running sum/sum_sq,
     // and O(1) min/max via monotonic deques. Returns the pushed value in rd.
     // On first push, auto-initializes the window with capacity=64 at offset=wid*64.
-
+    /// # Safety
+    /// Caller must ensure the VM is in a valid state with initialized code pointer and register file.
     #[inline(always)]
     pub unsafe fn vm_windowpush(vm: &mut Vm, instr: u64) {
         let wid = immu(instr) as usize;
@@ -1700,6 +1795,8 @@ pub unsafe fn $name(vm: &mut Vm, instr: u64) {
     // Reads the result from WindowMeta into rd. Does nothing if window empty.
     macro_rules! window_unary {
         ($name:ident, $method:ident) => {
+            /// # Safety
+            /// Caller must ensure the VM is in a valid state with initialized code pointer and register file.
             #[inline(always)]
             pub unsafe fn $name(vm: &mut Vm, instr: u64) {
                 let wid = immu(instr) as usize;
@@ -1727,7 +1824,8 @@ pub unsafe fn $name(vm: &mut Vm, instr: u64) {
     // EMA update: rd = ema_state[sid].update(rs1)
     // On first call (initialized=false), seeds value = input.
     // On subsequent calls: value = alpha * input + (1-alpha) * prev_value.
-
+    /// # Safety
+    /// Caller must ensure the VM is in a valid state with initialized code pointer and register file.
     #[inline(always)]
     pub unsafe fn vm_ema(vm: &mut Vm, instr: u64) {
         let r = rd(instr) as usize;
@@ -1748,6 +1846,8 @@ pub unsafe fn $name(vm: &mut Vm, instr: u64) {
 
     // rd = rs1 ^ rs2  (integer exponentiation via exponentiation by squaring)
     // Returns 0 for negative exp, 1 for exp == 0.
+    /// # Safety
+    /// Caller must ensure the VM is in a valid state with initialized code pointer and register file.
     #[inline(always)]
     pub unsafe fn vm_pow(vm: &mut Vm, instr: u64) {
         let r = rd(instr) as usize;
@@ -1778,6 +1878,8 @@ pub unsafe fn $name(vm: &mut Vm, instr: u64) {
     }
 
     // rd = rs1 ^ rs2  (float exponentiation via powf)
+    /// # Safety
+    /// Caller must ensure the VM is in a valid state with initialized code pointer and register file.
     #[inline(always)]
     pub unsafe fn vm_fpow(vm: &mut Vm, instr: u64) {
         let r = rd(instr) as usize;

@@ -13,7 +13,7 @@ impl TradeLog {
             .append(true)
             .open(path)
             .ok()
-            .map(|f| BufWriter::new(f));
+            .map(BufWriter::new);
         if writer.is_none() {
             tracing::warn!("failed to open trade log: {}", path);
         }

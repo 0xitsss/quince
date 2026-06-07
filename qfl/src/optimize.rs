@@ -121,6 +121,7 @@ pub fn dead_code_eliminate(prog: &QfrProgram) -> QfrProgram {
 
     // Rebuild code with adjusted jump offsets
     let mut new_code = Vec::with_capacity(new_len);
+    #[allow(clippy::needless_range_loop)]
     for i in 0..n {
         if !reachable[i] {
             continue;
@@ -186,7 +187,7 @@ fn adjust_jump_offset(offset_map: &[Option<usize>], from_old: usize, target_old:
     let new_idx = offset_map[from_old].expect("jump instruction should be reachable");
     if target_old < 0 || target_old as usize >= offset_map.len() {
         // Target out of bounds — leave offset as-is (will trap at runtime)
-        return target_old as i64 - from_old as i64 - 1;
+        return target_old - from_old as i64 - 1;
     }
     match offset_map[target_old as usize] {
         Some(target_new) => target_new as i64 - new_idx as i64 - 1,
@@ -310,10 +311,8 @@ fn invalidate_for_reg(cache: &mut HashMap<(O, u8, u32), u8>, reg: u8) {
         if cached_rd == reg {
             return false;
         }
-        if op.encoding() == InstrEncoding::RRR || op.encoding() == InstrEncoding::RR {
-            if op2 as u8 == reg {
-                return false;
-            }
+        if (op.encoding() == InstrEncoding::RRR || op.encoding() == InstrEncoding::RR) && op2 as u8 == reg {
+            return false;
         }
         true
     });
@@ -383,7 +382,7 @@ pub fn constant_fold(prog: &QfrProgram) -> QfrProgram {
                     // Replace Mov with appropriate load instruction
                     if val >= i32::MIN as i64 && val <= i32::MAX as i64 {
                         out.code.push(Instruction::rri(O::Ldi, rd, 0, val as u32));
-                    } else if val >= -(1i64 << 39) && val < (1i64 << 39) {
+                    } else if (-(1i64 << 39)..(1i64 << 39)).contains(&val) {
                         out.code.push(Instruction::ri40(O::Ldi64, rd, val));
                     } else {
                         let idx = out.intern_f64(val as f64);
@@ -555,7 +554,7 @@ pub fn constant_fold(prog: &QfrProgram) -> QfrProgram {
 fn emit_ldi_value(out: &mut QfrProgram, rd: u8, val: i64) {
     if val >= i32::MIN as i64 && val <= i32::MAX as i64 {
         out.code.push(Instruction::rri(O::Ldi, rd, 0, val as u32));
-    } else if val >= -(1i64 << 39) && val < (1i64 << 39) {
+    } else if (-(1i64 << 39)..(1i64 << 39)).contains(&val) {
         out.code.push(Instruction::ri40(O::Ldi64, rd, val));
     } else {
         let idx = out.intern_f64(val as f64);
@@ -590,10 +589,8 @@ fn local_shadowing(prog: &QfrProgram) -> QfrProgram {
     }
     for i in 0..n {
         let op = prog.code[i].opcode();
-        if is_terminator(op) {
-            if i + 1 < n {
-                is_leader[i + 1] = true;
-            }
+        if is_terminator(op) && i + 1 < n {
+            is_leader[i + 1] = true;
         }
     }
 
@@ -621,7 +618,7 @@ fn local_shadowing(prog: &QfrProgram) -> QfrProgram {
     for (start, end) in blocks {
         let mut slot_to_reg: HashMap<u32, u8> = HashMap::new();
         let mut dirty: std::collections::HashSet<u32> = std::collections::HashSet::new();
-        let block_instrs: Vec<Instruction> = prog.code[start..end].iter().copied().collect();
+        let block_instrs: Vec<Instruction> = prog.code[start..end].to_vec();
 
         for instr in &block_instrs {
             let op = instr.opcode();
@@ -902,10 +899,9 @@ fn compute_dominators(cfg: &Cfg) -> Vec<Vec<usize>> {
     let all_blocks: Vec<usize> = (0..n_blocks).collect();
 
     // Entry block dominates only itself
-    for bid in 0..n_blocks {
-        let mut d = all_blocks.clone();
+    for d in dom.iter_mut() {
+        *d = all_blocks.clone();
         d.sort();
-        dom[bid] = d;
     }
 
     // Entry blocks: only themselves
@@ -1053,14 +1049,12 @@ fn loop_unroll(prog: &QfrProgram) -> QfrProgram {
                         }
                     }
                 }
-                O::AddI => {
-                    if ri.rd() == ri.rs1() {
-                        // rX = rX + imm
-                        let imm = ri.imm_signed() as i64;
-                        if imm == 1 || imm == -1 {
-                            found_addi = true;
-                            step = imm;
-                        }
+                O::AddI if ri.rd() == ri.rs1() => {
+                    // rX = rX + imm
+                    let imm = ri.imm_signed() as i64;
+                    if imm == 1 || imm == -1 {
+                        found_addi = true;
+                        step = imm;
                     }
                 }
                 _ => {}
@@ -1148,8 +1142,8 @@ fn loop_unroll(prog: &QfrProgram) -> QfrProgram {
         }
 
         // Mark original loop instructions as skipped
-        for i in start..end {
-            skip_instrs[i] = true;
+        for s in skip_instrs[start..end].iter_mut() {
+            *s = true;
         }
         unrolled_any = true;
     }
@@ -1307,44 +1301,43 @@ fn fused_lowering(prog: &QfrProgram) -> QfrProgram {
             if val == 0 {
                 let next = prog.code[i + 1];
                 let next_op = next.opcode();
-                if next_op == O::AddI
+                if (next_op == O::AddI
                     || next_op == O::SubI
                     || next_op == O::MulI
-                    || next_op == O::DivI
+                    || next_op == O::DivI)
+                    && next.rs1() == rd && next.rd() != rd
                 {
-                    if next.rs1() == rd && next.rd() != rd {
-                        // Ldi r0, 0; AddI r1, r0, 5 → Ldi r1, 5
-                        match next_op {
-                            O::AddI => {
-                                out.code
-                                    .push(Instruction::rri(O::Ldi, next.rd(), 0, next.imm()));
-                                i += 2;
-                                continue;
-                            }
-                            O::SubI => {
-                                out.code.push(Instruction::rri(
-                                    O::Ldi,
-                                    next.rd(),
-                                    0,
-                                    (-(next.imm_signed() as i64)) as u32,
-                                ));
-                                i += 2;
-                                continue;
-                            }
-                            O::MulI => {
-                                /* 0 * imm = 0 */
-                                out.code.push(Instruction::rri(O::Ldi, next.rd(), 0, 0));
-                                i += 2;
-                                continue;
-                            }
-                            O::DivI => {
-                                /* 0 / imm = 0 */
-                                out.code.push(Instruction::rri(O::Ldi, next.rd(), 0, 0));
-                                i += 2;
-                                continue;
-                            }
-                            _ => {}
+                    // Ldi r0, 0; AddI r1, r0, 5 → Ldi r1, 5
+                    match next_op {
+                        O::AddI => {
+                            out.code
+                                .push(Instruction::rri(O::Ldi, next.rd(), 0, next.imm()));
+                            i += 2;
+                            continue;
                         }
+                        O::SubI => {
+                            out.code.push(Instruction::rri(
+                                O::Ldi,
+                                next.rd(),
+                                0,
+                                (-(next.imm_signed() as i64)) as u32,
+                            ));
+                            i += 2;
+                            continue;
+                        }
+                        O::MulI => {
+                            /* 0 * imm = 0 */
+                            out.code.push(Instruction::rri(O::Ldi, next.rd(), 0, 0));
+                            i += 2;
+                            continue;
+                        }
+                        O::DivI => {
+                            /* 0 / imm = 0 */
+                            out.code.push(Instruction::rri(O::Ldi, next.rd(), 0, 0));
+                            i += 2;
+                            continue;
+                        }
+                        _ => {}
                     }
                 }
             }
@@ -1391,8 +1384,8 @@ fn global_value_numbering(prog: &QfrProgram) -> QfrProgram {
     // Map each instruction index to its containing block ID
     let mut idx_to_block = vec![usize::MAX; n];
     for (bid, b) in cfg.blocks.iter().enumerate() {
-        for i in b.start..b.end {
-            idx_to_block[i] = bid;
+        for idx in idx_to_block[b.start..b.end].iter_mut() {
+            *idx = bid;
         }
     }
 
@@ -1418,6 +1411,7 @@ fn global_value_numbering(prog: &QfrProgram) -> QfrProgram {
         let mut cache = parent_cache;
 
         // Walk instructions in the block
+        #[allow(clippy::needless_range_loop)]
         for i in block.start..block.end {
             let instr = prog.code[i];
             let op = instr.opcode();
@@ -1438,45 +1432,45 @@ fn global_value_numbering(prog: &QfrProgram) -> QfrProgram {
             });
 
             // Check if this opcode is eligible for CSE
-            let is_cse_candidate = match op {
+            let is_cse_candidate = matches!(
+                op,
                 O::Add
-                | O::Sub
-                | O::Mul
-                | O::Div
-                | O::Mod
-                | O::FAdd
-                | O::FSub
-                | O::FMul
-                | O::FDiv
-                | O::Eq
-                | O::Ne
-                | O::Lt
-                | O::Gt
-                | O::Le
-                | O::Ge
-                | O::FEq
-                | O::FNe
-                | O::FLt
-                | O::FGt
-                | O::FLe
-                | O::FGe
-                | O::BitAnd
-                | O::BitOr
-                | O::BitXor
-                | O::Shl
-                | O::Shr
-                | O::AddI
-                | O::SubI
-                | O::MulI
-                | O::DivI
-                | O::EqI
-                | O::LtI
-                | O::GtI
-                | O::Neg
-                | O::FNeg
-                | O::BitNot => true,
-                _ => false,
-            };
+                    | O::Sub
+                    | O::Mul
+                    | O::Div
+                    | O::Mod
+                    | O::FAdd
+                    | O::FSub
+                    | O::FMul
+                    | O::FDiv
+                    | O::Eq
+                    | O::Ne
+                    | O::Lt
+                    | O::Gt
+                    | O::Le
+                    | O::Ge
+                    | O::FEq
+                    | O::FNe
+                    | O::FLt
+                    | O::FGt
+                    | O::FLe
+                    | O::FGe
+                    | O::BitAnd
+                    | O::BitOr
+                    | O::BitXor
+                    | O::Shl
+                    | O::Shr
+                    | O::AddI
+                    | O::SubI
+                    | O::MulI
+                    | O::DivI
+                    | O::EqI
+                    | O::LtI
+                    | O::GtI
+                    | O::Neg
+                    | O::FNeg
+                    | O::BitNot
+            );
 
             if is_cse_candidate {
                 // Build key from (opcode, rs1, operand2) where operand2 is rs2 or imm
@@ -1516,6 +1510,7 @@ fn global_value_numbering(prog: &QfrProgram) -> QfrProgram {
     // Adjust jump offsets after code restructuring
     let offset_map: Vec<Option<usize>> = instr_map;
     let new_code = &mut out.code;
+    #[allow(clippy::needless_range_loop)]
     for i in 0..new_code.len() {
         let op = new_code[i].opcode();
         if matches!(op, O::Jmp | O::Jz | O::Jnz | O::Call) {
@@ -1626,48 +1621,12 @@ fn fold_int_rrr(out: &mut QfrProgram, known: &mut HashMap<u8, i64>, instr: &Inst
             O::BitXor => a ^ b,
             O::Shl => a.wrapping_shl(b as u32),
             O::Shr => a.wrapping_shr(b as u32),
-            O::Eq => {
-                if a == b {
-                    1
-                } else {
-                    0
-                }
-            }
-            O::Ne => {
-                if a != b {
-                    1
-                } else {
-                    0
-                }
-            }
-            O::Lt => {
-                if a < b {
-                    1
-                } else {
-                    0
-                }
-            }
-            O::Gt => {
-                if a > b {
-                    1
-                } else {
-                    0
-                }
-            }
-            O::Le => {
-                if a <= b {
-                    1
-                } else {
-                    0
-                }
-            }
-            O::Ge => {
-                if a >= b {
-                    1
-                } else {
-                    0
-                }
-            }
+            O::Eq => (a == b) as i64,
+            O::Ne => (a != b) as i64,
+            O::Lt => (a < b) as i64,
+            O::Gt => (a > b) as i64,
+            O::Le => (a <= b) as i64,
+            O::Ge => (a >= b) as i64,
             _ => 0,
         };
         known.insert(rd, result);
@@ -1696,48 +1655,12 @@ fn fold_float_rrr(out: &mut QfrProgram, known: &mut HashMap<u8, f64>, instr: &In
                     a / b
                 }
             }
-            O::FEq => {
-                if (a - b).abs() < f64::EPSILON {
-                    1.0
-                } else {
-                    0.0
-                }
-            }
-            O::FNe => {
-                if (a - b).abs() >= f64::EPSILON {
-                    1.0
-                } else {
-                    0.0
-                }
-            }
-            O::FLt => {
-                if a < b {
-                    1.0
-                } else {
-                    0.0
-                }
-            }
-            O::FGt => {
-                if a > b {
-                    1.0
-                } else {
-                    0.0
-                }
-            }
-            O::FLe => {
-                if a <= b {
-                    1.0
-                } else {
-                    0.0
-                }
-            }
-            O::FGe => {
-                if a >= b {
-                    1.0
-                } else {
-                    0.0
-                }
-            }
+            O::FEq => f64::from((a - b).abs() < f64::EPSILON),
+            O::FNe => f64::from((a - b).abs() >= f64::EPSILON),
+            O::FLt => f64::from(a < b),
+            O::FGt => f64::from(a > b),
+            O::FLe => f64::from(a <= b),
+            O::FGe => f64::from(a >= b),
             _ => 0.0,
         };
         known.insert(rd, result);
@@ -1928,8 +1851,8 @@ fn build_cfg(code: &[Instruction], entries: &[crate::ir::EntryPoint]) -> Cfg {
     // Map instruction index to block ID
     let mut idx_to_block = vec![usize::MAX; n];
     for (bid, b) in blocks.iter().enumerate() {
-        for i in b.start..b.end {
-            idx_to_block[i] = bid;
+        for idx in idx_to_block[b.start..b.end].iter_mut() {
+            *idx = bid;
         }
     }
 
@@ -2730,8 +2653,9 @@ pub fn sccp(prog: &QfrProgram) -> QfrProgram {
 
         // Meet lattice values at block boundaries: at each successor's entry,
         // the global register state is the meet of all predecessor exit states.
-        for bid in 0..cfg.blocks.len() {
-            if !executable[bid] {
+    #[allow(clippy::needless_range_loop)]
+    for bid in 0..cfg.blocks.len() {
+        if !executable[bid] {
                 continue;
             }
             if block_reg[bid].is_empty() {
@@ -2823,6 +2747,7 @@ pub fn sccp(prog: &QfrProgram) -> QfrProgram {
     }
 
     // Emit instructions from each executable block, folding constants where possible
+    #[allow(clippy::needless_range_loop)]
     for bid in 0..cfg.blocks.len() {
         if !executable[bid] {
             continue;
@@ -2835,30 +2760,30 @@ pub fn sccp(prog: &QfrProgram) -> QfrProgram {
             let rd = instr.rd() as usize;
 
             // Skip non-foldable ops (side effects, state access, control flow)
-            let can_fold = match op {
+            let can_fold = !matches!(
+                op,
                 O::Jmp
-                | O::Jz
-                | O::Jnz
-                | O::Call
-                | O::Ret
-                | O::Halt
-                | O::SendOrder
-                | O::Sentinel
-                | O::Log
-                | O::PersistGet
-                | O::PersistSet
-                | O::GetInd
-                | O::GetPrice
-                | O::GetPos
-                | O::GetBal
-                | O::WindowPush
-                | O::WindowMean
-                | O::WindowStddev
-                | O::WindowMin
-                | O::WindowMax
-                | O::WindowSum => false,
-                _ => true,
-            };
+                    | O::Jz
+                    | O::Jnz
+                    | O::Call
+                    | O::Ret
+                    | O::Halt
+                    | O::SendOrder
+                    | O::Sentinel
+                    | O::Log
+                    | O::PersistGet
+                    | O::PersistSet
+                    | O::GetInd
+                    | O::GetPrice
+                    | O::GetPos
+                    | O::GetBal
+                    | O::WindowPush
+                    | O::WindowMean
+                    | O::WindowStddev
+                    | O::WindowMin
+                    | O::WindowMax
+                    | O::WindowSum
+            );
 
             if can_fold {
                 if let Lattice::Int(val) = reg[rd] {
@@ -2866,7 +2791,7 @@ pub fn sccp(prog: &QfrProgram) -> QfrProgram {
                         old_to_new[i] = Some(new_code.len());
                         new_code.push(Instruction::rri(O::Ldi, rd as u8, 0, val as u32));
                         continue;
-                    } else if val >= -(1i64 << 39) && val < (1i64 << 39) {
+                    } else if (-(1i64 << 39)..(1i64 << 39)).contains(&val) {
                         old_to_new[i] = Some(new_code.len());
                         new_code.push(Instruction::ri40(O::Ldi64, rd as u8, val));
                         continue;
@@ -3165,11 +3090,10 @@ pub fn persist_coalesce(prog: &QfrProgram) -> QfrProgram {
         let rd = instr.rd();
 
         // Determine if this instruction writes to its destination register
-        let writes_rd = match op {
-            O::Jmp | O::Jz | O::Jnz | O::Ret | O::Halt => false,
-            O::SendOrder | O::Log => false,
-            _ => true,
-        };
+        let writes_rd = !matches!(
+            op,
+            O::Jmp | O::Jz | O::Jnz | O::Ret | O::Halt | O::SendOrder | O::Log
+        );
 
         match op {
             O::PersistGet => {

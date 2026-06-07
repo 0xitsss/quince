@@ -33,6 +33,7 @@ pub struct PendingOrder {
     pub avg_price: f64,
 }
 
+#[derive(Default)]
 pub struct OrderManager {
     pub orders: HashMap<String, PendingOrder>,
     pub exchange_to_client: HashMap<String, String>,

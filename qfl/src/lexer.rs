@@ -531,7 +531,7 @@ impl Lexer {
                 } else {
                     // Lone ~ is not valid QFL syntax
                     Err(LexerError {
-                        msg: format!("unexpected '~' (did you mean ~=?)"),
+                        msg: "unexpected '~' (did you mean ~=?)".to_string(),
                         line: self.line,
                         col: self.col,
                     })

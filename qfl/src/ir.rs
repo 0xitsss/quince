@@ -35,7 +35,7 @@ pub enum ConstEntry {
 // --- Section: QfrProgram — the full compiler IR ---
 
 /// Legacy program representation used by the compiler
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct QfrProgram {
     pub entries: Vec<EntryPoint>,        // function entry points
     pub const_pool: Vec<ConstEntry>,     // unified constant pool (mixed types)
@@ -227,7 +227,7 @@ impl Loader {
         str_end = scan_pos;
         // Align to 8 bytes after strings
         let mut const_start = str_end;
-        while const_start % 8 != 0 {
+        while !const_start.is_multiple_of(8) {
             const_start += 1;
         }
 
@@ -584,6 +584,7 @@ pub fn serialize_v1(prog: &QfrProgram) -> Vec<u8> {
                 buf.push(0); // tag 0 = i64
                 buf.extend_from_slice(&v.to_le_bytes());
                 // Pad to 16 bytes total (1 tag + 8 value + 7 padding)
+                #[allow(clippy::same_item_push)]
                 for _ in 0..7 {
                     buf.push(0);
                 }
@@ -592,6 +593,7 @@ pub fn serialize_v1(prog: &QfrProgram) -> Vec<u8> {
                 buf.push(1); // tag 1 = f64
                 buf.extend_from_slice(&v.to_le_bytes());
                 // Pad to 16 bytes total
+                #[allow(clippy::same_item_push)]
                 for _ in 0..7 {
                     buf.push(0);
                 }
@@ -605,6 +607,7 @@ pub fn serialize_v1(prog: &QfrProgram) -> Vec<u8> {
                 // Pad to 8-byte alignment
                 let total = 5 + bytes.len(); // tag(1) + len(4) + data
                 let pad = (8 - total % 8) % 8;
+                #[allow(clippy::same_item_push)]
                 for _ in 0..pad {
                     buf.push(0);
                 }
@@ -702,18 +705,18 @@ pub fn deserialize_v1(data: &[u8]) -> Result<QfrProgram, String> {
     }
 
     // Find the start of the constant pool by scanning past the last name
-    let max_name_end = name_offs.iter().map(|&n| n as usize).max().unwrap_or(0);
+    let max_name_end = name_offs.iter().copied().max().unwrap_or(0);
     let mut string_end = max_name_end;
     while string_end < data.len() && data[string_end] != 0 {
         string_end += 1;
     }
     offset = string_end + 1; // skip null terminator
                              // Align to 8 bytes
-    while offset % 8 != 0 {
-        offset += 1;
-    }
+        while !offset.is_multiple_of(8) {
+            offset += 1;
+        }
 
-    // --- Read constant pool entries ---
+        // --- Read constant pool entries ---
 
     let mut const_pool = Vec::with_capacity(const_pool_count);
     for _ in 0..const_pool_count {
@@ -768,7 +771,7 @@ pub fn deserialize_v1(data: &[u8]) -> Result<QfrProgram, String> {
                 const_pool.push(ConstEntry::String(s));
                 offset += len;
                 // Align to 8 bytes after the string data
-                while offset % 8 != 0 {
+                while !offset.is_multiple_of(8) {
                     offset += 1;
                 }
             }

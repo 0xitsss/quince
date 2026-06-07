@@ -273,8 +273,7 @@ impl IndicatorBank {
 
     /// Assign sequential slot indices for all known indicator names (for tests).
     pub fn assign_all_slots(&mut self) {
-        let mut next = 0u16;
-        for name in &[
+        for (slot, name) in [
             "sma",
             "ema",
             "wma",
@@ -310,9 +309,8 @@ impl IndicatorBank {
             "depth_imbalance",
             "entry_price",
             "unrealized_pnl",
-        ] {
-            self.set_name_to_slot(name, next);
-            next += 1;
+        ].iter().enumerate() {
+            self.set_name_to_slot(name, slot as u16);
         }
     }
 

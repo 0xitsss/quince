@@ -91,9 +91,15 @@ pub struct Cvd {
     cumulative: f64,
 }
 
+impl Default for Cvd {
+    fn default() -> Self {
+        Self { cumulative: 0.0 }
+    }
+}
+
 impl Cvd {
     pub fn new() -> Self {
-        Self { cumulative: 0.0 }
+        Self::default()
     }
 
     pub fn update(&mut self, _trade_price: f64, trade_qty: f64, is_buyer_aggressive: bool) -> f64 {
@@ -118,12 +124,18 @@ pub struct Obv {
     prev_close: Option<f64>,
 }
 
-impl Obv {
-    pub fn new() -> Self {
+impl Default for Obv {
+    fn default() -> Self {
         Self {
             obv: 0.0,
             prev_close: None,
         }
+    }
+}
+
+impl Obv {
+    pub fn new() -> Self {
+        Self::default()
     }
 
     pub fn update(&mut self, close: f64, volume: f64) -> f64 {
@@ -151,9 +163,15 @@ pub struct AccDist {
     ad: f64,
 }
 
+impl Default for AccDist {
+    fn default() -> Self {
+        Self { ad: 0.0 }
+    }
+}
+
 impl AccDist {
     pub fn new() -> Self {
-        Self { ad: 0.0 }
+        Self::default()
     }
 
     pub fn update(&mut self, candle: &Candle) -> f64 {
@@ -181,12 +199,18 @@ pub struct Pmdi {
     prev_data: Option<f64>,
 }
 
-impl Pmdi {
-    pub fn new() -> Self {
+impl Default for Pmdi {
+    fn default() -> Self {
         Self {
             value: 0.0,
             prev_data: None,
         }
+    }
+}
+
+impl Pmdi {
+    pub fn new() -> Self {
+        Self::default()
     }
 
     pub fn update(&mut self, data: f64, close: f64) -> f64 {
@@ -216,12 +240,18 @@ pub struct Nmdi {
     prev_data: Option<f64>,
 }
 
-impl Nmdi {
-    pub fn new() -> Self {
+impl Default for Nmdi {
+    fn default() -> Self {
         Self {
             value: 0.0,
             prev_data: None,
         }
+    }
+}
+
+impl Nmdi {
+    pub fn new() -> Self {
+        Self::default()
     }
 
     pub fn update(&mut self, data: f64, close: f64) -> f64 {

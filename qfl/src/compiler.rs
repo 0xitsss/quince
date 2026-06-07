@@ -323,19 +323,16 @@ impl Compiler {
                 for entry in indicators {
                     let name = entry.name.as_str();
                     for &period in &entry.params {
-                        match name {
-                            "ema" => {
-                                // Assign a new state ID for this EMA; the VM will
-                                // update this state on each tick using the EMA opcode.
-                                let sid = self.next_ema_state;
-                                self.next_ema_state += 1;
-                                let alpha = 2.0 / (period + 1.0);
-                                self.prog.ema_alphas.push(alpha);
-                                let ind_name = format!("ema{}", period as i64);
-                                self.fused_indicators
-                                    .insert(ind_name, FusedInfo::Ema { state_id: sid });
-                            }
-                            _ => {}
+                        if name == "ema" {
+                            // Assign a new state ID for this EMA; the VM will
+                            // update this state on each tick using the EMA opcode.
+                            let sid = self.next_ema_state;
+                            self.next_ema_state += 1;
+                            let alpha = 2.0 / (period + 1.0);
+                            self.prog.ema_alphas.push(alpha);
+                            let ind_name = format!("ema{}", period as i64);
+                            self.fused_indicators
+                                .insert(ind_name, FusedInfo::Ema { state_id: sid });
                         }
                     }
                 }
@@ -434,10 +431,10 @@ impl Compiler {
                 let is_float = if let Some(tn) = type_name {
                     crate::types::parse_state_type(tn).is_float()
                 } else {
-                    init.map_or(false, |exprs| {
+                    init.is_some_and(|exprs| {
                         exprs
                             .get(i)
-                            .map_or(false, |e| matches!(e, Expr::Literal(Literal::F64(_))))
+                            .is_some_and(|e| matches!(e, Expr::Literal(Literal::F64(_))))
                     })
                 };
                 let r = if is_float {
@@ -545,9 +542,8 @@ impl Compiler {
         self.pop_inner_scope();
 
         // Check if the then-body ended with a terminal (Ret/Halt/Jmp)
-        let then_ended_terminal = self.prog.code.last().map_or(false, |i| {
-            let op = i.opcode();
-            op == O::Ret || op == O::Halt || op == O::Jmp
+        let then_ended_terminal = self.prog.code.last().is_some_and(|i| {
+            matches!(i.opcode(), O::Ret | O::Halt | O::Jmp)
         });
         // Emit a Jmp over the else/elseif branches (if there are any and then didn't end terminal)
         let jmp_to_end = if !else_body.is_empty() || !elseif_branches.is_empty() {
@@ -581,9 +577,8 @@ impl Compiler {
             self.pop_inner_scope();
 
             // If this elseif body ended terminal, mark it (no Jmp needed)
-            let ebody_ended_terminal = self.prog.code.last().map_or(false, |i| {
-                let op = i.opcode();
-                op == O::Ret || op == O::Halt || op == O::Jmp
+            let ebody_ended_terminal = self.prog.code.last().is_some_and(|i| {
+                matches!(i.opcode(), O::Ret | O::Halt | O::Jmp)
             });
             if ebody_ended_terminal {
                 elseif_jmps.push((usize::MAX, econd_reg));
@@ -708,7 +703,7 @@ impl Compiler {
                 _ => false,
             }
         };
-        let is_neg_step = step.as_ref().map_or(false, |s| step_is_neg(s));
+        let is_neg_step = step.as_ref().is_some_and(|s| step_is_neg(s));
 
         let step_r = if let Some(s) = step {
             let (r, _) = self.compile_expr(s);
@@ -947,7 +942,7 @@ impl Compiler {
     fn emit_ldi(&mut self, r: u8, val: i64) {
         if val >= i32::MIN as i64 && val <= i32::MAX as i64 {
             self.emit(Instruction::rri(O::Ldi, r, 0, val as u32));
-        } else if val >= -(1i64 << 39) && val < (1i64 << 39) {
+        } else if (-(1i64 << 39)..(1i64 << 39)).contains(&val) {
             // Use ri40 for large immediates (fits in 40-bit signed)
             self.emit(Instruction::ri40(O::Ldi64, r, val));
         } else {
@@ -1314,43 +1309,27 @@ impl Compiler {
     /// Dispatches to the corresponding compile_fn_call or compile_send_order.
     fn compile_method_call(&mut self, obj: &str, method: &str, args: &[Expr]) -> (u8, bool) {
         match (obj, method) {
-            ("quince", "get") => {
-                return self.compile_fn_call("quince.get", args);
-            }
-            ("quince", "price") => {
-                return self.compile_fn_call("quince.price", &[]);
-            }
-            ("quince", "position") => {
-                return self.compile_fn_call("quince.position", &[]);
-            }
-            ("quince", "balance") => {
-                return self.compile_fn_call("quince.balance", args);
-            }
+            ("quince", "get") => self.compile_fn_call("quince.get", args),
+            ("quince", "price") => self.compile_fn_call("quince.price", &[]),
+            ("quince", "position") => self.compile_fn_call("quince.position", &[]),
+            ("quince", "balance") => self.compile_fn_call("quince.balance", args),
             ("quince", "order") => {
                 self.compile_send_order(args);
                 let r = self.alloc_int();
                 self.emit(Instruction::rri(O::Ldi, r, 0, 0));
-                return (r, false);
+                (r, false)
             }
-            ("quince", "log2") => {
-                return self.compile_fn_call("quince.log", args);
-            }
-            ("quince", "depth_bid") => {
-                return self.compile_fn_call("quince.depth_bid", args);
-            }
-            ("quince", "depth_ask") => {
-                return self.compile_fn_call("quince.depth_ask", args);
-            }
-            ("quince", "log") => {
-                return self.compile_fn_call("quince.log", args);
-            }
+            ("quince", "log2") => self.compile_fn_call("quince.log", args),
+            ("quince", "depth_bid") => self.compile_fn_call("quince.depth_bid", args),
+            ("quince", "depth_ask") => self.compile_fn_call("quince.depth_ask", args),
+            ("quince", "log") => self.compile_fn_call("quince.log", args),
             _ => {
                 self.errors.push(crate::types::TypeError {
                     msg: format!("unknown method call: {}:{}", obj, method),
                 });
                 let r = self.alloc_int();
                 self.emit(Instruction::rri(O::Ldi, r, 0, 0));
-                return (r, false);
+                (r, false)
             }
         }
     }
@@ -1362,7 +1341,7 @@ impl Compiler {
     /// then emits the SendOrder opcode.
     fn compile_send_order(&mut self, args: &[Expr]) {
         // Arg 0: side (int) → REG_SEND_SIDE
-        if let Some(arg) = args.get(0) {
+        if let Some(arg) = args.first() {
             let (r, is_float) = self.compile_expr(arg);
             if is_float {
                 let tmp = self.alloc_int();
@@ -1432,22 +1411,16 @@ impl Compiler {
         // If we're in a handler function (on_trade/on_fill/on_depth), check if the object
         // is the handler parameter — if so, map its fields to pre-loaded registers.
         if let Some(fname) = &self.current_fn {
-            let is_trade_fill = match (fname.as_str(), obj) {
+            let is_trade_fill = matches!(
+                (fname.as_str(), obj),
                 ("on_trade" | "on_fill", Expr::Ident(n))
-                    if self.handler_param.as_ref().map_or(false, |p| p == n) =>
-                {
-                    true
-                }
-                _ => false,
-            };
-            let is_depth = match (fname.as_str(), obj) {
+                    if self.handler_param.as_ref().is_some_and(|p| p == n)
+            );
+            let is_depth = matches!(
+                (fname.as_str(), obj),
                 ("on_depth", Expr::Ident(n))
-                    if self.handler_param.as_ref().map_or(false, |p| p == n) =>
-                {
-                    true
-                }
-                _ => false,
-            };
+                    if self.handler_param.as_ref().is_some_and(|p| p == n)
+            );
             if is_trade_fill {
                 // Map trade/fill fields to the pre-loaded registers:
                 // r0=price(float), r1=qty(float), r2=side(int), r3=trade_id(int), r4=time(int)

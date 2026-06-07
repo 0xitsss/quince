@@ -596,10 +596,7 @@ impl TypeChecker {
             Literal(lit) => literal_type(lit),
             // Identifier: look up in scope, default to I64 if not found
             Ident(name) => {
-                self.lookup(name).unwrap_or_else(|| {
-                    // Check persist variables (defined later in compilation)
-                    QflType::I64
-                })
+                self.lookup(name).unwrap_or(QflType::I64)
             }
             // Function call: defer to the specialized inference method
             FnCall { name, args } => self.infer_fn_call(name, args),
@@ -649,7 +646,7 @@ impl TypeChecker {
         match name {
             // quince.get("key") retrieves a named indicator value → F64
             "quince.get" | "get" => {
-                if arg_types.len() >= 1 && arg_types[0] != QflType::Symbol {
+                if !arg_types.is_empty() && arg_types[0] != QflType::Symbol {
                     self.error(format!(
                         "quince.get() arg must be symbol, got {}",
                         arg_types[0]
@@ -663,7 +660,7 @@ impl TypeChecker {
             "quince.position" | "position" => QflType::Qty,
             // quince.balance("asset") returns the current balance → F64
             "quince.balance" | "balance" => {
-                if arg_types.len() >= 1 && arg_types[0] != QflType::Symbol {
+                if !arg_types.is_empty() && arg_types[0] != QflType::Symbol {
                     self.error(format!(
                         "quince.balance() arg must be symbol, got {}",
                         arg_types[0]
@@ -673,7 +670,7 @@ impl TypeChecker {
             }
             // quince.order(side, qty, price) places an order → I64 (order ID)
             "quince.order" | "order" => {
-                if arg_types.len() >= 1 && !is_side_compat(arg_types[0]) {
+                if !arg_types.is_empty() && !is_side_compat(arg_types[0]) {
                     self.error(format!(
                         "quince.order() side must be side or i64, got {}",
                         arg_types[0]
@@ -712,7 +709,7 @@ impl TypeChecker {
         if obj == "quince" {
             match method {
                 "get" => {
-                    if arg_types.len() >= 1 && arg_types[0] != QflType::Symbol {
+                    if !arg_types.is_empty() && arg_types[0] != QflType::Symbol {
                         self.error(format!(
                             "quince:get() arg must be symbol, got {}",
                             arg_types[0]
@@ -723,7 +720,7 @@ impl TypeChecker {
                 "price" => QflType::Price,
                 "position" => QflType::Qty,
                 "balance" => {
-                    if arg_types.len() >= 1 && arg_types[0] != QflType::Symbol {
+                    if !arg_types.is_empty() && arg_types[0] != QflType::Symbol {
                         self.error(format!(
                             "quince:balance() arg must be symbol, got {}",
                             arg_types[0]
@@ -743,7 +740,7 @@ impl TypeChecker {
                     QflType::I64
                 }
                 "order" => {
-                    if arg_types.len() >= 1 && !is_side_compat(arg_types[0]) {
+                    if !arg_types.is_empty() && !is_side_compat(arg_types[0]) {
                         self.error(format!(
                             "quince:order() side must be side or i64, got {}",
                             arg_types[0]
