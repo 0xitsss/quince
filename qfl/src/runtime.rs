@@ -2021,7 +2021,7 @@ end
     #[test]
     fn test_state_var_with_typed_decl() {
         let src = "
-state counter : f64 = 0.0
+@persist counter : f64 = 0.0
 on eval() {
     counter = counter + 1.0
 }

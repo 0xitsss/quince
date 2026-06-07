@@ -41,22 +41,22 @@ end
 
 ---
 
-## State Variables
+## State Variables (@persist)
 
 State variables persist across ticks and survive hot reloads. Declared with `@persist`:
 
 ```
 @persist counter = 0
 @persist running_sum = 0.0
-@p resist last_signal = "none"
+@persist last_signal = "none"
 ```
 
 State can also be typed:
 
 ```
-state counter: i64 = 0
-state threshold: f64 = 0.02
-state name: string = "default"
+@persist counter : i64 = 0
+@persist threshold : f64 = 0.02
+@persist name : string = "default"
 ```
 
 ---

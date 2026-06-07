@@ -26,7 +26,7 @@ fn sign_params(api_key: &str, secret_key: &str, params: &mut Map<String, Value>)
     params.insert("apiKey".into(), Value::String(api_key.to_string()));
     let ts = SystemTime::now()
         .duration_since(UNIX_EPOCH)
-        .unwrap()
+        .unwrap_or_default()
         .as_millis()
         .to_string();
     params.insert("timestamp".into(), Value::String(ts));

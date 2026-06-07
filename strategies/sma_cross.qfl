@@ -1,6 +1,6 @@
 @using sma:10:50
 
-state position_size : i64 = 0
+@persist position_size : i64 = 0
 
 on trade(t) {
     feature fast = quince.get("sma10")
@@ -8,13 +8,13 @@ on trade(t) {
 
     if fast > slow and position_size <= 0 {
         quince.order(0, 1.0, 0)
-        state position_size = 1
+        position_size = 1
         quince.log("sma cross up")
     }
 
     if fast < slow and position_size > 0 {
         quince.order(1, 1.0, 0)
-        state position_size = 0
+        position_size = 0
         quince.log("sma cross down")
     }
 }

@@ -271,8 +271,9 @@ impl Loader {
                 return None;
             }
             let entry = unsafe { &*(mmap_slice.as_ptr().add(entry_offset) as *const QfrEntry) };
-            // Bounds-check the name bytes before reading them
-            if entry.name_len as usize > mmap_slice.len().saturating_sub(entry.name_offset as usize)
+            // Bounds-check the name offset and length before reading
+            if (entry.name_offset as usize) >= mmap_slice.len()
+                || (entry.name_len as usize) > mmap_slice.len().saturating_sub(entry.name_offset as usize)
             {
                 continue;
             }

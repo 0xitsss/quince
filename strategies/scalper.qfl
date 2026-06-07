@@ -1,8 +1,8 @@
 @using ema:5
 @using bb:20:2.0
 
-state position_size : i64 = 0
-state last_entry : f64 = 0.0
+@persist position_size : i64 = 0
+@persist last_entry : f64 = 0.0
 
 on trade(t) {
     feature price = t.price
@@ -13,14 +13,14 @@ on trade(t) {
 
     if price < lower and ema > mid and position_size == 0 {
         quince.order(0, 1.0, 0)
-        state position_size = 1
-        state last_entry = price
+        position_size = 1
+        last_entry = price
         quince.log("long entry")
     }
 
     if price > upper and ema < mid and position_size > 0 {
         quince.order(1, 1.0, 0)
-        state position_size = 0
+        position_size = 0
         quince.log("exit")
     }
 }

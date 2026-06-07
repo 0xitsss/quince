@@ -133,7 +133,6 @@ impl Parser {
             }
             Token::AtUsing => self.parse_using(),
             Token::AtWindow => self.parse_window(),
-            Token::State => self.parse_state(),
             Token::On => self.parse_event_handler(),
             Token::Fn => self.parse_fn_decl(),
             Token::Ident(s) if s == "feature" => self.parse_feature(),
@@ -153,9 +152,16 @@ impl Parser {
     // --- Section: Variable declaration ---
 
     // Parses `[local] name [, name]... [= expr [, expr]...]`.
+    // When persist is true, also supports `name : type [= expr]`.
     // is_local and persist are determined by the caller (parse_stmt).
     fn parse_var_decl(&mut self, is_local: bool, persist: bool) -> Result<Stmt, ParseError> {
         let names = self.parse_name_list()?;
+        let type_name = if persist && matches!(self.peek(), Token::Colon) {
+            self.advance();
+            Some(self.expect_ident()?)
+        } else {
+            None
+        };
         let init = if matches!(self.peek(), Token::Eq) {
             self.advance();
             Some(self.parse_expr_list()?)
@@ -164,6 +170,7 @@ impl Parser {
         };
         Ok(Stmt::VarDecl {
             names,
+            type_name,
             init,
             is_local,
             persist,
@@ -262,39 +269,6 @@ impl Parser {
             name,
             expr: Box::new(expr),
         })
-    }
-
-    // --- Section: state declaration/reassignment ---
-
-    // Parses `state name : type [= expr]` (declaration) or `state name = expr` (reassignment).
-    // If a colon follows the name, it is a typed declaration; otherwise it is an assignment.
-    fn parse_state(&mut self) -> Result<Stmt, ParseError> {
-        self.advance();
-        let name = self.expect_ident()?;
-        if matches!(self.peek(), Token::Colon) {
-            // Declaration: state name : type [= expr]
-            self.advance();
-            let type_name = self.expect_ident()?;
-            let default = if matches!(self.peek(), Token::Eq) {
-                self.advance();
-                Some(Box::new(self.parse_expr()?))
-            } else {
-                None
-            };
-            Ok(Stmt::State {
-                name,
-                type_name,
-                default,
-            })
-        } else {
-            // Reassignment: state name = expr
-            self.expect(&Token::Eq)?;
-            let expr = self.parse_expr()?;
-            Ok(Stmt::Assign {
-                targets: vec![crate::ast::Expr::Ident(name)],
-                exprs: vec![expr],
-            })
-        }
     }
 
     // --- Section: event handler ---
@@ -1021,6 +995,7 @@ mod tests {
             prog[0],
             Stmt::VarDecl {
                 names: vec!["x".into()],
+                type_name: None,
                 init: Some(vec![Expr::Literal(Literal::I64(42))]),
                 is_local: true,
                 persist: false,
@@ -1035,6 +1010,7 @@ mod tests {
             prog[0],
             Stmt::VarDecl {
                 names: vec!["position_size".into()],
+                type_name: None,
                 init: None,
                 is_local: false,
                 persist: true,
@@ -1049,6 +1025,7 @@ mod tests {
             prog[0],
             Stmt::VarDecl {
                 names: vec!["x".into()],
+                type_name: None,
                 init: Some(vec![Expr::Literal(Literal::I64(1))]),
                 is_local: true,
                 persist: true,
@@ -1498,6 +1475,7 @@ end
             prog[0],
             Stmt::VarDecl {
                 names: vec!["a".into(), "b".into()],
+                type_name: None,
                 init: Some(vec![
                     Expr::Literal(Literal::I64(1)),
                     Expr::Literal(Literal::I64(2)),
@@ -2048,6 +2026,7 @@ until x >= 10
                 init,
                 is_local,
                 persist,
+                ..
             } => {
                 assert_eq!(names, &vec!["x".to_string()]);
                 assert!(is_local);
@@ -2236,40 +2215,47 @@ until x >= 10
 
     #[test]
     fn test_state_decl() {
-        let prog = parse("state x : f64 = 42.0\nstate y : i32\nstate z : qty").unwrap();
+        let prog = parse("@persist x : f64 = 42.0\n@persist y : i32\n@persist z : qty").unwrap();
         assert_eq!(prog.len(), 3);
         match &prog[0] {
-            Stmt::State {
-                name,
+            Stmt::VarDecl {
+                names,
                 type_name,
-                default,
+                init,
+                persist: true,
+                ..
             } => {
-                assert_eq!(name, "x");
-                assert_eq!(type_name, "f64");
-                assert!(default.is_some());
+                assert_eq!(names, &["x"]);
+                assert_eq!(type_name.as_deref(), Some("f64"));
+                assert!(init.is_some());
             }
-            _ => panic!("expected State"),
+            _ => panic!("expected VarDecl with persist"),
         }
         match &prog[1] {
-            Stmt::State {
-                name,
+            Stmt::VarDecl {
+                names,
                 type_name,
-                default,
+                init,
+                persist: true,
+                ..
             } => {
-                assert_eq!(name, "y");
-                assert_eq!(type_name, "i32");
-                assert!(default.is_none());
+                assert_eq!(names, &["y"]);
+                assert_eq!(type_name.as_deref(), Some("i32"));
+                assert!(init.is_none());
             }
-            _ => panic!("expected State"),
+            _ => panic!("expected VarDecl with persist"),
         }
         match &prog[2] {
-            Stmt::State {
-                name, type_name, ..
+            Stmt::VarDecl {
+                names,
+                type_name,
+                persist: true,
+                ..
             } => {
-                assert_eq!(name, "z");
-                assert_eq!(type_name, "qty");
+                assert_eq!(names, &["z"]);
+                assert_eq!(type_name.as_deref(), Some("qty"));
             }
-            _ => panic!("expected State"),
+            _ => panic!("expected VarDecl with persist"),
         }
     }
 
@@ -2414,24 +2400,26 @@ until x >= 10
 
     #[test]
     fn test_state_decl_all_types() {
-        let prog = parse("state a : i64\nstate b : f64\nstate c : bool\nstate d : timestamp\nstate e : duration\nstate f : price\nstate g : qty\nstate h : symbol\nstate i : side\nstate j : order_id").unwrap();
+        let prog = parse("@persist a : i64\n@persist b : f64\n@persist c : bool\n@persist d : timestamp\n@persist e : duration\n@persist f : price\n@persist g : qty\n@persist h : symbol\n@persist i : side\n@persist j : order_id").unwrap();
         assert_eq!(prog.len(), 10);
     }
 
     #[test]
     fn test_state_without_default() {
-        let prog = parse("state x : f64").unwrap();
+        let prog = parse("@persist x : f64").unwrap();
         match &prog[0] {
-            Stmt::State {
-                name,
+            Stmt::VarDecl {
+                names,
                 type_name,
-                default,
+                init,
+                persist: true,
+                ..
             } => {
-                assert_eq!(name, "x");
-                assert_eq!(type_name, "f64");
-                assert!(default.is_none());
+                assert_eq!(names, &["x"]);
+                assert_eq!(type_name.as_deref(), Some("f64"));
+                assert!(init.is_none());
             }
-            _ => panic!("expected State"),
+            _ => panic!("expected VarDecl with persist"),
         }
     }
 

@@ -1,7 +1,7 @@
 @using sma:10:50
 
-state tick_count : i64 = 0
-state hellofrom : i64 = 0
+@persist tick_count : i64 = 0
+@persist hellofrom : i64 = 0
 
 on trade(t) {
 

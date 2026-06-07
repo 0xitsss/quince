@@ -847,18 +847,32 @@ fn licm(prog: &QfrProgram) -> QfrProgram {
             let hoisted = !invariant_instrs.is_empty();
             out.code = new_code;
             if hoisted {
-                // Adjust jump offsets that shifted due to hoisting
+                // Adjust jump offsets that shifted due to hoisting.
+                // Each instruction's old position = new position + number of
+                // hoisted instructions that were before it in the old code.
+                fn old_pos(new_pos: usize, hoisted: &[usize]) -> usize {
+                    let mut pos = new_pos as i64;
+                    loop {
+                        let before = hoisted.iter().filter(|&&h| (h as i64) < pos).count() as i64;
+                        let next = new_pos as i64 + before;
+                        if next == pos {
+                            return pos as usize;
+                        }
+                        pos = next;
+                    }
+                }
                 for i in 0..out.code.len() {
                     let op = out.code[i].opcode();
                     if matches!(op, O::Jmp | O::Jz | O::Jnz | O::Call) {
                         let old_instr = out.code[i];
-                        let target = i as i64 + 1 + old_instr.imm_signed() as i64;
-                        let mut new_target = target;
-                        for &hoisted_idx in &invariant_instrs {
-                            if (target as usize) > hoisted_idx {
-                                new_target -= 1;
-                            }
-                        }
+                        let old_imm = old_instr.imm_signed() as i64;
+                        let old_j = old_pos(i, &invariant_instrs) as i64;
+                        let old_target = old_j + 1 + old_imm;
+                        let h_before_target = invariant_instrs
+                            .iter()
+                            .filter(|&&h| (h as i64) < old_target)
+                            .count() as i64;
+                        let new_target = old_target - h_before_target;
                         let new_imm = (new_target - i as i64 - 1) as i32;
                         out.code[i] =
                             Instruction::rri(op, old_instr.rd(), old_instr.rs1(), new_imm as u32);
@@ -1087,8 +1101,18 @@ fn loop_unroll(prog: &QfrProgram) -> QfrProgram {
         if step == 0 {
             continue;
         }
-        let iter_count = if bound >= init {
-            ((bound - init) / step.abs() + 1) as usize
+        let iter_count = if bound >= init && step != 0 {
+            match (bound.checked_sub(init), step.checked_abs()) {
+                (Some(diff), Some(abs_step)) if abs_step > 0 => {
+                    let ic = diff / abs_step + 1;
+                    if ic > MAX_UNROLL as i64 {
+                        MAX_UNROLL + 1
+                    } else {
+                        ic as usize
+                    }
+                }
+                _ => MAX_UNROLL + 1, // overflow: skip unrolling
+            }
         } else {
             0
         };
@@ -2776,14 +2800,20 @@ pub fn sccp(prog: &QfrProgram) -> QfrProgram {
                         _ => op == O::Jnz,
                     };
                     if !take_branch {
-                        // Branch not taken: mark the jump target as unreachable
+                        // Branch not taken: mark the jump target as unreachable,
+                        // but only if ALL its predecessors are now non-executable.
                         if let Some(target_pc) = compute_target(code, term_pc) {
                             let target_bid = cfg
                                 .blocks
                                 .iter()
                                 .position(|b2| target_pc >= b2.start && target_pc < b2.end);
                             if let Some(tid) = target_bid {
-                                executable[tid] = false;
+                                let any_pred_exec = cfg.blocks[tid].pred
+                                    .iter()
+                                    .any(|&pred| executable[pred]);
+                                if !any_pred_exec {
+                                    executable[tid] = false;
+                                }
                             }
                         }
                     }

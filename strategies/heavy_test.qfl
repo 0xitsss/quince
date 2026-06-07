@@ -1,7 +1,7 @@
-state tick : i64 = 0
-state trade_count : i64 = 0
-state accum : i64 = 0
-state last_price : f64 = 0.0
+@persist tick : i64 = 0
+@persist trade_count : i64 = 0
+@persist accum : i64 = 0
+@persist last_price : f64 = 0.0
 
 on trade(t) {
     tick = tick + 1

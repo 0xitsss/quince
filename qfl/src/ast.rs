@@ -198,6 +198,7 @@ impl fmt::Display for TableField {
 pub enum Stmt {
     VarDecl {
         names: Vec<String>,
+        type_name: Option<String>,
         init: Option<Vec<Expr>>,
         is_local: bool,
         persist: bool,
@@ -259,13 +260,6 @@ pub enum Stmt {
         expr: Box<Expr>,
     },
 
-    // Phase 4h: typed state variables
-    State {
-        name: String,
-        type_name: String,
-        default: Option<Box<Expr>>,
-    },
-
     // Phase 4h: event handlers
     EventHandler {
         event: String,
@@ -301,6 +295,7 @@ impl fmt::Display for Stmt {
         match self {
             Stmt::VarDecl {
                 names,
+                type_name,
                 init,
                 is_local,
                 persist,
@@ -316,6 +311,9 @@ impl fmt::Display for Stmt {
                         write!(f, ", ")?;
                     }
                     write!(f, "{}", name)?;
+                    if *persist && i == 0 && type_name.is_some() {
+                        write!(f, " : {}", type_name.as_ref().unwrap())?;
+                    }
                 }
                 if let Some(exprs) = init {
                     write!(f, " = ")?;
@@ -387,17 +385,6 @@ impl fmt::Display for Stmt {
             }
             Stmt::Signal { name, expr } => {
                 write!(f, "signal {} = {}", name, expr)
-            }
-            Stmt::State {
-                name,
-                type_name,
-                default,
-            } => {
-                write!(f, "state {} : {}", name, type_name)?;
-                if let Some(expr) = default {
-                    write!(f, " = {}", expr)?;
-                }
-                Ok(())
             }
             Stmt::EventHandler { event, param, body } => {
                 write!(f, "on {}(", event)?;

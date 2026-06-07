@@ -3,7 +3,7 @@
 use crate::ast::*;
 use crate::ir::QfrProgram;
 use crate::opcodes::{Instruction, Opcode as O};
-use crate::vm::{REG_SEND_PRICE, REG_SEND_QTY, REG_SEND_REDUCE, REG_SEND_SIDE, REG_SEND_TYPE};
+use crate::vm::{PERSIST_SLOTS, REG_SEND_PRICE, REG_SEND_QTY, REG_SEND_REDUCE, REG_SEND_SIDE, REG_SEND_TYPE};
 use std::collections::HashMap;
 
 // --- Section: Public API ---
@@ -118,10 +118,7 @@ impl Compiler {
     /// Returns the allocated register number.
     fn alloc_int(&mut self) -> u8 {
         if self.int_reg_count >= 192 {
-            self.errors.push(crate::types::TypeError {
-                msg: format!("register overflow: integer register limit (max 192)",),
-            });
-            return 0;
+            panic!("register overflow: integer register limit (max 192)");
         }
         let r = self.next_int_reg;
         self.next_int_reg += 1;
@@ -134,10 +131,7 @@ impl Compiler {
     /// Returns the allocated register number.
     fn alloc_float(&mut self) -> u8 {
         if self.float_reg_count >= 64 {
-            self.errors.push(crate::types::TypeError {
-                msg: format!("register overflow: float register limit (max 64)",),
-            });
-            return 192;
+            panic!("register overflow: float register limit (max 64)");
         }
         let r = self.next_float_reg;
         self.next_float_reg += 1;
@@ -202,12 +196,14 @@ impl Compiler {
     /// effectively freeing all registers allocated within that scope.
     fn pop_inner_scope(&mut self) {
         self.symbols.pop();
-        let (saved_int, saved_float, saved_int_cnt, saved_float_cnt) =
-            self.scope_saved_marks.pop().unwrap();
-        self.next_int_reg = saved_int;
-        self.next_float_reg = saved_float;
-        self.int_reg_count = saved_int_cnt;
-        self.float_reg_count = saved_float_cnt;
+        if let Some((saved_int, saved_float, saved_int_cnt, saved_float_cnt)) =
+            self.scope_saved_marks.pop()
+        {
+            self.next_int_reg = saved_int;
+            self.next_float_reg = saved_float;
+            self.int_reg_count = saved_int_cnt;
+            self.float_reg_count = saved_float_cnt;
+        }
     }
 
     // --- Section: Persist Variable Slots ---
@@ -221,6 +217,9 @@ impl Compiler {
             }
         }
         let slot = self.next_persist_slot;
+        if slot >= PERSIST_SLOTS as u8 {
+            panic!("persist slot overflow: max 64 persist variables");
+        }
         self.next_persist_slot += 1;
         self.persist_slots.push((name.to_string(), slot));
         slot
@@ -273,11 +272,12 @@ impl Compiler {
         match stmt {
             Stmt::VarDecl {
                 names,
+                type_name,
                 init,
-                is_local: _,
                 persist,
+                ..
             } => {
-                self.compile_var_decl(names, init.as_ref(), *persist);
+                self.compile_var_decl(names, type_name.as_deref(), init.as_ref(), *persist);
             }
             Stmt::Assign { targets, exprs } => {
                 self.compile_assign(targets, exprs);
@@ -342,18 +342,6 @@ impl Compiler {
             }
             Stmt::Window { .. } => {
                 // setup directive — no bytecode emitted
-            }
-            Stmt::State {
-                name,
-                type_name,
-                default: _,
-            } => {
-                // Allocate a persist slot for the state variable and record its type.
-                // Actual PersistGet/PersistSet ops are emitted lazily on first use
-                // in compile_ident/compile_assign.
-                self.persist_slot(name);
-                let is_float = crate::types::parse_state_type(type_name).is_float();
-                self.state_types.insert(name.clone(), is_float);
             }
             Stmt::FnDecl {
                 name,
@@ -430,18 +418,28 @@ impl Compiler {
     /// For persist: loads the persisted value via PersistGet; skips init (persist carries across calls).
     /// For local with init: compiles the init expression and defines the variable.
     /// For local without init: defaults to 0.
-    fn compile_var_decl(&mut self, names: &[String], init: Option<&Vec<Expr>>, persist: bool) {
+    fn compile_var_decl(
+        &mut self,
+        names: &[String],
+        type_name: Option<&str>,
+        init: Option<&Vec<Expr>>,
+        persist: bool,
+    ) {
         if persist {
             // For persist variables, emit PersistGet to load stored value.
             // Init values are NOT applied since persist slots carry state across calls.
             for (i, name) in names.iter().enumerate() {
                 let slot = self.persist_slot(name);
-                // Determine type from init expression if available
-                let is_float = init.map_or(false, |exprs| {
-                    exprs
-                        .get(i)
-                        .map_or(false, |e| matches!(e, Expr::Literal(Literal::F64(_))))
-                });
+                // Determine type from type annotation, or fall back to init expression
+                let is_float = if let Some(tn) = type_name {
+                    crate::types::parse_state_type(tn).is_float()
+                } else {
+                    init.map_or(false, |exprs| {
+                        exprs
+                            .get(i)
+                            .map_or(false, |e| matches!(e, Expr::Literal(Literal::F64(_))))
+                    })
+                };
                 let r = if is_float {
                     self.alloc_float()
                 } else {
@@ -449,9 +447,7 @@ impl Compiler {
                 };
                 self.emit(Instruction::rri(O::PersistGet, r, 0, slot as u32));
                 self.define_var(name, r, is_float);
-                if is_float {
-                    self.state_types.insert(name.clone(), true);
-                }
+                self.state_types.insert(name.clone(), is_float);
             }
             return;
         }
@@ -1843,8 +1839,8 @@ end
         let src = "
 @using sma:10:50
 
-state tick_count : i64 = 0
-state hellofrom : i64 = 0
+@persist tick_count : i64 = 0
+@persist hellofrom : i64 = 0
 
 on trade(t) {
     tick_count = tick_count + 1
@@ -2586,7 +2582,7 @@ function on_eval() quince.log(\"ok\") end
     strategy_compiles!(
         test_state_persist_simple,
         "
-state x : f64 = 0.0
+@persist x : f64 = 0.0
 function on_trade(t)
     x = t
 end
@@ -2598,7 +2594,7 @@ end
     strategy_compiles!(
         test_state_event_handler,
         "
-state acc : f64 = 0.0
+@persist acc : f64 = 0.0
 on eval() {
     quince.log(\"ok\")
 }
@@ -2609,7 +2605,7 @@ on eval() {
 
     #[test]
     fn test_state_typed_compiles() {
-        let src = "state price : f64 = 100.0\nfunction on_eval() quince.log(\"ok\") end";
+        let src = "@persist price : f64 = 100.0\nfunction on_eval() quince.log(\"ok\") end";
         let program = parser::parse(src).unwrap();
         let result = compile_checked(&program);
         assert!(
@@ -2647,7 +2643,7 @@ on eval() {
     fn test_state_persists_across_functions() {
         // state x used in two functions — each should emit PersistGet
         let src = "\
-state x : f64 = 0.0
+@persist x : f64 = 0.0
 function on_trade(v)
     x = x + 1.0
 end
@@ -2684,7 +2680,7 @@ end
     #[test]
     fn test_event_handler_type_check() {
         let src = "\
-state acc : f64 = 0.0
+@persist acc : f64 = 0.0
 on eval() {
     acc = acc + 1.0
 }
@@ -2714,7 +2710,7 @@ function on_old() quince.log(\"ok\") end
     #[test]
     fn test_state_persist_used_in_event_handler() {
         let src = "\
-state x : f64 = 0.0
+@persist x : f64 = 0.0
 on eval() {
     x = x + 1.0
 }

@@ -43,6 +43,9 @@ impl<T, const N: usize> RingBuffer<T, N> {
     }
 
     pub fn push(&mut self, val: T) {
+        if N == 0 {
+            return;
+        }
         if self.len < N {
             self.buf[self.idx(self.len)] = MaybeUninit::new(val);
             self.len += 1;

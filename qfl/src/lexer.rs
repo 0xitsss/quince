@@ -74,9 +74,8 @@ pub enum Token {
     AtWindow,  // @window
 
     // Phase-4h syntactic sugar keywords
-    State, // state
-    On,    // on
-    Fn,    // fn
+    On,  // on
+    Fn,  // fn
 
     // Comment content (text after -- or inside --[[ ... ]])
     Comment(String),
@@ -145,7 +144,6 @@ impl fmt::Display for Token {
             Token::AtPersist => write!(f, "@persist"),
             Token::AtUsing => write!(f, "@using"),
             Token::AtWindow => write!(f, "@window"),
-            Token::State => write!(f, "state"),
             Token::On => write!(f, "on"),
             Token::Fn => write!(f, "fn"),
             Token::Comment(c) => write!(f, "--{}", c),
@@ -356,7 +354,6 @@ impl Lexer {
             "nil" => Token::Nil,
             "true" => Token::True,
             "false" => Token::False,
-            "state" => Token::State,
             "on" => Token::On,
             "fn" => Token::Fn,
             _ => Token::Ident(s),
@@ -821,12 +818,11 @@ mod tests {
     }
 
     #[test]
-    fn test_keywords_state_on_fn() {
-        let tokens = tokenize("state on fn ->").unwrap();
-        assert_eq!(tokens[0], Token::State);
-        assert_eq!(tokens[1], Token::On);
-        assert_eq!(tokens[2], Token::Fn);
-        assert_eq!(tokens[3], Token::Arrow);
+    fn test_keywords_on_fn() {
+        let tokens = tokenize("on fn ->").unwrap();
+        assert_eq!(tokens[0], Token::On);
+        assert_eq!(tokens[1], Token::Fn);
+        assert_eq!(tokens[2], Token::Arrow);
     }
 
     #[test]

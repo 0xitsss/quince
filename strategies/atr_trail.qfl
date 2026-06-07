@@ -1,7 +1,7 @@
 @using atr:14
 
-state position_size : i64 = 0
-state entry_price : f64 = 0.0
+@persist position_size : i64 = 0
+@persist entry_price : f64 = 0.0
 
 on trade(t) {
     feature p = t.price
@@ -10,15 +10,15 @@ on trade(t) {
         feature stop = entry_price - atr_val * 2
         if p < stop {
             quince.order(1, 1.0, 0)
-            state position_size = 0
-            state entry_price = 0.0
+            position_size = 0
+            entry_price = 0.0
             quince.log("atr trailing stop hit")
         }
     }
     if position_size <= 0 and atr_val > 0 {
         quince.order(0, 1.0, 0)
-        state position_size = 1
-        state entry_price = p
+        position_size = 1
+        entry_price = p
         quince.log("atr trail entry")
     }
 }

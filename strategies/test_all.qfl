@@ -1,10 +1,10 @@
 @using ema:5
 @using bb:20:2.0
 
-state call_count : i64 = 0
+@persist call_count : i64 = 0
 
 on trade(t) {
-    state call_count = call_count + 1
+    call_count = call_count + 1
     feature price = t.price
     feature ema = quince.get("ema")
 

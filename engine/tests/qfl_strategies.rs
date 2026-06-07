@@ -518,9 +518,9 @@ integration_test!(
 @using sma:10:50
 @using ema:20:50
 
-state position_size : i64 = 0
-state entry_price : f64 = 0.0
-state test_counter : i64 = 0
+@persist position_size : i64 = 0
+@persist entry_price : f64 = 0.0
+@persist test_counter : i64 = 0
 
 on trade(t) {
     feature sma_fast = quince.get(\"sma10\")
@@ -537,7 +537,7 @@ on trade(t) {
     quince.log2(\"sma10\", sma_fast)
     quince.log2(\"ema20\", ema_slow)
     
-    state test_counter = test_counter + 1
+    test_counter = test_counter + 1
 }
 
 on depth(d) {
@@ -565,14 +565,14 @@ on eval() {
     
     if sma_fast > ema_slow and position_size <= 0 {
         quince.order(0, 1.0, 0)
-        state position_size = 1
-        state entry_price = quince.price()
+        position_size = 1
+        entry_price = quince.price()
         quince.log(\"BUY\")
     }
     
     if sma_fast < ema_slow and position_size > 0 {
         quince.order(1, 1.0, 0)
-        state position_size = 0
+        position_size = 0
         quince.log(\"SELL\")
     }
 }

@@ -1,7 +1,7 @@
 @using bb:20:2.0
 
-state position_size : i64 = 0
-state last_trade_price : f64 = 0.0
+@persist position_size : i64 = 0
+@persist last_trade_price : f64 = 0.0
 
 on trade(t) {
     feature p = t.price
@@ -11,27 +11,27 @@ on trade(t) {
 
     if p < lower and position_size <= 0 {
         quince.order(0, 0.5, 0)
-        state position_size = 1
-        state last_trade_price = p
+        position_size = 1
+        last_trade_price = p
         quince.log("bb bounce long")
     }
 
     if p > mid and position_size > 0 {
         quince.order(1, 0.5, 0)
-        state position_size = 0
+        position_size = 0
         quince.log("bb bounce exit long")
     }
 
     if p > upper and position_size >= 0 {
         quince.order(1, 0.5, 0)
-        state position_size = -1
-        state last_trade_price = p
+        position_size = -1
+        last_trade_price = p
         quince.log("bb bounce short")
     }
 
     if p < mid and position_size < 0 {
         quince.order(0, 0.5, 0)
-        state position_size = 0
+        position_size = 0
         quince.log("bb bounce exit short")
     }
 }

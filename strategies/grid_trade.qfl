@@ -1,15 +1,15 @@
 @using ema:20
 
-state grid_level : i64 = 0
-state position_size : i64 = 0
-state last_price : f64 = 0.0
+@persist grid_level : i64 = 0
+@persist position_size : i64 = 0
+@persist last_price : f64 = 0.0
 
 on trade(t) {
     feature price = t.price
     feature ema = quince.get("ema")
 
     if last_price == 0 {
-        state last_price = price
+        last_price = price
     }
 
     feature grid_step = ema * 1.2
@@ -17,17 +17,17 @@ on trade(t) {
 
     if distance > grid_step and position_size >= 0 {
         quince.order(1, 0.2, 0)
-        state position_size = position_size - 1
-        state grid_level = grid_level - 1
-        state last_price = price
+        position_size = position_size - 1
+        grid_level = grid_level - 1
+        last_price = price
         quince.log("grid sell")
     }
 
     if distance < -grid_step and position_size <= 0 {
         quince.order(0, 0.2, 0)
-        state position_size = position_size + 1
-        state grid_level = grid_level + 1
-        state last_price = price
+        position_size = position_size + 1
+        grid_level = grid_level + 1
+        last_price = price
         quince.log("grid buy")
     }
 }

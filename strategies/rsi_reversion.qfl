@@ -1,31 +1,31 @@
 @using rsi:14
 
-state position_size : i64 = 0
+@persist position_size : i64 = 0
 
 on trade(t) {
     feature rsi = quince.get("rsi")
 
     if rsi < 30 and position_size <= 0 {
         quince.order(0, 1.0, 0)
-        state position_size = 1
+        position_size = 1
         quince.log("rsi oversold")
     }
 
     if rsi > 70 and position_size > 0 {
         quince.order(1, 1.0, 0)
-        state position_size = 0
+        position_size = 0
         quince.log("rsi overbought exit")
     }
 
     if rsi > 70 and position_size <= 0 {
         quince.order(1, 1.0, 0)
-        state position_size = -1
+        position_size = -1
         quince.log("rsi overbought short")
     }
 
     if rsi < 30 and position_size < 0 {
         quince.order(0, 1.0, 0)
-        state position_size = 0
+        position_size = 0
         quince.log("rsi oversold cover")
     }
 }

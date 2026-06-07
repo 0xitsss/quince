@@ -319,23 +319,36 @@ impl TypeChecker {
             // Variable declaration: optionally infer type from initializer
             VarDecl {
                 names,
+                type_name,
                 init,
                 persist: _,
                 is_local: _,
             } => {
+                let expected_type = type_name
+                    .as_ref()
+                    .map(|tn| parse_state_type(tn));
                 if let Some(exprs) = init {
                     for (i, name) in names.iter().enumerate() {
                         let typ = if i < exprs.len() {
-                            self.infer_expr(&exprs[i])
+                            let inferred = self.infer_expr(&exprs[i]);
+                            if let Some(ref exp) = expected_type {
+                                if inferred != *exp {
+                                    self.error(format!(
+                                        "'{}' declared as {}, default expr is {}",
+                                        name, exp, inferred
+                                    ));
+                                }
+                            }
+                            inferred
                         } else {
                             QflType::I64
                         };
                         self.define(name, typ);
                     }
                 } else {
-                    // No initializer: default to I64
                     for name in names {
-                        self.define(name, QflType::I64);
+                        let typ = expected_type.unwrap_or(QflType::I64);
+                        self.define(name, typ);
                     }
                 }
             }
@@ -497,24 +510,6 @@ impl TypeChecker {
             // Setup directives — no codegen, no type checking needed
             Using { .. } => { /* setup directive — no codegen */ }
             Window { .. } => { /* setup directive — no codegen */ }
-            // State declaration: validate default expression type matches declaration
-            State {
-                name,
-                type_name,
-                default,
-            } => {
-                let st = parse_state_type(type_name);
-                if let Some(expr) = default {
-                    let et = self.infer_expr(expr);
-                    if et != st {
-                        self.error(format!(
-                            "state '{}' declared as {}, default expr is {}",
-                            name, st, et
-                        ));
-                    }
-                }
-                self.define(name, st);
-            }
             // Modern function declaration: params have declared types
             FnDecl {
                 name: _,

@@ -1,6 +1,6 @@
 @using roc:10
 
-state position_size : i64 = 0
+@persist position_size : i64 = 0
 
 on trade(t) {
     feature roc = quince.get("roc")
@@ -8,25 +8,25 @@ on trade(t) {
 
     if roc > 2 and position_size <= 0 {
         quince.order(0, 1.0, 0)
-        state position_size = 1
+        position_size = 1
         quince.log("momentum long")
     }
 
     if roc < -2 and position_size > 0 {
         quince.order(1, 1.0, 0)
-        state position_size = 0
+        position_size = 0
         quince.log("momentum exit")
     }
 
     if roc < -2 and position_size >= 0 {
         quince.order(1, 1.0, 0)
-        state position_size = -1
+        position_size = -1
         quince.log("momentum short")
     }
 
     if roc > 2 and position_size < 0 {
         quince.order(0, 1.0, 0)
-        state position_size = 0
+        position_size = 0
         quince.log("momentum cover")
     }
 }

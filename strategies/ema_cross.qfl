@@ -1,8 +1,8 @@
 @using ema:9:50
 @using ema:5:20
 
-state position_size : i64 = 0
-state last_entry : f64 = 0.0
+@persist position_size : i64 = 0
+@persist last_entry : f64 = 0.0
 
 on trade(t) {
     feature fast = quince.get("ema9")
@@ -10,14 +10,14 @@ on trade(t) {
 
     if fast > slow and position_size <= 0 {
         quince.order(0, 1.0, 0)
-        state position_size = 1
-        state last_entry = t.price
+        position_size = 1
+        last_entry = t.price
         quince.log("ema9 cross above ema50: long entry")
     }
 
     if fast < slow and position_size > 0 {
         quince.order(1, 1.0, 0)
-        state position_size = 0
+        position_size = 0
         quince.log("ema9 cross below ema50: exit")
     }
 }

@@ -226,9 +226,9 @@ pub struct ColdVm {
 
     // Ownership holders — backing allocations for raw pointers held in hot Vm.
     // These Vecs must NOT be modified after Vm construction (raw pointers into them).
-    pub _code_owned: Vec<u64>,
-    pub _consts_owned: Vec<f64>,
-    pub _i64_consts_owned: Vec<i64>,
+    pub(crate) _code_owned: Vec<u64>,
+    pub(crate) _consts_owned: Vec<f64>,
+    pub(crate) _i64_consts_owned: Vec<i64>,
 
     // Constants pool (backward compat — string constants used by log, getind, getbal)
     pub const_pool: Vec<ConstEntry>,
@@ -523,6 +523,10 @@ impl Vm {
     #[inline(always)]
     fn run_bare(&mut self) {
         while self.running {
+            if self.pc >= self.code_len {
+                self.running = false;
+                break;
+            }
             let instr = unsafe { *self.code_ptr.add(self.pc) };
             self.pc += 1;
             unsafe {
@@ -538,6 +542,10 @@ impl Vm {
     #[inline(never)]
     fn run_profiled(&mut self) {
         while self.running {
+            if self.pc >= self.code_len {
+                self.running = false;
+                break;
+            }
             #[cfg(feature = "profiling")]
             let tsc_start = crate::profiler::rdtsc();
             let instr = unsafe { *self.code_ptr.add(self.pc) };
@@ -566,6 +574,10 @@ impl Vm {
     #[inline(never)]
     fn run_traced(&mut self) {
         while self.running {
+            if self.pc >= self.code_len {
+                self.running = false;
+                break;
+            }
             let instr = unsafe { *self.code_ptr.add(self.pc) };
             self.pc += 1;
             let opcode = (instr & 0xFF) as u8;
@@ -583,6 +595,10 @@ impl Vm {
     #[inline(never)]
     fn run_with_tracevm(&mut self) {
         while self.running {
+            if self.pc >= self.code_len {
+                self.running = false;
+                break;
+            }
             let instr = unsafe { *self.code_ptr.add(self.pc) };
             self.pc += 1;
             let opcode = (instr & 0xFF) as u8;
@@ -889,8 +905,11 @@ unsafe fn immu(instr: u64) -> u32 {
 // NaN/Inf sanitizer — debug-only assertion that float values are finite.
 #[inline(always)]
 fn sanitize_f(val: f64) -> f64 {
-    debug_assert!(val.is_finite(), "NaN/Inf in float register");
-    val
+    if !val.is_finite() {
+        0.0
+    } else {
+        val
+    }
 }
 
 // --- Opcode Handlers ---
@@ -1212,11 +1231,10 @@ pub unsafe fn $name(vm: &mut Vm, instr: u64) {
     #[inline(always)]
     pub unsafe fn vm_jmp(vm: &mut Vm, instr: u64) {
         let target = (vm.pc as i64).wrapping_add(imm(instr) as i64) as usize;
-        debug_assert!(
-            target < vm.code_len,
-            "jmp target {target} >= code_len {}",
-            vm.code_len
-        );
+        if target >= vm.code_len {
+            vm.running = false;
+            return;
+        }
         vm.pc = target;
     }
 
@@ -1226,11 +1244,10 @@ pub unsafe fn $name(vm: &mut Vm, instr: u64) {
         debug_assert!((rs1(instr) as usize) < NUM_REGS);
         if vm.regs.get_unchecked(rs1(instr) as usize).i == 0 {
             let target = (vm.pc as i64).wrapping_add(imm(instr) as i64) as usize;
-            debug_assert!(
-                target < vm.code_len,
-                "jz target {target} >= code_len {}",
-                vm.code_len
-            );
+            if target >= vm.code_len {
+                vm.running = false;
+                return;
+            }
             vm.pc = target;
         }
     }
@@ -1241,11 +1258,10 @@ pub unsafe fn $name(vm: &mut Vm, instr: u64) {
         debug_assert!((rs1(instr) as usize) < NUM_REGS);
         if vm.regs.get_unchecked(rs1(instr) as usize).i != 0 {
             let target = (vm.pc as i64).wrapping_add(imm(instr) as i64) as usize;
-            debug_assert!(
-                target < vm.code_len,
-                "jnz target {target} >= code_len {}",
-                vm.code_len
-            );
+            if target >= vm.code_len {
+                vm.running = false;
+                return;
+            }
             vm.pc = target;
         }
     }
@@ -1254,22 +1270,18 @@ pub unsafe fn $name(vm: &mut Vm, instr: u64) {
     #[inline(always)]
     pub unsafe fn vm_call(vm: &mut Vm, instr: u64) {
         let depth = vm.call_depth as usize;
-        debug_assert!(
-            depth < MAX_CALL_DEPTH,
-            "call_depth {depth} >= MAX_CALL_DEPTH"
-        );
         if depth < MAX_CALL_DEPTH {
             *vm.call_stack.get_unchecked_mut(depth) = vm.pc;
             vm.call_depth += 1;
         } else {
             vm.running = false;
+            return;
         }
         let target = (vm.pc as i64).wrapping_add(imm(instr) as i64) as usize;
-        debug_assert!(
-            target < vm.code_len,
-            "call target {target} >= code_len {}",
-            vm.code_len
-        );
+        if target >= vm.code_len {
+            vm.running = false;
+            return;
+        }
         vm.pc = target;
     }
 
@@ -1322,7 +1334,9 @@ pub unsafe fn $name(vm: &mut Vm, instr: u64) {
     pub unsafe fn vm_ldi64_c(vm: &mut Vm, instr: u64) {
         let r = rd(instr) as usize;
         let idx = immu(instr) as usize;
-        debug_assert!(idx < vm.i64_const_count as usize);
+        if idx >= vm.i64_const_count as usize {
+            return;
+        }
         vm.regs.get_unchecked_mut(r).i = *vm.i64_consts_ptr.add(idx);
     }
 
@@ -1331,7 +1345,9 @@ pub unsafe fn $name(vm: &mut Vm, instr: u64) {
     pub unsafe fn vm_ldcf64(vm: &mut Vm, instr: u64) {
         let r = rd(instr) as usize;
         let idx = immu(instr) as usize;
-        debug_assert!(idx < vm.const_count as usize);
+        if idx >= vm.const_count as usize {
+            return;
+        }
         vm.regs.get_unchecked_mut(r).f = *vm.consts_ptr.add(idx);
     }
 
@@ -1369,8 +1385,11 @@ pub unsafe fn $name(vm: &mut Vm, instr: u64) {
     pub unsafe fn vm_getind(vm: &mut Vm, instr: u64) {
         let r = rd(instr) as usize;
         let str_idx = vm.regs.get_unchecked(rs1(instr) as usize).i as usize;
-        debug_assert!(str_idx < vm.cold.indicator_by_str.len());
-        let slot = *vm.cold.indicator_by_str.get_unchecked(str_idx);
+        let slot = if str_idx < vm.cold.indicator_by_str.len() {
+            *vm.cold.indicator_by_str.get_unchecked(str_idx)
+        } else {
+            u16::MAX
+        };
         let val = if slot != u16::MAX {
             *vm.cold.indicators.get_unchecked(slot as usize)
         } else {
@@ -1400,8 +1419,11 @@ pub unsafe fn $name(vm: &mut Vm, instr: u64) {
     pub unsafe fn vm_getbal(vm: &mut Vm, instr: u64) {
         let r = rd(instr) as usize;
         let str_idx = vm.regs.get_unchecked(rs1(instr) as usize).i as usize;
-        debug_assert!(str_idx < vm.cold.balance_by_str.len());
-        let slot = *vm.cold.balance_by_str.get_unchecked(str_idx);
+        let slot = if str_idx < vm.cold.balance_by_str.len() {
+            *vm.cold.balance_by_str.get_unchecked(str_idx)
+        } else {
+            u16::MAX
+        };
         let val = if slot != u16::MAX {
             *vm.cold.balances.get_unchecked(slot as usize)
         } else {
@@ -1415,8 +1437,11 @@ pub unsafe fn $name(vm: &mut Vm, instr: u64) {
     pub unsafe fn vm_getdepthbid(vm: &mut Vm, instr: u64) {
         let r = rd(instr) as usize;
         let level = vm.regs.get_unchecked(rs1(instr) as usize).i as usize;
-        debug_assert!(level < vm.cold.depth_bids_len as usize);
-        let val = *vm.cold.depth_bids_qty.get_unchecked(level);
+        let val = if level < vm.cold.depth_bids_len as usize {
+            *vm.cold.depth_bids_qty.get_unchecked(level)
+        } else {
+            0.0
+        };
         vm.regs.get_unchecked_mut(r).f = val;
     }
 
@@ -1425,8 +1450,11 @@ pub unsafe fn $name(vm: &mut Vm, instr: u64) {
     pub unsafe fn vm_getdepthask(vm: &mut Vm, instr: u64) {
         let r = rd(instr) as usize;
         let level = vm.regs.get_unchecked(rs1(instr) as usize).i as usize;
-        debug_assert!(level < vm.cold.depth_asks_len as usize);
-        let val = *vm.cold.depth_asks_qty.get_unchecked(level);
+        let val = if level < vm.cold.depth_asks_len as usize {
+            *vm.cold.depth_asks_qty.get_unchecked(level)
+        } else {
+            0.0
+        };
         vm.regs.get_unchecked_mut(r).f = val;
     }
 
@@ -1462,7 +1490,9 @@ pub unsafe fn $name(vm: &mut Vm, instr: u64) {
     pub unsafe fn vm_persistget(vm: &mut Vm, instr: u64) {
         let r = rd(instr) as usize;
         let slot = immu(instr) as usize;
-        debug_assert!(slot < PERSIST_SLOTS);
+        if slot >= PERSIST_SLOTS {
+            return;
+        }
         let ps = vm.cold.persist.get_unchecked(slot);
         if ps.tag == 0 {
             vm.regs.get_unchecked_mut(r).i = ps.int_val;
@@ -1477,7 +1507,9 @@ pub unsafe fn $name(vm: &mut Vm, instr: u64) {
     pub unsafe fn vm_persistset(vm: &mut Vm, instr: u64) {
         let slot = immu(instr) as usize;
         let r = rd(instr) as usize;
-        debug_assert!(slot < PERSIST_SLOTS);
+        if slot >= PERSIST_SLOTS {
+            return;
+        }
         let ps = vm.cold.persist.get_unchecked_mut(slot);
         if r >= INT_REG_COUNT as usize {
             ps.tag = 1;
@@ -1561,7 +1593,9 @@ pub unsafe fn $name(vm: &mut Vm, instr: u64) {
         let wid = immu(instr) as usize;
         let val = vm.regs.get_unchecked(rs1(instr) as usize).f;
         let r = rd(instr) as usize;
-        debug_assert!(wid < MAX_WINDOWS);
+        if wid >= MAX_WINDOWS {
+            return;
+        }
         let meta = vm.cold.window_meta.get_unchecked_mut(wid);
         // Auto-initialize on first push
         if meta.capacity == 0 {
@@ -1670,7 +1704,9 @@ pub unsafe fn $name(vm: &mut Vm, instr: u64) {
             pub unsafe fn $name(vm: &mut Vm, instr: u64) {
                 let wid = immu(instr) as usize;
                 let r = rd(instr) as usize;
-                debug_assert!(wid < MAX_WINDOWS);
+                if wid >= MAX_WINDOWS {
+                    return;
+                }
                 let meta = vm.cold.window_meta.get_unchecked(wid);
                 let result = meta.$method();
                 if meta.len > 0 {
