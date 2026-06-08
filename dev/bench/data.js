@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1780865510302,
+  "lastUpdate": 1780892259374,
   "repoUrl": "https://github.com/0xitsss/quince",
   "entries": {
     "QFL Criterion Benchmarks": [
@@ -215,6 +215,222 @@ window.BENCHMARK_DATA = {
             "name": "runtime_feed/heavy_test_10k",
             "value": 2770056,
             "range": "± 8996",
+            "unit": "ns/iter"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "js2302247@gmail.com",
+            "name": "0xitsss",
+            "username": "0xitsss"
+          },
+          "committer": {
+            "email": "js2302247@gmail.com",
+            "name": "0xitsss",
+            "username": "0xitsss"
+          },
+          "distinct": true,
+          "id": "706bd7b1fe946cb202623488b638de2780f7b971",
+          "message": "docs: add Mermaid UML diagrams to README (architecture, sequence, class, state, pipeline)",
+          "timestamp": "2026-06-08T08:12:14+04:00",
+          "tree_id": "b3c4347fca6345e872e5df8620acf8f952bfea51",
+          "url": "https://github.com/0xitsss/quince/commit/706bd7b1fe946cb202623488b638de2780f7b971"
+        },
+        "date": 1780892258583,
+        "tool": "cargo",
+        "benches": [
+          {
+            "name": "pipeline/atr_trail/31",
+            "value": 70440,
+            "range": "± 1575",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "pipeline/bb_bounce/119",
+            "value": 127681,
+            "range": "± 993",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "pipeline/ema_cross/67",
+            "value": 77004,
+            "range": "± 155",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "pipeline/grid_trade/93",
+            "value": 86396,
+            "range": "± 370",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "pipeline/heavy_test/180",
+            "value": 219533,
+            "range": "± 749",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "pipeline/macd_cross/60",
+            "value": 67886,
+            "range": "± 145",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "pipeline/momentum/122",
+            "value": 119253,
+            "range": "± 386",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "pipeline/rare_signal/152",
+            "value": 152919,
+            "range": "± 749",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "pipeline/rsi_reversion/119",
+            "value": 117953,
+            "range": "± 247",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "pipeline/scalper/81",
+            "value": 100380,
+            "range": "± 786",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "pipeline/simple_test/14",
+            "value": 18746,
+            "range": "± 30",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "pipeline/sma_cross/60",
+            "value": 67511,
+            "range": "± 217",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "pipeline/test_all/52",
+            "value": 61455,
+            "range": "± 156",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "pipeline/test_data_passing/146",
+            "value": 154052,
+            "range": "± 564",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "vm_tick/atr_trail/31",
+            "value": 1306999,
+            "range": "± 741",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "vm_tick/bb_bounce/119",
+            "value": 2234605,
+            "range": "± 10478",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "vm_tick/ema_cross/67",
+            "value": 845704,
+            "range": "± 1711",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "vm_tick/grid_trade/93",
+            "value": 2164496,
+            "range": "± 13681",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "vm_tick/heavy_test/180",
+            "value": 2541496,
+            "range": "± 34641",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "vm_tick/macd_cross/60",
+            "value": 815303,
+            "range": "± 1973",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "vm_tick/momentum/122",
+            "value": 1885441,
+            "range": "± 7619",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "vm_tick/rare_signal/152",
+            "value": 3203028,
+            "range": "± 6619",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "vm_tick/rsi_reversion/119",
+            "value": 1701216,
+            "range": "± 3564",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "vm_tick/scalper/81",
+            "value": 1145454,
+            "range": "± 3774",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "vm_tick/simple_test/14",
+            "value": 305363,
+            "range": "± 2567",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "vm_tick/sma_cross/60",
+            "value": 810045,
+            "range": "± 1611",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "vm_tick/test_all/52",
+            "value": 837063,
+            "range": "± 5294",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "vm_tick/test_data_passing/146",
+            "value": 980107,
+            "range": "± 1616",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "vm_scale/heavy_test/180_instrs_1000iters",
+            "value": 255472,
+            "range": "± 1302",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "vm_scale/heavy_test/180_instrs_10000iters",
+            "value": 2532087,
+            "range": "± 34430",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "vm_scale/heavy_test/180_instrs_100000iters",
+            "value": 25340989,
+            "range": "± 24130",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "runtime_feed/heavy_test_10k",
+            "value": 2825047,
+            "range": "± 35058",
             "unit": "ns/iter"
           }
         ]
