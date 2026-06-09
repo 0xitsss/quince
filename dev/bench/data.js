@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1780996028732,
+  "lastUpdate": 1780999991294,
   "repoUrl": "https://github.com/0xitsss/quince",
   "entries": {
     "QFL Criterion Benchmarks": [
@@ -863,6 +863,222 @@ window.BENCHMARK_DATA = {
             "name": "runtime_feed/heavy_test_10k",
             "value": 2780895,
             "range": "± 6179",
+            "unit": "ns/iter"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "js2302247@gmail.com",
+            "name": "0xitsss",
+            "username": "0xitsss"
+          },
+          "committer": {
+            "email": "js2302247@gmail.com",
+            "name": "0xitsss",
+            "username": "0xitsss"
+          },
+          "distinct": true,
+          "id": "9dee46b5d1ee260cd91df0de859de43ae508d2b9",
+          "message": "v0.6.11: add QuinceHash64 checksum + computed_goto VM dispatch\n\n- QuinceHash64: custom ARX sponge 64-bit checksum (256-bit state, 3 finalizing rounds, bit padding + length strengthening)\n- QFRC footer appended on save, verified on load and mmap paths\n- Replace JUMP_TABLE function pointer dispatch with computed_goto! match macro in all 4 VM dispatch loops\n- Remove JUMP_TABLE from opcodes.rs (keep SENTINEL_OPCODE)",
+          "timestamp": "2026-06-09T14:07:31+04:00",
+          "tree_id": "f12a9f224048cb74adb7e221a550f8a60f76ac4c",
+          "url": "https://github.com/0xitsss/quince/commit/9dee46b5d1ee260cd91df0de859de43ae508d2b9"
+        },
+        "date": 1780999990389,
+        "tool": "cargo",
+        "benches": [
+          {
+            "name": "pipeline/atr_trail/31",
+            "value": 65914,
+            "range": "± 664",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "pipeline/bb_bounce/119",
+            "value": 129110,
+            "range": "± 972",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "pipeline/ema_cross/67",
+            "value": 76656,
+            "range": "± 377",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "pipeline/grid_trade/93",
+            "value": 91214,
+            "range": "± 475",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "pipeline/heavy_test/180",
+            "value": 222039,
+            "range": "± 7273",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "pipeline/macd_cross/60",
+            "value": 64869,
+            "range": "± 140",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "pipeline/momentum/122",
+            "value": 115653,
+            "range": "± 397",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "pipeline/rare_signal/152",
+            "value": 156780,
+            "range": "± 930",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "pipeline/rsi_reversion/119",
+            "value": 116485,
+            "range": "± 573",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "pipeline/scalper/81",
+            "value": 101736,
+            "range": "± 1583",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "pipeline/simple_test/14",
+            "value": 16763,
+            "range": "± 27",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "pipeline/sma_cross/60",
+            "value": 64366,
+            "range": "± 811",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "pipeline/test_all/52",
+            "value": 62767,
+            "range": "± 113",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "pipeline/test_data_passing/146",
+            "value": 165999,
+            "range": "± 576",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "vm_tick/atr_trail/31",
+            "value": 532366,
+            "range": "± 479",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "vm_tick/bb_bounce/119",
+            "value": 1225390,
+            "range": "± 1255",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "vm_tick/ema_cross/67",
+            "value": 521638,
+            "range": "± 415",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "vm_tick/grid_trade/93",
+            "value": 1201927,
+            "range": "± 800",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "vm_tick/heavy_test/180",
+            "value": 1511130,
+            "range": "± 1116",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "vm_tick/macd_cross/60",
+            "value": 502079,
+            "range": "± 1547",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "vm_tick/momentum/122",
+            "value": 1105257,
+            "range": "± 994",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "vm_tick/rare_signal/152",
+            "value": 1848428,
+            "range": "± 8268",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "vm_tick/rsi_reversion/119",
+            "value": 1037378,
+            "range": "± 5216",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "vm_tick/scalper/81",
+            "value": 787918,
+            "range": "± 471",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "vm_tick/simple_test/14",
+            "value": 205108,
+            "range": "± 291",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "vm_tick/sma_cross/60",
+            "value": 500059,
+            "range": "± 515",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "vm_tick/test_all/52",
+            "value": 433351,
+            "range": "± 608",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "vm_tick/test_data_passing/146",
+            "value": 603321,
+            "range": "± 398",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "vm_scale/heavy_test/180_instrs_1000iters",
+            "value": 151217,
+            "range": "± 97",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "vm_scale/heavy_test/180_instrs_10000iters",
+            "value": 1511765,
+            "range": "± 1004",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "vm_scale/heavy_test/180_instrs_100000iters",
+            "value": 15122249,
+            "range": "± 43462",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "runtime_feed/heavy_test_10k",
+            "value": 1595473,
+            "range": "± 2550",
             "unit": "ns/iter"
           }
         ]
