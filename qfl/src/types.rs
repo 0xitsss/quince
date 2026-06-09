@@ -1072,7 +1072,7 @@ mod tests {
     }
     #[test]
     fn literal_f64_type() {
-        assert_eq!(literal_type(&crate::ast::Literal::F64(3.14)), F64);
+        assert_eq!(literal_type(&crate::ast::Literal::F64(2.5)), F64);
     }
     #[test]
     fn literal_bool_type() {

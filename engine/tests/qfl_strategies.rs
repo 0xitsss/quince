@@ -3,7 +3,6 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use async_trait::async_trait;
-use crossbeam_channel;
 use quince_core::types::*;
 use quince_engine::Engine;
 use quince_exchange::r#trait::{Exchange, OrderStatus, Result, Stream, StreamMsg};

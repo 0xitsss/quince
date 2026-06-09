@@ -14,7 +14,7 @@ fn strategies() -> Vec<String> {
     let mut files: Vec<String> = std::fs::read_dir(STRATEGIES_DIR)
         .expect("strategies dir")
         .filter_map(|e| e.ok())
-        .filter(|e| e.path().extension().map_or(false, |ext| ext == "qfl"))
+        .filter(|e| e.path().extension().is_some_and(|ext| ext == "qfl"))
         .map(|e| e.path().file_stem().unwrap().to_string_lossy().to_string())
         .collect();
     files.sort();
@@ -149,7 +149,7 @@ fn bench_runtime(c: &mut Criterion) {
             qty: 0.1 + (i % 5) as f64 * 0.1,
             time: chrono::Utc::now(),
             side: if i % 2 == 0 { Side::Buy } else { Side::Sell },
-            trade_id: i as u64,
+            trade_id: i,
         })
         .collect();
 
@@ -165,7 +165,7 @@ fn bench_runtime(c: &mut Criterion) {
                     runtime::QflRuntime::load(&path).expect("load");
                 let start = Instant::now();
                 for t in &trades {
-                    rt.feed_trade(t.clone());
+                    rt.feed_trade(*t);
                 }
                 total += start.elapsed();
             }

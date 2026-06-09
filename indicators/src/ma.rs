@@ -252,7 +252,7 @@ mod tests {
         sma.update(2.0);
         sma.reset();
         assert_eq!(sma.update(10.0), None);
-        assert_eq!(sma.is_ready(), false);
+        assert!(!sma.is_ready());
     }
 
     #[test]

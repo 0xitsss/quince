@@ -849,7 +849,7 @@ mod tests {
         });
         let s_idx = prog.intern_string("btcusdt");
         let _ = prog.intern_i64(42);
-        let _ = prog.intern_f64(3.14);
+        let _ = prog.intern_f64(2.5);
         prog.code.push(Instruction::rrr(Opcode::Add, 1, 2, 3));
         prog.code.push(Instruction::single(Opcode::Ret));
 
@@ -931,7 +931,7 @@ mod tests {
         });
         let _ = prog.intern_string("btcusdt");
         let _ = prog.intern_i64(42);
-        let _ = prog.intern_f64(3.14);
+        let _ = prog.intern_f64(2.5);
         prog.code.push(Instruction::rrr(Opcode::Add, 1, 2, 3));
         prog.code.push(Instruction::single(Opcode::Ret));
 
@@ -965,7 +965,7 @@ mod tests {
             name: "on_eval".into(),
             code_offset: 10,
         });
-        let _ = prog.intern_f64(3.14);
+        let _ = prog.intern_f64(2.5);
         prog.code.push(Instruction::rrr(Opcode::Add, 1, 2, 3));
         prog.code.push(Instruction::single(Opcode::Ret));
 

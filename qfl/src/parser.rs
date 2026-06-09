@@ -935,8 +935,8 @@ mod tests {
 
     #[test]
     fn test_float() {
-        let prog = parse("3.14").unwrap();
-        assert_eq!(prog[0], Stmt::ExprStmt(Expr::Literal(Literal::F64(3.14))));
+        let prog = parse("2.5").unwrap();
+        assert_eq!(prog[0], Stmt::ExprStmt(Expr::Literal(Literal::F64(2.5))));
     }
 
     #[test]
@@ -1669,12 +1669,12 @@ end
 
     #[test]
     fn test_negative_float() {
-        let prog = parse("-3.14").unwrap();
+        let prog = parse("-2.5").unwrap();
         assert_eq!(
             prog[0],
             Stmt::ExprStmt(Expr::Unary {
                 op: UnaryOp::Neg,
-                expr: Box::new(Expr::Literal(Literal::F64(3.14))),
+                expr: Box::new(Expr::Literal(Literal::F64(2.5))),
             })
         );
     }

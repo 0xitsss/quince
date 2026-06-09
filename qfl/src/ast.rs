@@ -481,7 +481,7 @@ mod tests {
     }
     #[test]
     fn display_literal_f64() {
-        assert_eq!(Literal::F64(3.14).to_string(), "3.14");
+        assert_eq!(Literal::F64(2.5).to_string(), "2.5");
     }
     #[test]
     fn display_literal_bool() {

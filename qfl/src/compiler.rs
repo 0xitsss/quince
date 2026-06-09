@@ -1571,8 +1571,8 @@ mod tests {
 
     #[test]
     fn test_literal_f64() {
-        let prog = compile_str("3.14");
-        assert!(prog.code.len() >= 1);
+        let prog = compile_str("2.5");
+        assert!(!prog.code.is_empty());
         assert_eq!(prog.code[0].opcode(), O::LdcF64);
     }
 
@@ -1781,7 +1781,7 @@ end
     fn test_quince_mutate() {
         // Test that calling sync doesn't crash
         let prog = compile_str("quince.log(\"hello\")");
-        assert!(prog.code.len() >= 1);
+        assert!(!prog.code.is_empty());
     }
 
     #[test]
@@ -1858,9 +1858,9 @@ on eval() {
             );
         }
         for e in &prog.entries {
-            eprintln!("entry: {} @{}", e.name, e.code_offset);
+            eprintln!("entry: {} @{}", e.name, e.code_offset            );
         }
-        assert!(prog.code.len() > 0);
+        assert!(!prog.code.is_empty());
     }
 
     #[test]
@@ -2345,7 +2345,7 @@ end
     fn test_duplicate_persist_names() {
         // Two @persist with same name — compiler reuses slot, no crash
         let prog = compile_str("@persist local x = 1 @persist local x = 2");
-        assert!(prog.code.len() > 0);
+        assert!(!prog.code.is_empty());
     }
 
     #[test]
@@ -2458,9 +2458,9 @@ end
 
     #[test]
     fn test_persist_float_init() {
-        let prog = compile_str("@persist local x = 3.14 function on_eval() end");
+        let prog = compile_str("@persist local x = 2.5 function on_eval() end");
         // Persist local with float init should compile without crash
-        assert!(prog.entries.len() >= 1);
+        assert!(!prog.entries.is_empty());
     }
 
     #[test]

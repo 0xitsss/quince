@@ -1024,12 +1024,12 @@ mod tests {
     fn test_very_deep_nested_brackets() {
         let tokens = tokenize("((((((((((1))))))))))").unwrap();
         assert_eq!(tokens.len(), 22); // 10 x LParen + Number + 10 x RParen + Eof
-        for i in 0..10 {
-            assert_eq!(tokens[i], Token::LParen, "LParen at index {}", i);
+        for (i, t) in tokens[0..10].iter().enumerate() {
+            assert_eq!(*t, Token::LParen, "LParen at index {}", i);
         }
         assert_eq!(tokens[10], Token::Number("1".into()));
-        for i in 11..21 {
-            assert_eq!(tokens[i], Token::RParen, "RParen at index {}", i);
+        for (i, t) in tokens[11..21].iter().enumerate() {
+            assert_eq!(*t, Token::RParen, "RParen at index {}", i + 11);
         }
     }
 

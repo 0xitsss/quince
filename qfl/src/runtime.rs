@@ -1086,6 +1086,7 @@ end
     }
 
     #[test]
+    #[allow(clippy::approx_constant)]
     fn test_persist_float_value_survives() {
         let src = "
 @persist local val = 0.0
@@ -1237,7 +1238,7 @@ end
         let src_v2 = "
 @persist local x = 0.0
 function on_eval()
-    x = 3.14
+    x = 2.5
 end
 ";
         let path_v1 = write_test_strategy("hr_type_v1", src_v1);
@@ -1253,7 +1254,7 @@ end
         rt_v2.feed_eval();
 
         assert_eq!(rt_v2.vm.cold.persist[0].tag, 1);
-        assert!((rt_v2.vm.cold.persist[0].float_val - 3.14).abs() < 0.001);
+        assert!((rt_v2.vm.cold.persist[0].float_val - 2.5).abs() < 0.001);
 
         let _ = std::fs::remove_file(&path_v1);
         let _ = std::fs::remove_file(&path_v2);
@@ -1591,11 +1592,11 @@ end
     #[test]
     fn test_load_binary_garbage() {
         let path = "runtime_bin_garbage.qfl";
-        let garbage: Vec<u8> = vec![0x00, 0x01, 0x02, 0xFF, 0xFE, 0xFD];
-        std::fs::write(&path, garbage).unwrap();
-        let result = QflRuntime::load(&path);
+        let garbage = vec![0x00, 0x01, 0x02, 0xFF, 0xFE, 0xFD];
+        std::fs::write(path, garbage).unwrap();
+        let result = QflRuntime::load(path);
         assert!(result.is_err());
-        let _ = std::fs::remove_file(&path);
+        let _ = std::fs::remove_file(path);
     }
 
     // ── Feed state update tests ──
@@ -2253,7 +2254,7 @@ on eval() {
         for i in 0..100_000 {
             let event_kind = i % 5;
             match event_kind {
-                0 | 1 | 2 => {
+                0..=2 => {
                     let trade = quince_core::types::Trade {
                         price: 50000.0 + (i % 2000) as f64,
                         qty: 0.1 + (i % 10) as f64 * 0.05,

@@ -3388,14 +3388,14 @@ mod tests {
     #[test]
     fn fold_float_neg() {
         let mut p = QfrProgram::new();
-        let idx = p.intern_f64(3.14);
+        let idx = p.intern_f64(2.5);
         p.code = vec![I::rri(O::LdcF64, 192, 0, idx), I::rr(O::FNeg, 193, 192)];
         let opt = constant_fold(&p);
         assert_eq!(opt.code[1].opcode(), O::LdcF64);
         let f_idx = opt.code[1].imm() as usize;
         if f_idx < opt.f64_consts.len() {
             let val = &opt.f64_consts[f_idx];
-            assert!((*val - -3.14).abs() < 0.0001);
+            assert!((*val - -2.5).abs() < 0.0001);
         } else {
             panic!("expected F64");
         }
@@ -3480,7 +3480,7 @@ mod tests {
     #[test]
     fn fold_float_cmp_eq() {
         let mut p = QfrProgram::new();
-        let idx = p.intern_f64(3.14);
+        let idx = p.intern_f64(2.5);
         p.code = vec![
             I::rri(O::LdcF64, 192, 0, idx),
             I::rri(O::LdcF64, 193, 0, idx),
