@@ -10,8 +10,90 @@ use std::ptr::NonNull;
 pub const QFR_MAGIC_V1: &[u8; 4] = b"QFR1";
 // Magic bytes for V2 format: "QFR!" — zero-copy mmap-compatible format identifier
 pub const QFR_MAGIC_V2: &[u8; 4] = b"QFR!";
+// Magic bytes for checksum suffix: "QFRC" — trailing checksum footer
+pub const QFRC_MAGIC: [u8; 4] = *b"QFRC";
+pub const QFRC_FOOTER_SIZE: usize = 12; // 4 bytes magic + 8 bytes hash
 pub const QFR_VERSION_V1: u32 = 1;
 pub const QFR_VERSION_V2: u16 = 2;
+
+// --- QuinceHash64: custom 64-bit checksum ---
+// ARX sponge: 256-bit state (4×u64), Add-Rotate-XOR with multiplicative diffusion.
+// 3 finalizing rounds, bit padding + length strengthening.
+
+const QH_IV0: u64 = 0xDEAD_BEEF_CAFE_F00D;
+const QH_IV1: u64 = 0xC0FFEE_ABBA_BABE;
+const QH_PHI: u64 = 0x9E37_79B9_7F4A_7C15; // 2^64 / φ
+const QH_PII: u64 = 0x3F6A_3C4D_5E6F_7A89; // 2^64 × √3
+
+pub fn quince_hash64(data: &[u8]) -> u64 {
+    let mut a = QH_IV0;
+    let mut b = QH_IV1;
+    let mut c = QH_PHI;
+    let mut d = QH_PII;
+
+    let len = data.len();
+    let full_chunks = len / 8;
+
+    for i in 0..full_chunks {
+        let block = u64::from_le_bytes([
+            data[i * 8],
+            data[i * 8 + 1],
+            data[i * 8 + 2],
+            data[i * 8 + 3],
+            data[i * 8 + 4],
+            data[i * 8 + 5],
+            data[i * 8 + 6],
+            data[i * 8 + 7],
+        ]);
+        a ^= block;
+        b = b.rotate_left(17) ^ a;
+        c = c.wrapping_add(b);
+        d = d.rotate_right(31) ^ c;
+        a = a.wrapping_mul(QH_PHI);
+        b = b.rotate_left(13) ^ d;
+        c = c.wrapping_mul(QH_PII);
+        d ^= a;
+        a = a.wrapping_add(c);
+    }
+
+    // Process remaining bytes with bit padding
+    let rem = len % 8;
+    if rem > 0 || len == 0 {
+        let mut last = [0u8; 8];
+        for i in 0..rem {
+            last[i] = data[len - rem + i];
+        }
+        last[rem] = 0x80; // bit padding marker
+        if rem < 7 {
+            last[7] = (len as u8) ^ 0xFF; // length strengthening
+        }
+        let block = u64::from_le_bytes(last);
+        a ^= block;
+        b = b.rotate_left(17) ^ a;
+        c = c.wrapping_add(b);
+        d = d.rotate_right(31) ^ c;
+        a = a.wrapping_mul(QH_PHI);
+        b = b.rotate_left(13) ^ d;
+        c = c.wrapping_mul(QH_PII);
+        d ^= a;
+        a = a.wrapping_add(c);
+    }
+
+    // 3 finalizing rounds
+    for _ in 0..3 {
+        a ^= b;
+        b = b.rotate_left(23) ^ c;
+        c = c.wrapping_add(d);
+        d = d.rotate_right(19) ^ a;
+        a = a.wrapping_mul(QH_PHI);
+        b = b.rotate_left(11) ^ d;
+        c = c.wrapping_mul(QH_PII);
+        d ^= a;
+        a = a.wrapping_add(c);
+    }
+
+    a ^ b ^ c ^ d
+}
 
 // --- Section: Entry point descriptor (compiler side) ---
 
@@ -111,16 +193,35 @@ impl QfrProgram {
         idx
     }
 
-    // Serializes program to disk using V1 format by default
+    // Serializes program to disk using V1 format by default.
+    // Appends QuinceHash64 checksum footer for integrity verification.
     pub fn save(&self, path: &str) -> Result<(), String> {
-        let bytes = serialize_v1(self);
+        let mut bytes = serialize_v1(self);
+        let hash = quince_hash64(&bytes);
+        bytes.extend_from_slice(&QFRC_MAGIC);
+        bytes.extend_from_slice(&hash.to_le_bytes());
         std::fs::write(path, bytes).map_err(|e| format!("write {}: {}", path, e))
     }
 
-    // Loads program from disk, auto-detecting V1 vs V2 format by magic bytes
+    // Loads program from disk, auto-detecting V1 vs V2 format by magic bytes.
+    // Verifies QuinceHash64 checksum footer if present (backward compatible).
     pub fn load(path: &str) -> Result<Self, String> {
-        let data = std::fs::read(path).map_err(|e| format!("read {}: {}", path, e))?;
-        // Check first 4 bytes for V2 magic; fall back to V1
+        let mut data = std::fs::read(path).map_err(|e| format!("read {}: {}", path, e))?;
+        // Strip and verify checksum footer if present
+        if data.len() >= QFRC_FOOTER_SIZE
+            && data[data.len() - QFRC_FOOTER_SIZE..][..4] == QFRC_MAGIC
+        {
+            let stored_hash = u64::from_le_bytes(data[data.len() - 8..].try_into().unwrap());
+            let content_len = data.len() - QFRC_FOOTER_SIZE;
+            let actual_hash = quince_hash64(&data[..content_len]);
+            if actual_hash != stored_hash {
+                return Err(format!(
+                    "checksum mismatch: expected {:#x}, got {:#x}",
+                    stored_hash, actual_hash
+                ));
+            }
+            data.truncate(content_len);
+        }
         if data.len() >= 4 && &data[0..4] == QFR_MAGIC_V2 {
             deserialize_binarized(&data)
         } else {
@@ -239,9 +340,27 @@ impl Loader {
         let code_start_aligned = (code_start + 7) & !7;
         let code_ptr = unsafe { mmap.as_ptr().add(code_start_aligned) as *const u64 };
 
-        // Verify code section fits within the mmap
+        // Determine effective file length (strip QFRC checksum footer if present)
+        let effective_len = if mmap.len() >= QFRC_FOOTER_SIZE
+            && mmap[mmap.len() - QFRC_FOOTER_SIZE..][..4] == QFRC_MAGIC
+        {
+            let stored_hash = u64::from_le_bytes(mmap[mmap.len() - 8..].try_into().unwrap());
+            let content_len = mmap.len() - QFRC_FOOTER_SIZE;
+            let actual_hash = quince_hash64(&mmap[..content_len]);
+            if actual_hash != stored_hash {
+                return Err(format!(
+                    "checksum mismatch: expected {:#x}, got {:#x}",
+                    stored_hash, actual_hash
+                ));
+            }
+            content_len
+        } else {
+            mmap.len()
+        };
+
+        // Verify code section fits within the effective content
         let expected_end = code_start_aligned + (header.num_instructions as usize) * 8;
-        if expected_end > mmap.len() {
+        if expected_end > effective_len {
             return Err("truncated code section".into());
         }
 
@@ -273,7 +392,8 @@ impl Loader {
             let entry = unsafe { &*(mmap_slice.as_ptr().add(entry_offset) as *const QfrEntry) };
             // Bounds-check the name offset and length before reading
             if (entry.name_offset as usize) >= mmap_slice.len()
-                || (entry.name_len as usize) > mmap_slice.len().saturating_sub(entry.name_offset as usize)
+                || (entry.name_len as usize)
+                    > mmap_slice.len().saturating_sub(entry.name_offset as usize)
             {
                 continue;
             }
@@ -712,11 +832,11 @@ pub fn deserialize_v1(data: &[u8]) -> Result<QfrProgram, String> {
     }
     offset = string_end + 1; // skip null terminator
                              // Align to 8 bytes
-        while !offset.is_multiple_of(8) {
-            offset += 1;
-        }
+    while !offset.is_multiple_of(8) {
+        offset += 1;
+    }
 
-        // --- Read constant pool entries ---
+    // --- Read constant pool entries ---
 
     let mut const_pool = Vec::with_capacity(const_pool_count);
     for _ in 0..const_pool_count {

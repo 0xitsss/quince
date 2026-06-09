@@ -2,7 +2,7 @@
 // Executes compiled QFL programs. Hot/cold split for cache efficiency.
 
 use crate::ir::{ConstEntry, QfrProgram};
-use crate::opcodes::{Instruction, JUMP_TABLE};
+use crate::opcodes::Instruction;
 use std::collections::HashMap;
 use std::io::Write;
 
@@ -515,98 +515,162 @@ impl Vm {
         }
         None
     }
+}
 
-    // --- Dispatch Loop (Bare) ---
-    // Fastest execution mode: no profiling, no tracing, no VM trace.
-    // Fetches a u64 instruction, extracts opcode for jump-table dispatch, advances PC.
+// --- Computed Goto Dispatch ---
+// Match on opcode → LLVM generates jump table (computed goto).
+// Each handler is called directly, not through function pointer table.
+// All handlers have #[inline(always)]; LLVM inlines them into this dispatch.
 
+macro_rules! computed_goto {
+    ($vm:expr, $instr:expr) => {
+        match ($instr & 0xFF) as u8 {
+            0 => handlers::vm_add($vm, $instr),
+            1 => handlers::vm_sub($vm, $instr),
+            2 => handlers::vm_mul($vm, $instr),
+            3 => handlers::vm_div($vm, $instr),
+            4 => handlers::vm_mod($vm, $instr),
+            5 => handlers::vm_neg($vm, $instr),
+            6 => handlers::vm_addi($vm, $instr),
+            7 => handlers::vm_subi($vm, $instr),
+            8 => handlers::vm_muli($vm, $instr),
+            9 => handlers::vm_divi($vm, $instr),
+            10 => handlers::vm_fadd($vm, $instr),
+            11 => handlers::vm_fsub($vm, $instr),
+            12 => handlers::vm_fmul($vm, $instr),
+            13 => handlers::vm_fdiv($vm, $instr),
+            14 => handlers::vm_fneg($vm, $instr),
+            15 => handlers::vm_eq($vm, $instr),
+            16 => handlers::vm_ne($vm, $instr),
+            17 => handlers::vm_lt($vm, $instr),
+            18 => handlers::vm_gt($vm, $instr),
+            19 => handlers::vm_le($vm, $instr),
+            20 => handlers::vm_ge($vm, $instr),
+            21 => handlers::vm_feq($vm, $instr),
+            22 => handlers::vm_fne($vm, $instr),
+            23 => handlers::vm_flt($vm, $instr),
+            24 => handlers::vm_fgt($vm, $instr),
+            25 => handlers::vm_fle($vm, $instr),
+            26 => handlers::vm_fge($vm, $instr),
+            27 => handlers::vm_eqi($vm, $instr),
+            28 => handlers::vm_lti($vm, $instr),
+            29 => handlers::vm_gti($vm, $instr),
+            30 => handlers::vm_bitand($vm, $instr),
+            31 => handlers::vm_bitor($vm, $instr),
+            32 => handlers::vm_bitxor($vm, $instr),
+            33 => handlers::vm_bitnot($vm, $instr),
+            34 => handlers::vm_shl($vm, $instr),
+            35 => handlers::vm_shr($vm, $instr),
+            36 => handlers::vm_jmp($vm, $instr),
+            37 => handlers::vm_jz($vm, $instr),
+            38 => handlers::vm_jnz($vm, $instr),
+            39 => handlers::vm_call($vm, $instr),
+            40 => handlers::vm_ret($vm, $instr),
+            41 => handlers::vm_mov($vm, $instr),
+            42 => handlers::vm_ldi($vm, $instr),
+            43 => handlers::vm_ldi64($vm, $instr),
+            44 => handlers::vm_ldcf64($vm, $instr),
+            45 => handlers::vm_i2f($vm, $instr),
+            46 => handlers::vm_f2i($vm, $instr),
+            47 => handlers::vm_getind($vm, $instr),
+            48 => handlers::vm_getprice($vm, $instr),
+            49 => handlers::vm_getpos($vm, $instr),
+            50 => handlers::vm_getbal($vm, $instr),
+            51 => handlers::vm_getdepthbid($vm, $instr),
+            52 => handlers::vm_getdepthask($vm, $instr),
+            53 => handlers::vm_sendorder($vm, $instr),
+            54 => handlers::vm_persistget($vm, $instr),
+            55 => handlers::vm_persistset($vm, $instr),
+            56 => handlers::vm_log($vm, $instr),
+            57 => handlers::vm_halt($vm, $instr),
+            58 => handlers::vm_windowpush($vm, $instr),
+            59 => handlers::vm_windowmean($vm, $instr),
+            60 => handlers::vm_windowstddev($vm, $instr),
+            61 => handlers::vm_windowmin($vm, $instr),
+            62 => handlers::vm_windowmax($vm, $instr),
+            63 => handlers::vm_windowsum($vm, $instr),
+            64 => handlers::vm_ema($vm, $instr),
+            65 => handlers::vm_log2($vm, $instr),
+            66 => handlers::vm_ldi64_c($vm, $instr),
+            67 => handlers::vm_ldcstr($vm, $instr),
+            68 => handlers::vm_pow($vm, $instr),
+            69 => handlers::vm_fpow($vm, $instr),
+            _ => {}
+        }
+    };
+}
+
+impl Vm {
     #[inline(always)]
     fn run_bare(&mut self) {
-        while self.running {
-            if self.pc >= self.code_len {
-                self.running = false;
-                break;
-            }
-            let instr = unsafe { *self.code_ptr.add(self.pc) };
-            self.pc += 1;
-            unsafe {
-                let handler = *JUMP_TABLE.get_unchecked((instr & 0xFF) as usize);
-                handler(self, instr);
+        unsafe {
+            loop {
+                if !self.running || self.pc >= self.code_len {
+                    break;
+                }
+                let instr = *self.code_ptr.add(self.pc);
+                self.pc += 1;
+                computed_goto!(self, instr);
             }
         }
     }
-
-    // --- Dispatch Loop (Profiled) ---
-    // Same as bare but records opcode frequency via the profiler.
 
     #[inline(never)]
     fn run_profiled(&mut self) {
-        while self.running {
-            if self.pc >= self.code_len {
-                self.running = false;
-                break;
-            }
-            #[cfg(feature = "profiling")]
-            let tsc_start = crate::profiler::rdtsc();
-            let instr = unsafe { *self.code_ptr.add(self.pc) };
-            self.pc += 1;
-            let opcode = (instr & 0xFF) as u8;
-            if let Some(ref mut p) = self.cold.profiler {
-                #[cfg(feature = "profiling")]
-                {
-                    let tsc_end = crate::profiler::rdtsc();
-                    let cycles = tsc_end.wrapping_sub(tsc_start);
-                    p.record_opcode_tsc(crate::opcodes::Opcode::from_u8(opcode), cycles);
+        unsafe {
+            loop {
+                if !self.running || self.pc >= self.code_len {
+                    break;
                 }
-                #[cfg(not(feature = "profiling"))]
-                p.record_opcode(crate::opcodes::Opcode::from_u8(opcode));
-            }
-            unsafe {
-                let handler = *JUMP_TABLE.get_unchecked(opcode as usize);
-                handler(self, instr);
+                #[cfg(feature = "profiling")]
+                let tsc_start = crate::profiler::rdtsc();
+                let instr = *self.code_ptr.add(self.pc);
+                self.pc += 1;
+                let opcode = (instr & 0xFF) as u8;
+                if let Some(ref mut p) = self.cold.profiler {
+                    #[cfg(feature = "profiling")]
+                    {
+                        let tsc_end = crate::profiler::rdtsc();
+                        let cycles = tsc_end.wrapping_sub(tsc_start);
+                        p.record_opcode_tsc(crate::opcodes::Opcode::from_u8(opcode), cycles);
+                    }
+                    #[cfg(not(feature = "profiling"))]
+                    p.record_opcode(crate::opcodes::Opcode::from_u8(opcode));
+                }
+                computed_goto!(self, instr);
             }
         }
     }
-
-    // --- Dispatch Loop (Traced) ---
-    // Same as bare but calls trace_op after each instruction (for instruction-level tracing).
 
     #[inline(never)]
     fn run_traced(&mut self) {
-        while self.running {
-            if self.pc >= self.code_len {
-                self.running = false;
-                break;
+        unsafe {
+            loop {
+                if !self.running || self.pc >= self.code_len {
+                    break;
+                }
+                let instr = *self.code_ptr.add(self.pc);
+                self.pc += 1;
+                let opcode = (instr & 0xFF) as u8;
+                computed_goto!(self, instr);
+                self.trace_op(opcode, instr);
             }
-            let instr = unsafe { *self.code_ptr.add(self.pc) };
-            self.pc += 1;
-            let opcode = (instr & 0xFF) as u8;
-            unsafe {
-                let handler = *JUMP_TABLE.get_unchecked(opcode as usize);
-                handler(self, instr);
-            }
-            self.trace_op(opcode, instr);
         }
     }
 
-    // --- Dispatch Loop (VM Trace) ---
-    // Full register-state trace written to a file after each instruction.
-
     #[inline(never)]
     fn run_with_tracevm(&mut self) {
-        while self.running {
-            if self.pc >= self.code_len {
-                self.running = false;
-                break;
+        unsafe {
+            loop {
+                if !self.running || self.pc >= self.code_len {
+                    break;
+                }
+                let instr = *self.code_ptr.add(self.pc);
+                self.pc += 1;
+                let opcode = (instr & 0xFF) as u8;
+                computed_goto!(self, instr);
+                self.trace_vm_instruction(opcode, instr);
             }
-            let instr = unsafe { *self.code_ptr.add(self.pc) };
-            self.pc += 1;
-            let opcode = (instr & 0xFF) as u8;
-            unsafe {
-                let handler = *JUMP_TABLE.get_unchecked(opcode as usize);
-                handler(self, instr);
-            }
-            self.trace_vm_instruction(opcode, instr);
         }
     }
 
