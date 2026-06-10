@@ -9,8 +9,11 @@ on:
       - "**/*.rs"
   workflow_dispatch:
 
+permissions:
+  contents: write
+
 jobs:
-  build:
+  deploy:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -42,21 +45,32 @@ jobs:
       - name: Build book
         run: mdbook build book
 
-      - name: Upload artifact
-        uses: actions/upload-pages-artifact@v3
-        with:
-          path: book/book
+      - name: Save built book
+        run: cp -r book/book /tmp/book-built
 
-  deploy:
-    needs: build
-    runs-on: ubuntu-latest
-    permissions:
-      pages: write
-      id-token: write
-    environment:
-      name: github-pages
-      url: ${{ steps.deployment.outputs.page_url }}
-    steps:
-      - name: Deploy to GitHub Pages
-        id: deployment
-        uses: actions/deploy-pages@v4
+      - name: Deploy to gh-pages branch
+        run: |
+          git fetch origin gh-pages --depth=1 || true
+          if git show-ref --verify refs/remotes/origin/gh-pages &>/dev/null; then
+            git checkout origin/gh-pages -b gh-pages-deploy
+          else
+            git checkout --orphan gh-pages-deploy
+          fi
+
+          # Remove old files
+          git rm -rf --ignore-unmatch . >/dev/null 2>&1 || true
+
+          # Copy new book build
+          cp -r /tmp/book-built/* .
+
+          # Overwrite stale benchmark data with real data from gh-pages
+          if git show-ref --verify refs/remotes/origin/gh-pages &>/dev/null; then
+            git checkout origin/gh-pages -- dev/bench/ 2>/dev/null || true
+          fi
+
+          git add -A
+          git config user.name "github-actions"
+          git config user.email "github-actions@github.com"
+          git commit -m "Update book docs [skip ci]" || echo "No changes"
+          git pull --rebase origin gh-pages 2>/dev/null || true
+          git push origin gh-pages-deploy:gh-pages
