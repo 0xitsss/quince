@@ -68,11 +68,6 @@ jobs:
             asset: quince-x86_64-windows-msvc
             suffix: ".exe"
             strip: ""
-          - target: aarch64-apple-darwin
-            os: macos-latest
-            asset: quince-aarch64-macos
-            suffix: ""
-            strip: strip
 
     steps:
       - uses: actions/checkout@v4
