@@ -1125,7 +1125,7 @@ impl Compiler {
             (BinOp::Le, true) => self.emit(Instruction::rrr(O::FLe, rd, l_final, r_final)),
             (BinOp::Ge, true) => self.emit(Instruction::rrr(O::FGe, rd, l_final, r_final)),
             (BinOp::And, _) => {
-                // Short-circuit AND: if left is falsy, return left; else evaluate and return right
+                // Short-circuit AND: if left is falsy, return 0; else return right
                 let check_r = if is_float {
                     let conv = self.alloc_int();
                     self.emit(Instruction::rr(O::F2I, conv, l_final));
@@ -1133,21 +1133,24 @@ impl Compiler {
                 } else {
                     l_final
                 };
-                // If left is falsy (jz), jump over the right-side evaluation
+                // Initialize rd to falsy (0/0.0) for the short-circuit case
+                if is_float {
+                    let zero = self.alloc_int();
+                    self.emit(Instruction::rri(O::Ldi, zero, 0, 0));
+                    self.emit(Instruction::rr(O::I2F, rd, zero));
+                } else {
+                    self.emit(Instruction::rri(O::Ldi, rd, 0, 0));
+                }
+                // If left is truthy, overwrite rd with right value
                 let jz = self.current_offset() as usize;
                 self.emit(Instruction::rri(O::Jz, 0, check_r, 0));
                 self.emit(Instruction::rr(O::Mov, rd, r_final));
-                let jmp = self.current_offset() as usize;
-                self.emit(Instruction::rri(O::Jmp, 0, 0, 0));
                 let after = self.current_offset();
                 let jz_off = after - jz as u32 - 1;
                 self.emit_at(jz, Instruction::rri(O::Jz, 0, check_r, jz_off));
-                // Patch the JMP to skip over the right-side result
-                let jmp_off = after - jmp as u32 - 1;
-                self.emit_at(jmp, Instruction::rri(O::Jmp, 0, 0, jmp_off));
             }
             (BinOp::Or, _) => {
-                // Short-circuit OR: if left is truthy, return left; else evaluate and return right
+                // Short-circuit OR: if left is truthy, return left; else return right
                 let check_r = if is_float {
                     let conv = self.alloc_int();
                     self.emit(Instruction::rr(O::F2I, conv, l_final));
@@ -1155,17 +1158,19 @@ impl Compiler {
                 } else {
                     l_final
                 };
-                // If left is truthy (jnz), jump over the right-side evaluation
+                // Move left into rd first (truthy short-circuit case)
+                if is_float {
+                    self.emit(Instruction::rr(O::Mov, rd, l_final));
+                } else {
+                    self.emit(Instruction::rr(O::Mov, rd, check_r));
+                }
+                // If left is truthy, skip right evaluation (rd already has left)
                 let jnz = self.current_offset() as usize;
                 self.emit(Instruction::rri(O::Jnz, 0, check_r, 0));
                 self.emit(Instruction::rr(O::Mov, rd, r_final));
-                let jmp = self.current_offset() as usize;
-                self.emit(Instruction::rri(O::Jmp, 0, 0, 0));
                 let after = self.current_offset();
                 let jnz_off = after - jnz as u32 - 1;
                 self.emit_at(jnz, Instruction::rri(O::Jnz, 0, check_r, jnz_off));
-                let jmp_off = after - jmp as u32 - 1;
-                self.emit_at(jmp, Instruction::rri(O::Jmp, 0, 0, jmp_off));
             }
             (BinOp::Concat, _) => {
                 // String concatenation: just Mov left into result (stub)

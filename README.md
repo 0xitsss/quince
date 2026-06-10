@@ -6,7 +6,7 @@
 [![License](https://img.shields.io/badge/license-AGPL--3.0%20OR%20Commercial-blue?style=for-the-badge)](https://www.gnu.org/licenses/agpl-3.0)
 [![REUSE](https://img.shields.io/badge/REUSE-compliant-green?style=for-the-badge)](https://reuse.software)
 [![Rust](https://img.shields.io/badge/rust-1.80+-orange?style=for-the-badge&logo=rust)](https://www.rust-lang.org)
-[![Version](https://img.shields.io/badge/version-0.7.0-purple?style=for-the-badge)](https://github.com/0xitsss/quince/releases)
+[![Version](https://img.shields.io/badge/version-0.7.1-purple?style=for-the-badge)](https://github.com/0xitsss/quince/releases)
 [![Docs](https://img.shields.io/badge/docs-mdBook-blue?style=for-the-badge&logo=mdbook)](https://0xitsss.github.io/quince)
 [![Benchmark](https://img.shields.io/badge/bench-Criterion-ff69b4?style=for-the-badge)](https://0xitsss.github.io/quince/dev/bench/)
 [![SonarQube](https://img.shields.io/badge/sonar-passing-brightgreen?style=for-the-badge&logo=sonarcloud)](https://sonarcloud.io/project/overview?id=0xitsss_quince)
@@ -564,6 +564,7 @@ Every file in the repository is REUSE-compliant with a clear, unambiguous licens
 
 | Version | Phase | Changes |
 | ------- | ----- | ------- |
+| v0.7.1 | 8b | Fix vm_jmp off-by-one causing infinite loop in compound conditions; fix AND/OR short-circuit rd init; 944 tests |
 | v0.7.0 | 8a | Docgen rewrite with syn item-level extraction, mdBook GitHub Pages via CI, 29,157 LOC across 47 Rust files |
 | v0.6.11 | 7e | QuinceHash64 checksum, computed_goto dispatch, CI/CD docs.yml |
 | v0.6.10 | 7e | `//!` module doc pass across 42 source files, mdBook setup with Mermaid diagrams, docgen preprocessor |

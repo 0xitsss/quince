@@ -1495,7 +1495,9 @@ pub unsafe fn $name(vm: &mut Vm, instr: u64) {
     /// Caller must ensure the VM is in a valid state with initialized code pointer and register file.
     #[inline(always)]
     pub unsafe fn vm_jmp(vm: &mut Vm, instr: u64) {
-        let target = (vm.pc as i64).wrapping_add(imm(instr) as i64) as usize;
+        let target = (vm.pc as i64)
+            .wrapping_add(1)
+            .wrapping_add(imm(instr) as i64) as usize;
         if unlikely(target >= vm.code_len) {
             vm.running = false;
             return;
