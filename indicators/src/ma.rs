@@ -1,3 +1,10 @@
+﻿// SPDX-FileCopyrightText: 2026 0xitsss
+//
+// SPDX-License-Identifier: AGPL-3.0-only OR LicenseRef-Quince-Commercial
+//! Moving average indicators.
+//! Provides [`Sma`] (Simple), [`Ema`] (Exponential), [`Wma`] (Weighted),
+//! and [`Hma`] (Hull) moving averages with O(1) incremental updates.
+
 use quince_core::ring::RingVec;
 
 pub struct Sma {

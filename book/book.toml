@@ -1,0 +1,11 @@
+[book]
+title = "Quince"
+description = "Quince-Flavored Language — quantitative framework and scripting runtime"
+authors = ["0xitsss"]
+language = "en"
+
+[output.html]
+git-repository-url = "https://github.com/0xitsss/quince"
+edit-url-template = "https://github.com/0xitsss/quince/edit/master/book/src/{path}"
+site-url = "/quince/"
+no-section-label = true

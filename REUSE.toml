@@ -1,0 +1,19 @@
+version = 1
+
+[[annotations]]
+path = ["Cargo.toml", "Cargo.lock", "rust-toolchain.toml"]
+precedence = "override"
+SPDX-FileCopyrightText = "2026 0xitsss"
+SPDX-License-Identifier = "AGPL-3.0-only OR LicenseRef-Quince-Commercial"
+
+[[annotations]]
+path = [".gitignore", ".github/**", "book/book.toml", "book/src/SUMMARY.md"]
+precedence = "override"
+SPDX-FileCopyrightText = "2026 0xitsss"
+SPDX-License-Identifier = "AGPL-3.0-only OR LicenseRef-Quince-Commercial"
+
+[[annotations]]
+path = ["LICENSES/AGPL-3.0-only.txt", "LICENSES/LicenseRef-Quince-Commercial.txt"]
+precedence = "override"
+SPDX-FileCopyrightText = "2026 0xitsss"
+SPDX-License-Identifier = "LicenseRef-Quince-Commercial"

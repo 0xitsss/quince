@@ -1,3 +1,13 @@
+﻿// SPDX-FileCopyrightText: 2026 0xitsss
+//
+// SPDX-License-Identifier: AGPL-3.0-only OR LicenseRef-Quince-Commercial
+//! QFL event tracer — ring buffer for strategy execution events.
+//!
+//! Records [`TraceEvent`]s (Signal, Feature, Fill, RiskAction) for post-hoc
+//! analysis. Fixed-capacity ring buffer; drops oldest events when full.
+//!
+//! Entry point: [`Tracer::record()`].
+
 use crate::opcodes::Opcode;
 
 /// A recorded event for post-hoc analysis of strategy execution.

@@ -1,3 +1,11 @@
+﻿// SPDX-FileCopyrightText: 2026 0xitsss
+//
+// SPDX-License-Identifier: AGPL-3.0-only OR LicenseRef-Quince-Commercial
+//! Mock exchange for local strategy testing.
+//! [`MockExchange`] simulates order matching, position tracking, and price
+//! streams without network dependencies — suitable for integration tests
+//! and strategy dry-runs.
+
 use chrono::Utc;
 use quince::core::types::*;
 use quince::exchange::binance::public::BinancePublic;

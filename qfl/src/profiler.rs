@@ -1,7 +1,13 @@
-/// Perf profiler for QFL VM execution.
-///
-/// Tracks opcode execution counts, per-opcode RDTSC cycles, and per-handler timing.
-/// Zero-allocation in the hot path when disabled (None).
+﻿// SPDX-FileCopyrightText: 2026 0xitsss
+//
+// SPDX-License-Identifier: AGPL-3.0-only OR LicenseRef-Quince-Commercial
+//! QFL VM performance profiler.
+//!
+//! Tracks opcode execution counts, per-opcode RDTSC cycles, and per-handler
+//! timing. Zero-allocation in the hot path when `None`.
+//!
+//! Entry points: [`Profiler::record_opcode()`], [`Profiler::profile()`].
+
 use crate::opcodes::Opcode;
 use std::time::Instant;
 

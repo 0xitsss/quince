@@ -1,3 +1,10 @@
+﻿// SPDX-FileCopyrightText: 2026 0xitsss
+//
+// SPDX-License-Identifier: AGPL-3.0-only OR LicenseRef-Quince-Commercial
+//! QFL program dump utility.
+//! Parses, compiles, and optionally optimizes a `.qfl` strategy file,
+//! then prints its IR instructions and entry points for debugging.
+
 use quince_qfl::compiler::compile;
 use quince_qfl::ir::QfrProgram;
 use quince_qfl::optimize::optimize;
@@ -5,7 +12,7 @@ use quince_qfl::parser::parse;
 use std::env;
 
 fn dump_prog(label: &str, prog: &QfrProgram) {
-    println!("═══ {label} ═══");
+    println!("в•ђв•ђв•ђ {label} в•ђв•ђв•ђ");
     println!(
         "  entries: {}  instrs: {}  consts: {}",
         prog.entries.len(),
@@ -17,7 +24,7 @@ fn dump_prog(label: &str, prog: &QfrProgram) {
     }
     for (i, instr) in prog.code.iter().enumerate() {
         let marker = if prog.entries.iter().any(|e| e.code_offset as usize == i) {
-            "→"
+            "в†’"
         } else {
             " "
         };
@@ -57,7 +64,7 @@ fn main() {
         };
         optimize(&mut before);
 
-        println!("────────────────────────────────────────────");
+        println!("в”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђ");
         println!("  file: {path}");
         dump_prog("BEFORE", &before);
         dump_prog("AFTER (optimized)", &before);

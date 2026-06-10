@@ -1,3 +1,10 @@
+﻿// SPDX-FileCopyrightText: 2026 0xitsss
+//
+// SPDX-License-Identifier: AGPL-3.0-only OR LicenseRef-Quince-Commercial
+//! Oscillator indicators for momentum and mean-reversion analysis.
+//! Includes [`Rsi`] (Relative Strength Index), [`Stochastic`], [`Cci`]
+//! (Commodity Channel Index), and [`WilliamsR`] (%R).
+
 use quince_core::ring::RingVec;
 
 pub struct Rsi {

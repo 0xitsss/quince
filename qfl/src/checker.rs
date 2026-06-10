@@ -1,17 +1,40 @@
+﻿// SPDX-FileCopyrightText: 2026 0xitsss
+//
+// SPDX-License-Identifier: AGPL-3.0-only OR LicenseRef-Quince-Commercial
+//! QFL static analysis — linter for common mistakes and anti-patterns.
+//!
+//! Checks source files for:
+//! - C-style operators (`!=`, `&&`, `||`, `:=`, `++`) that are invalid in QFL
+//! - Misspelled directives (`@persit` в†’ `@persist`)
+//! - Trailing whitespace, mixed indentation, overly long lines
+//! - Unterminated strings and block comments
+//! - UTF-8 BOM, shebang lines, carriage returns, missing trailing newlines
+//!
+//! Entry point: [`check()`] returns a list of [`Diagnostic`]s.
+
 use std::fmt;
 
+/// Severity level of a diagnostic message.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Severity {
+    /// A definite problem that should be fixed.
     Error,
+    /// A code style or best-practice suggestion.
     Warning,
 }
 
+/// A single diagnostic: error or warning at a specific source location.
 #[derive(Debug, Clone)]
 pub struct Diagnostic {
+    /// Whether this is an error or a warning.
     pub severity: Severity,
+    /// 1-indexed line number.
     pub line: usize,
+    /// 1-indexed column number.
     pub col: usize,
+    /// Human-readable description of the issue.
     pub message: String,
+    /// Optional suggestion for how to fix the issue.
     pub suggestion: Option<String>,
 }
 
@@ -29,12 +52,23 @@ impl fmt::Display for Diagnostic {
     }
 }
 
+// --- Cursor: character-level scanner with position tracking ---
+
+/// Low-level character cursor over source text.
+///
+/// Tracks (line, col) as it advances, and accumulates diagnostics.
 struct Cursor<'a> {
+    /// All source characters for O(1) lookahead.
     chars: Vec<char>,
+    /// Current index into `chars`.
     pos: usize,
+    /// Current 1-indexed line.
     line: usize,
+    /// Current 1-indexed column.
     col: usize,
+    /// Diagnostics accumulated so far.
     diagnostics: Vec<Diagnostic>,
+    /// Known `@directive` names and their descriptions (used for spell-check).
     known_directives: &'a [(&'a str, &'a str)],
 }
 
@@ -50,14 +84,17 @@ impl<'a> Cursor<'a> {
         }
     }
 
+    /// Peek at the current character without advancing.
     fn peek(&self) -> Option<char> {
         self.chars.get(self.pos).copied()
     }
 
+    /// Peek `n` characters ahead without advancing.
     fn peek_ahead(&self, n: usize) -> Option<char> {
         self.chars.get(self.pos + n).copied()
     }
 
+    /// Advance one character, updating line/col tracking.
     fn advance(&mut self) -> Option<char> {
         let c = self.chars.get(self.pos).copied()?;
         self.pos += 1;
@@ -70,6 +107,7 @@ impl<'a> Cursor<'a> {
         Some(c)
     }
 
+    /// Register an error at the current position.
     fn error(&mut self, msg: impl Into<String>, sugg: Option<&str>) {
         self.diagnostics.push(Diagnostic {
             severity: Severity::Error,
@@ -80,6 +118,7 @@ impl<'a> Cursor<'a> {
         });
     }
 
+    /// Register a warning at the current position.
     fn warn(&mut self, msg: impl Into<String>, sugg: Option<&str>) {
         self.diagnostics.push(Diagnostic {
             severity: Severity::Warning,
@@ -90,6 +129,9 @@ impl<'a> Cursor<'a> {
         });
     }
 
+    /// Levenshtein edit distance between two strings.
+    ///
+    /// Used by [`suggest_directive`] to find near-miss directive names.
     fn edit_distance(&self, a: &str, b: &str) -> usize {
         let a: Vec<char> = a.chars().collect();
         let b: Vec<char> = b.chars().collect();
@@ -100,6 +142,7 @@ impl<'a> Cursor<'a> {
         if n == 0 {
             return m;
         }
+        // Classic DP: two-row rolling buffer.
         let mut prev: Vec<usize> = (0..=n).collect();
         let mut curr: Vec<usize> = vec![0; n + 1];
         for i in 0..m {
@@ -113,6 +156,7 @@ impl<'a> Cursor<'a> {
         prev[n]
     }
 
+    /// Find the closest known directive name by edit distance (threshold: 3 edits).
     fn suggest_directive(&self, name: &str) -> Option<String> {
         let mut best = None;
         let mut best_dist = 3;
@@ -126,7 +170,12 @@ impl<'a> Cursor<'a> {
         best.map(|d| format!("did you mean '@{}'?", d))
     }
 
+    /// Detect C-style / Pascal / JS operators that are common QFL mistakes.
+    ///
+    /// QFL uses `~=` for not-equal, `and`/`or` for logical ops,
+    /// plain `=` for assignment, and explicit `x = x + 1` for increment.
     fn check_suspicious_operators(&mut self) {
+        // `!==` and `!=` в†’ QFL uses `~=`
         if self.peek() == Some('!') {
             if self.peek_ahead(1) == Some('=') {
                 self.advance();
@@ -146,6 +195,7 @@ impl<'a> Cursor<'a> {
                     }
                 }
             }
+        // `&&` в†’ QFL uses `and`
         } else if self.peek() == Some('&') && self.peek_ahead(1) == Some('&') {
             self.advance();
             self.advance();
@@ -153,6 +203,7 @@ impl<'a> Cursor<'a> {
                 "'&&' is not valid QFL syntax",
                 Some("use 'and' instead of '&&'"),
             );
+        // `||` в†’ QFL uses `or`
         } else if self.peek() == Some('|') && self.peek_ahead(1) == Some('|') {
             self.advance();
             self.advance();
@@ -160,6 +211,7 @@ impl<'a> Cursor<'a> {
                 "'||' is not valid QFL syntax",
                 Some("use 'or' instead of '||'"),
             );
+        // `:=` в†’ QFL uses `=`
         } else if self.peek() == Some(':') && self.peek_ahead(1) == Some('=') {
             self.advance();
             self.advance();
@@ -167,6 +219,7 @@ impl<'a> Cursor<'a> {
                 "':=' is not valid QFL syntax",
                 Some("use '=' for assignment"),
             );
+        // `++` в†’ QFL uses `x = x + 1`
         } else if self.peek() == Some('+') && self.peek_ahead(1) == Some('+') {
             self.advance();
             self.advance();
@@ -176,9 +229,14 @@ impl<'a> Cursor<'a> {
             );
         }
     }
-
 }
 
+// --- High-level diagnostic checks ---
+
+/// Run all static checks on a QFL source string.
+///
+/// Returns a list of [`Diagnostic`]s (sorted by appearance order).
+/// Returns an empty vec for valid, clean code.
 pub fn check(source: &str) -> Vec<Diagnostic> {
     let known_directives = &[
         ("persist", "@persist — persist variables across reloads"),
@@ -195,6 +253,7 @@ pub fn check(source: &str) -> Vec<Diagnostic> {
     d.cursor.diagnostics
 }
 
+/// Stateful checker holding both the cursor and the raw source.
 struct Diagnostics<'a> {
     cursor: Cursor<'a>,
     source: &'a str,
@@ -212,7 +271,9 @@ impl<'a> Diagnostics<'a> {
         self.cursor.diagnostics.push(diag);
     }
 
+    /// Metadata-level checks: empty file, BOM, shebang, trailing newline, CRLF.
     fn check_metadata(&mut self) {
+        // Warn on empty source files.
         if self.source.is_empty() {
             self.push(Diagnostic {
                 severity: Severity::Warning,
@@ -224,6 +285,7 @@ impl<'a> Diagnostics<'a> {
             return;
         }
 
+        // UTF-8 BOM (U+FEFF) — can cause issues with some parsers.
         if self.source.starts_with('\u{feff}') {
             self.push(Diagnostic {
                 severity: Severity::Warning,
@@ -234,6 +296,7 @@ impl<'a> Diagnostics<'a> {
             });
         }
 
+        // Shebang line (`#!/...`) — not part of QFL syntax.
         if self.source.starts_with("#!") {
             let end = self.source.find('\n').unwrap_or(self.source.len());
             self.push(Diagnostic {
@@ -245,6 +308,7 @@ impl<'a> Diagnostics<'a> {
             });
         }
 
+        // POSIX convention: every text file should end with a newline.
         if !self.source.ends_with('\n') && !self.source.is_empty() {
             let lines: Vec<&str> = self.source.split('\n').collect();
             let last_line = lines.len();
@@ -257,6 +321,7 @@ impl<'a> Diagnostics<'a> {
             });
         }
 
+        // Carriage returns (`\r`) — Windows line endings in Unix-oriented toolchain.
         if self.source.contains('\r') {
             if let Some(pos) = self.source.find('\r') {
                 let line = self.source[..pos].chars().filter(|&c| c == '\n').count() + 1;
@@ -278,6 +343,7 @@ impl<'a> Diagnostics<'a> {
         }
     }
 
+    /// Line-oriented checks: trailing whitespace, line length, mixed indentation.
     fn check_lines(&mut self) {
         let lines: Vec<&str> = self.source.split('\n').collect();
         let mut has_tabs = false;
@@ -289,6 +355,7 @@ impl<'a> Diagnostics<'a> {
                 continue;
             }
 
+            // Detect indentation style.
             if line.starts_with('\t') {
                 has_tabs = true;
             } else if line.starts_with(' ') {
@@ -298,6 +365,7 @@ impl<'a> Diagnostics<'a> {
                 }
             }
 
+            // Trailing whitespace detection.
             let trimmed = line.trim_end();
             let trailing = line.len() - trimmed.len();
             if trailing > 0 {
@@ -305,11 +373,16 @@ impl<'a> Diagnostics<'a> {
                     severity: Severity::Warning,
                     line: lineno,
                     col: trimmed.len().saturating_sub(0).max(1),
-                    message: format!("trailing whitespace ({} space{})", trailing, if trailing == 1 { "" } else { "s" }),
+                    message: format!(
+                        "trailing whitespace ({} space{})",
+                        trailing,
+                        if trailing == 1 { "" } else { "s" }
+                    ),
                     suggestion: Some("remove trailing spaces".into()),
                 });
             }
 
+            // Line length > 120 chars.
             if line.len() > 120 {
                 self.push(Diagnostic {
                     severity: Severity::Warning,
@@ -321,6 +394,7 @@ impl<'a> Diagnostics<'a> {
             }
         }
 
+        // Warn if file mixes tabs and spaces.
         if has_tabs && has_spaces {
             self.push(Diagnostic {
                 severity: Severity::Warning,
@@ -332,6 +406,14 @@ impl<'a> Diagnostics<'a> {
         }
     }
 
+    /// Full character-stream scan using a state machine.
+    ///
+    /// States: `Normal`, `LineComment`, `BlockComment`, `String(quote)`.
+    /// This catches:
+    /// - C-style operators outside strings/comments
+    /// - Unknown `@directives`
+    /// - Unterminated strings and block comments
+    /// - Unrecognized escape sequences
     fn check_char_stream(&mut self) {
         let mut cursor = Cursor::new(self.source, self.cursor.known_directives);
 
@@ -347,6 +429,7 @@ impl<'a> Diagnostics<'a> {
         while cursor.pos < cursor.chars.len() {
             match &state {
                 State::Normal => {
+                    // `--[[` opens a block comment.
                     if cursor.peek() == Some('-')
                         && cursor.peek_ahead(1) == Some('-')
                         && cursor.peek_ahead(2) == Some('[')
@@ -359,18 +442,21 @@ impl<'a> Diagnostics<'a> {
                         state = State::BlockComment;
                         continue;
                     }
+                    // `--` opens a line comment.
                     if cursor.peek() == Some('-') && cursor.peek_ahead(1) == Some('-') {
                         cursor.advance();
                         cursor.advance();
                         state = State::LineComment;
                         continue;
                     }
+                    // `"` or `'` opens a string literal.
                     if cursor.peek() == Some('"') || cursor.peek() == Some('\'') {
                         let quote = cursor.peek().unwrap();
                         cursor.advance();
                         state = State::String(quote);
                         continue;
                     }
+                    // `@name` — check directive spelling.
                     if cursor.peek() == Some('@') {
                         cursor.advance();
                         let mut name = String::new();
@@ -383,10 +469,7 @@ impl<'a> Diagnostics<'a> {
                             }
                         }
                         if !name.is_empty() {
-                            let is_known = cursor
-                                .known_directives
-                                .iter()
-                                .any(|(d, _)| *d == name);
+                            let is_known = cursor.known_directives.iter().any(|(d, _)| *d == name);
                             if !is_known {
                                 if let Some(sugg) = cursor.suggest_directive(&name) {
                                     cursor.error(
@@ -399,14 +482,17 @@ impl<'a> Diagnostics<'a> {
                         continue;
                     }
 
+                    // Check for suspicious operators and advance.
                     let line_before = cursor.line;
                     cursor.check_suspicious_operators();
+                    // If check_suspicious_operators didn't consume input, advance by one.
                     if cursor.line == line_before {
                         cursor.advance();
                     }
                 }
 
                 State::LineComment => {
+                    // Line comment ends at newline.
                     if cursor.peek() == Some('\n') {
                         state = State::Normal;
                     }
@@ -414,6 +500,7 @@ impl<'a> Diagnostics<'a> {
                 }
 
                 State::BlockComment => {
+                    // Block comment ends at `]]`.
                     if cursor.peek() == Some(']') && cursor.peek_ahead(1) == Some(']') {
                         cursor.advance();
                         cursor.advance();
@@ -431,11 +518,13 @@ impl<'a> Diagnostics<'a> {
                 }
 
                 State::String(quote) => {
+                    // Matching close quote ends the string.
                     if cursor.peek() == Some(*quote) {
                         cursor.advance();
                         state = State::Normal;
                         continue;
                     }
+                    // Backslash escape sequence.
                     if cursor.peek() == Some('\\') {
                         cursor.advance();
                         if let Some(esc) = cursor.advance() {
@@ -451,6 +540,7 @@ impl<'a> Diagnostics<'a> {
                         }
                         continue;
                     }
+                    // Newline before closing quote = unterminated.
                     if cursor.peek() == Some('\n') {
                         cursor.error(
                             "unterminated string literal (newline before closing quote)",
@@ -460,6 +550,7 @@ impl<'a> Diagnostics<'a> {
                         state = State::Normal;
                         continue;
                     }
+                    // EOF before closing quote.
                     if cursor.peek().is_none() {
                         cursor.error(
                             "unterminated string literal (reached end of file)",
@@ -472,13 +563,13 @@ impl<'a> Diagnostics<'a> {
             }
         }
 
+        // EOF in string or comment — flag as unterminated.
         if let State::String(quote) = state {
             cursor.error(
                 format!("unterminated string literal (opened with '{}')", quote),
                 Some("add a closing quote"),
             );
         }
-
         if let State::BlockComment = state {
             cursor.error(
                 "unterminated multi-line comment (--[[ without ]])",
@@ -570,7 +661,9 @@ mod tests {
         let diags = check("@persit x = 1");
         assert!(diags.iter().any(|d| d.message.contains("@persit")));
         assert!(diags.iter().any(|d| {
-            d.suggestion.as_deref().map_or(false, |s| s.contains("@persist"))
+            d.suggestion
+                .as_deref()
+                .map_or(false, |s| s.contains("@persist"))
         }));
     }
 
@@ -583,19 +676,25 @@ mod tests {
     #[test]
     fn test_unterminated_string_same_line() {
         let diags = check("local s = \"hello");
-        assert!(diags.iter().any(|d| d.message.contains("unterminated string")));
+        assert!(diags
+            .iter()
+            .any(|d| d.message.contains("unterminated string")));
     }
 
     #[test]
     fn test_unterminated_string_multi_line() {
         let diags = check("local s = \"hello\nworld");
-        assert!(diags.iter().any(|d| d.message.contains("unterminated string")));
+        assert!(diags
+            .iter()
+            .any(|d| d.message.contains("unterminated string")));
     }
 
     #[test]
     fn test_unterminated_block_comment() {
         let diags = check("--[[ hello world");
-        assert!(diags.iter().any(|d| d.message.contains("unterminated multi-line")));
+        assert!(diags
+            .iter()
+            .any(|d| d.message.contains("unterminated multi-line")));
     }
 
     #[test]
@@ -611,20 +710,27 @@ on trade ->
     end
 "#;
         let diags = check(code);
-        let errors: Vec<_> = diags.iter().filter(|d| d.severity == Severity::Error).collect();
+        let errors: Vec<_> = diags
+            .iter()
+            .filter(|d| d.severity == Severity::Error)
+            .collect();
         assert!(errors.is_empty(), "unexpected errors: {:?}", errors);
     }
 
     #[test]
     fn test_unrecognized_escape() {
         let diags = check("\"hello\\zworld\"");
-        assert!(diags.iter().any(|d| d.message.contains("unrecognized escape")));
+        assert!(diags
+            .iter()
+            .any(|d| d.message.contains("unrecognized escape")));
     }
 
     #[test]
     fn test_mixed_indentation() {
         let diags = check("\tlocal x = 1\n    local y = 2");
-        assert!(diags.iter().any(|d| d.message.contains("mixed tabs and spaces")));
+        assert!(diags
+            .iter()
+            .any(|d| d.message.contains("mixed tabs and spaces")));
     }
 
     #[test]
@@ -644,14 +750,19 @@ on trade ->
     #[test]
     fn test_no_false_positive_concat() {
         let diags = check("local s = \"hello\" .. \"world\"");
-        let bad: Vec<_> = diags.iter().filter(|d| d.severity == Severity::Error).collect();
+        let bad: Vec<_> = diags
+            .iter()
+            .filter(|d| d.severity == Severity::Error)
+            .collect();
         assert!(bad.is_empty(), "concat should not trigger errors");
     }
 
     #[test]
     fn test_no_newline_at_eof() {
         let diags = check("local x = 1");
-        assert!(diags.iter().any(|d| d.message.contains("no newline at end")));
+        assert!(diags
+            .iter()
+            .any(|d| d.message.contains("no newline at end")));
     }
 
     #[test]
@@ -663,14 +774,24 @@ on trade ->
     #[test]
     fn test_block_comment_correct() {
         let diags = check("--[[ valid ]] local x = 1");
-        let errors: Vec<_> = diags.iter().filter(|d| d.severity == Severity::Error).collect();
+        let errors: Vec<_> = diags
+            .iter()
+            .filter(|d| d.severity == Severity::Error)
+            .collect();
         assert!(errors.is_empty(), "unexpected errors: {:?}", errors);
     }
 
     #[test]
     fn test_string_with_escape_no_warning() {
         let diags = check("\"hello\\nworld\\t\\\"quote\\'\"");
-        let warns: Vec<_> = diags.iter().filter(|d| d.message.contains("escape")).collect();
-        assert!(warns.is_empty(), "valid escapes should not warn: {:?}", warns);
+        let warns: Vec<_> = diags
+            .iter()
+            .filter(|d| d.message.contains("escape"))
+            .collect();
+        assert!(
+            warns.is_empty(),
+            "valid escapes should not warn: {:?}",
+            warns
+        );
     }
 }

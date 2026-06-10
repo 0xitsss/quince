@@ -1,3 +1,10 @@
+﻿// SPDX-FileCopyrightText: 2026 0xitsss
+//
+// SPDX-License-Identifier: AGPL-3.0-only OR LicenseRef-Quince-Commercial
+//! Lock-free ring buffer data structures for zero-allocation fixed-capacity storage.
+//! Provides [`RingBuffer`] (const-generic inline buffer) and [`RingVec`] (heap-allocated)
+//! with O(1) push/pop and optional eviction of oldest elements at capacity.
+
 use core::mem::MaybeUninit;
 use core::ptr;
 
@@ -120,7 +127,7 @@ impl<'a, T, const N: usize> Iterator for RingIter<'a, T, N> {
     }
 }
 
-// ── RingVec: heap-allocated ring buffer, фиксированная capacity ──
+// в”Ђв”Ђ RingVec: heap-allocated ring buffer, С„РёРєСЃРёСЂРѕРІР°РЅРЅР°СЏ capacity в”Ђв”Ђ
 
 #[derive(Debug, Clone)]
 pub struct RingVec {
@@ -241,7 +248,7 @@ impl Iterator for RingVecIter<'_> {
 mod tests {
     use super::*;
 
-    // ── RingVec tests ──
+    // в”Ђв”Ђ RingVec tests в”Ђв”Ђ
 
     #[test]
     fn ringvec_new_empty() {
@@ -359,7 +366,7 @@ mod tests {
         assert_eq!(rv.len(), 1);
     }
 
-    // ── RingBuffer tests ──
+    // в”Ђв”Ђ RingBuffer tests в”Ђв”Ђ
 
     #[test]
     fn ringbuffer_new_empty() {

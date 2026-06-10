@@ -1,3 +1,11 @@
+﻿// SPDX-FileCopyrightText: 2026 0xitsss
+//
+// SPDX-License-Identifier: AGPL-3.0-only OR LicenseRef-Quince-Commercial
+//! QFL AST node definitions — expressions, statements, and the program root.
+//!
+//! Defines the typed AST produced by the parser and consumed by the compiler:
+//! [`Expr`], [`Stmt`], [`Literal`], [`BinOp`], [`UnaryOp`], and [`Program`].
+
 use std::fmt;
 
 /// Binary operators supported in QFL expressions.
@@ -329,9 +337,7 @@ impl fmt::Display for Stmt {
             Stmt::If { cond, .. } => write!(f, "if {} then ... end", cond),
             Stmt::While { cond, .. } => write!(f, "while {} do ... end", cond),
             Stmt::Repeat { until, .. } => write!(f, "repeat ... until {}", until),
-            Stmt::ForNum {
-                var, from, to: _, ..
-            } => write!(f, "for {} = {} to ... end", var, from),
+            Stmt::ForNum { var, from, .. } => write!(f, "for {} = {} to ... end", var, from),
             Stmt::ForIn { vars, .. } => write!(f, "for {} in ... end", vars.join(", ")),
             Stmt::FunctionDecl { name, params, .. } => {
                 write!(f, "function {}({}) ... end", name, params.join(", "))

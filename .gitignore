@@ -32,3 +32,7 @@ qfl/docs/
 
 # Compiled QFR bytecode (build artifact)
 *.qfr
+
+# mdBook build output
+book/book/
+book/src/api/

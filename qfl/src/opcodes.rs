@@ -1,6 +1,15 @@
+﻿// SPDX-FileCopyrightText: 2026 0xitsss
+//
+// SPDX-License-Identifier: AGPL-3.0-only OR LicenseRef-Quince-Commercial
+//! QFL opcode definitions and instruction encoding.
+//!
+//! Defines the [`Opcode`] enum (70 opcodes), the [`Instruction`] wrapper (u64),
+//! and encoding/decoding helpers (`Ri40`, `RRI`, `RRR`).
+//!
+//! Instruction layout: `[opcode:8][rd:8][rs1:8][rs2:8][imm:32]`
+
 use std::fmt;
 
-// opcode in bits 0-7 (zero-shift dispatch), rd 8-15, rs1 16-23, rs2 24-31, imm 32-63
 const OP_MASK: u64 = 0xFF;
 
 pub const OPCODE_BITS: u32 = 8;

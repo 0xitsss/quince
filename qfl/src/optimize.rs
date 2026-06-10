@@ -1,7 +1,23 @@
-/// Constant Folding pass.
-///
-/// Evaluates constant integer/float expressions at compile time.
-/// Operates on basic blocks (bounded by control-flow instructions).
+﻿// SPDX-FileCopyrightText: 2026 0xitsss
+//
+// SPDX-License-Identifier: AGPL-3.0-only OR LicenseRef-Quince-Commercial
+//! QFL bytecode optimizer — 11-pass pipeline over compiled `QfrProgram`s.
+//!
+//! Pipeline (each pass feeds the next):
+//! 1. `constant_fold` — evaluate constant expressions within basic blocks
+//! 2. `cfg_simplify` — merge blocks, remove unreachable code, simplify jumps
+//! 3. `sccp` — sparse conditional constant propagation (cross-block)
+//! 4. `cse` — common subexpression elimination (per-block)
+//! 5. `local_shadowing` — PersistGet/Set forwarding within blocks
+//! 6. `licm` — loop-invariant code motion
+//! 7. `loop_unroll` — unroll small constant-iteration loops
+//! 8. `fused_lowering` — peephole patterns (Mov chains, zero-based idioms)
+//! 9. `persist_coalesce` — merge adjacent persist operations
+//! 10. `dead_code_eliminate` — remove unreachable or unused instructions
+//! 11. `global_value_numbering` — redundant computation elimination
+//!
+//! Entry point: [`optimize()`].
+
 use crate::ir::QfrProgram;
 use crate::opcodes::{InstrEncoding, Instruction, Opcode as O};
 use std::collections::HashMap;
@@ -109,7 +125,7 @@ pub fn dead_code_eliminate(prog: &QfrProgram) -> QfrProgram {
         }
     }
 
-    // Build offset mapping: old index → new index (or None if removed)
+    // Build offset mapping: old index в†’ new index (or None if removed)
     let mut offset_map: Vec<Option<usize>> = vec![None; n];
     let mut new_len = 0;
     for i in 0..n {
@@ -212,7 +228,7 @@ pub fn common_subexpr_elim(prog: &QfrProgram) -> QfrProgram {
     out.i64_consts = prog.i64_consts.clone();
     out.string_consts = prog.string_consts.clone();
 
-    // Cache: (op, rs1, operand2_u32) → rd
+    // Cache: (op, rs1, operand2_u32) в†’ rd
     let mut cache: HashMap<(O, u8, u32), u8> = HashMap::new();
 
     for instr in &prog.code {
@@ -311,7 +327,9 @@ fn invalidate_for_reg(cache: &mut HashMap<(O, u8, u32), u8>, reg: u8) {
         if cached_rd == reg {
             return false;
         }
-        if (op.encoding() == InstrEncoding::RRR || op.encoding() == InstrEncoding::RR) && op2 as u8 == reg {
+        if (op.encoding() == InstrEncoding::RRR || op.encoding() == InstrEncoding::RR)
+            && op2 as u8 == reg
+        {
             return false;
         }
         true
@@ -428,7 +446,7 @@ pub fn constant_fold(prog: &QfrProgram) -> QfrProgram {
                 }
             }
 
-            // ── Int arithmetic (RRR) ──
+            // в”Ђв”Ђ Int arithmetic (RRR) в”Ђв”Ђ
             O::Add
             | O::Sub
             | O::Mul
@@ -448,7 +466,7 @@ pub fn constant_fold(prog: &QfrProgram) -> QfrProgram {
                 fold_int_rrr(&mut out, &mut known_int, instr, op);
             }
 
-            // ── Float arithmetic (RRR) ──
+            // в”Ђв”Ђ Float arithmetic (RRR) в”Ђв”Ђ
             O::FAdd
             | O::FSub
             | O::FMul
@@ -462,7 +480,7 @@ pub fn constant_fold(prog: &QfrProgram) -> QfrProgram {
                 fold_float_rrr(&mut out, &mut known_float, instr, op);
             }
 
-            // ── Int unary ──
+            // в”Ђв”Ђ Int unary в”Ђв”Ђ
             O::Neg => {
                 let rd = instr.rd();
                 let rs = instr.rs1();
@@ -476,7 +494,7 @@ pub fn constant_fold(prog: &QfrProgram) -> QfrProgram {
                 }
             }
 
-            // ── Float unary ──
+            // в”Ђв”Ђ Float unary в”Ђв”Ђ
             O::FNeg => {
                 let rd = instr.rd();
                 let rs = instr.rs1();
@@ -491,7 +509,7 @@ pub fn constant_fold(prog: &QfrProgram) -> QfrProgram {
                 }
             }
 
-            // ── Int immediate ──
+            // в”Ђв”Ђ Int immediate в”Ђв”Ђ
             O::AddI => fold_int_rri(
                 &mut out,
                 &mut known_int,
@@ -675,7 +693,7 @@ fn emit_persistset_coalesced(
 
 // --- Section: LICM (Loop-Invariant Code Motion) ---
 // Hoists loop-invariant instructions out of loop bodies into a pre-header block.
-// Uses dominator-based natural loop detection: a back edge (v→h) where h dominates v.
+// Uses dominator-based natural loop detection: a back edge (vв†’h) where h dominates v.
 // An instruction is invariant if all source registers are defined outside the loop
 // or defined by other invariant instructions within the loop.
 
@@ -691,7 +709,7 @@ fn licm(prog: &QfrProgram) -> QfrProgram {
     // For each block, find its immediate dominator using the simple iterative algorithm
     let dom = compute_dominators(&cfg);
 
-    // Find natural loops via back edges: edge (latch → header) where header dominates latch.
+    // Find natural loops via back edges: edge (latch в†’ header) where header dominates latch.
     // A natural loop = header + all blocks reachable from latch without passing through header.
     let mut loops: Vec<(usize, Vec<usize>)> = Vec::new();
     for block_id in 0..cfg.blocks.len() {
@@ -883,8 +901,8 @@ fn licm(prog: &QfrProgram) -> QfrProgram {
 }
 
 // --- Section: Dominator Computation ---
-// Simple iterative dataflow: dom(b) = {b} ∪ (∩ dom(p) for p in preds(b))
-// Converges in O(n²) iterations for reducible flow graphs.
+// Simple iterative dataflow: dom(b) = {b} в€Є (в€© dom(p) for p in preds(b))
+// Converges in O(nВІ) iterations for reducible flow graphs.
 // Returns a list per block of all blocks that dominate it (including itself).
 
 fn compute_dominators(cfg: &Cfg) -> Vec<Vec<usize>> {
@@ -923,7 +941,7 @@ fn compute_dominators(cfg: &Cfg) -> Vec<Vec<usize>> {
                 continue;
             }
 
-            // NewDom = {bid} ∪ (∩ dom(p) for p in preds)
+            // NewDom = {bid} в€Є (в€© dom(p) for p in preds)
             let mut new_dom: Vec<usize> = dom[preds[0]].clone();
             for &p in &preds[1..] {
                 new_dom.retain(|x| dom[p].contains(x));
@@ -945,7 +963,7 @@ fn compute_dominators(cfg: &Cfg) -> Vec<Vec<usize>> {
 
 // --- Section: Loop Unrolling (loop_unroll) ---
 // Unrolls loops with known small constant iteration counts.
-// Detects single-block loops with a counter that is incremented by ±1
+// Detects single-block loops with a counter that is incremented by В±1
 // each iteration and compared against a constant bound.
 
 fn loop_unroll(prog: &QfrProgram) -> QfrProgram {
@@ -986,9 +1004,9 @@ fn loop_unroll(prog: &QfrProgram) -> QfrProgram {
         return prog.clone();
     }
 
-    // ── Simple loop unrolling ──
+    // в”Ђв”Ђ Simple loop unrolling в”Ђв”Ђ
     // Handle single-block loops where the counter is a register
-    // initialized with a constant before the loop, incremented by ±1
+    // initialized with a constant before the loop, incremented by В±1
     // each iteration, and compared against a constant bound.
     //
     // Pattern after constant_fold:
@@ -997,7 +1015,7 @@ fn loop_unroll(prog: &QfrProgram) -> QfrProgram {
     //   Gt r_tmp, r_cnt, r_bound
     //   Jz r_tmp, exit
     //   ...body (no internal control flow)...
-    //   AddI r_cnt, r_cnt, step (±1)
+    //   AddI r_cnt, r_cnt, step (В±1)
     //   Jmp header
 
     let mut out = prog.clone();
@@ -1260,21 +1278,21 @@ fn fused_lowering(prog: &QfrProgram) -> QfrProgram {
         // Pattern 1: FMA (fused multiply-add):
         //   FMul rX, rA, rB   ; rd, rs1, rs2
         //   FAdd rD, rX, rC   ; rd=rD, rs1=rX, rs2=rC
-        // → need new opcode
+        // в†’ need new opcode
         // For now, we skip as it requires new VM opcode + handlers
 
         // Pattern 2: Compare + Branch:
         //   Lt rTmp, rA, rB   ; rd=rTmp
         //   Jnz rTmp, target
-        // → Can't easily fuse without new opcodes + VM changes
+        // в†’ Can't easily fuse without new opcodes + VM changes
 
         // For now, we focus on simple peephole patterns in the existing instruction set
 
-        // Pattern: Consecutive WindowPush + WindowMean → no fusion needed,
+        // Pattern: Consecutive WindowPush + WindowMean в†’ no fusion needed,
         // these already exist as separate opcodes.
 
         // Pattern: redundant Mov chains
-        // Mov rA, rB; Mov rB, rC → Mov rA, rC
+        // Mov rA, rB; Mov rB, rC в†’ Mov rA, rC
         if i + 1 < n && op == O::Mov {
             let next = prog.code[i + 1];
             if next.opcode() == O::Mov {
@@ -1283,7 +1301,7 @@ fn fused_lowering(prog: &QfrProgram) -> QfrProgram {
                 let r2 = next.rd();
                 let s2 = next.rs1();
                 if r1 == s2 {
-                    // Mov rA, rB; Mov rB, rC → NOP (first), Mov rB, rC → Mov rA, rC
+                    // Mov rA, rB; Mov rB, rC в†’ NOP (first), Mov rB, rC в†’ Mov rA, rC
                     // Actually: Mov rA, rB; Mov rB, rC
                     // After: Mov rA, rC (skip the middle)
                     out.code.push(Instruction::rr(O::Mov, r1, s2));
@@ -1294,7 +1312,7 @@ fn fused_lowering(prog: &QfrProgram) -> QfrProgram {
             }
         }
 
-        // Pattern: Ldi rX, 0; AddI rY, rX, imm → Ldi rY, imm (when rX is only used once)
+        // Pattern: Ldi rX, 0; AddI rY, rX, imm в†’ Ldi rY, imm (when rX is only used once)
         if i + 1 < n && op == O::Ldi {
             let rd = instr.rd();
             let val = instr.imm_signed();
@@ -1305,9 +1323,10 @@ fn fused_lowering(prog: &QfrProgram) -> QfrProgram {
                     || next_op == O::SubI
                     || next_op == O::MulI
                     || next_op == O::DivI)
-                    && next.rs1() == rd && next.rd() != rd
+                    && next.rs1() == rd
+                    && next.rd() != rd
                 {
-                    // Ldi r0, 0; AddI r1, r0, 5 → Ldi r1, 5
+                    // Ldi r0, 0; AddI r1, r0, 5 в†’ Ldi r1, 5
                     match next_op {
                         O::AddI => {
                             out.code
@@ -1389,7 +1408,7 @@ fn global_value_numbering(prog: &QfrProgram) -> QfrProgram {
         }
     }
 
-    // Cache: (opcode as u8, rs1, operand2) → original instruction index
+    // Cache: (opcode as u8, rs1, operand2) в†’ original instruction index
     type Cache = HashMap<(u8, u8, u32), usize>;
 
     let mut instr_map: Vec<Option<usize>> = vec![None; n];
@@ -1930,7 +1949,7 @@ fn build_cfg(code: &[Instruction], entries: &[crate::ir::EntryPoint]) -> Cfg {
     }
 }
 
-// Merges adjacent basic blocks A → B where A has a single successor (B),
+// Merges adjacent basic blocks A в†’ B where A has a single successor (B),
 // B has a single predecessor (A), and A's terminator is a Jmp to B.
 // The Jmp is recorded as removed; A extends to cover B's instruction range.
 fn cfg_merge_blocks(cfg: &Cfg, code: &[Instruction]) -> Cfg {
@@ -2245,7 +2264,7 @@ fn emit_cfg(cfg: &Cfg, prog: &QfrProgram) -> QfrProgram {
     }
 
     // Pass 2: recalculate jump offsets in new_code
-    // Build a reverse index: new position → old position
+    // Build a reverse index: new position в†’ old position
     let mut new_to_old: Vec<Option<usize>> = vec![None; new_code.len()];
     for (old, new) in old_to_new.iter().enumerate() {
         if let Some(n) = new {
@@ -2325,13 +2344,13 @@ pub fn cfg_simplify(prog: &QfrProgram) -> QfrProgram {
     // Step 1: Build the CFG from linear code
     let cfg = build_cfg(code, &prog.entries);
 
-    // Step 2: Merge consecutive blocks (A→Jmp→B where A's only succ is B and B's only pred is A)
+    // Step 2: Merge consecutive blocks (Aв†’Jmpв†’B where A's only succ is B and B's only pred is A)
     let cfg = cfg_merge_blocks(&cfg, code);
 
     // Step 3: Remove blocks unreachable from any entry point
     let cfg = cfg_remove_unreachable(&cfg);
 
-    // Step 4: Collapse Jmp→Jmp→target chains into Jmp→target
+    // Step 4: Collapse Jmpв†’Jmpв†’target chains into Jmpв†’target
     let cfg = cfg_simplify_jump_chains(&cfg, code);
 
     // Step 5: Emit linear code back from the optimized CFG
@@ -2364,14 +2383,14 @@ impl Lattice {
             (Lattice::Bottom, _) | (_, Lattice::Bottom) => Lattice::Bottom,
             (Lattice::Int(a), Lattice::Int(b)) if a == b => Lattice::Int(a),
             (Lattice::Flt(a), Lattice::Flt(b)) if a.to_bits() == b.to_bits() => Lattice::Flt(a),
-            _ => Lattice::Bottom, // conflicting constants → Bottom
+            _ => Lattice::Bottom, // conflicting constants в†’ Bottom
         }
     }
 }
 
 /// Sparse Conditional Constant Propagation.
 ///
-/// Uses a lattice (Top → Constant → Bottom) per register, propagating
+/// Uses a lattice (Top в†’ Constant в†’ Bottom) per register, propagating
 /// across the CFG.  Conditional branches with constant predicates are
 /// folded: the unreachable successor is marked non-executable.
 ///
@@ -2569,11 +2588,11 @@ pub fn sccp(prog: &QfrProgram) -> QfrProgram {
                                 .position(|b2| target_pc >= b2.start && target_pc < b2.end);
                             if let Some(tid) = target_bid {
                                 let take_branch = match (op, cond) {
-                                    (O::Jz, Lattice::Int(0)) => true,   // Jz: cond==0 → taken
-                                    (O::Jz, Lattice::Int(_)) => false,  // Jz: cond!=0 → fall
-                                    (O::Jnz, Lattice::Int(0)) => false, // Jnz: cond==0 → fall
-                                    (O::Jnz, Lattice::Int(_)) => true,  // Jnz: cond!=0 → taken
-                                    _ => false, // Not constant → both paths are possible
+                                    (O::Jz, Lattice::Int(0)) => true,   // Jz: cond==0 в†’ taken
+                                    (O::Jz, Lattice::Int(_)) => false,  // Jz: cond!=0 в†’ fall
+                                    (O::Jnz, Lattice::Int(0)) => false, // Jnz: cond==0 в†’ fall
+                                    (O::Jnz, Lattice::Int(_)) => true,  // Jnz: cond!=0 в†’ taken
+                                    _ => false, // Not constant в†’ both paths are possible
                                 };
                                 let fallthrough_bid = if bid + 1 < cfg.blocks.len() {
                                     Some(bid + 1)
@@ -2653,9 +2672,9 @@ pub fn sccp(prog: &QfrProgram) -> QfrProgram {
 
         // Meet lattice values at block boundaries: at each successor's entry,
         // the global register state is the meet of all predecessor exit states.
-    #[allow(clippy::needless_range_loop)]
-    for bid in 0..cfg.blocks.len() {
-        if !executable[bid] {
+        #[allow(clippy::needless_range_loop)]
+        for bid in 0..cfg.blocks.len() {
+            if !executable[bid] {
                 continue;
             }
             if block_reg[bid].is_empty() {
@@ -2698,7 +2717,7 @@ pub fn sccp(prog: &QfrProgram) -> QfrProgram {
         }
     }
 
-    // ── Emit optimized code ──
+    // в”Ђв”Ђ Emit optimized code в”Ђв”Ђ
     // Use the converged lattice to replace known-constant results with Ldi/Ldi64,
     // and fold constant-condition branches into unconditional Jmp or fall-through.
     let mut old_to_new: Vec<Option<usize>> = vec![None; n];
@@ -2732,9 +2751,8 @@ pub fn sccp(prog: &QfrProgram) -> QfrProgram {
                                 .iter()
                                 .position(|b2| target_pc >= b2.start && target_pc < b2.end);
                             if let Some(tid) = target_bid {
-                                let any_pred_exec = cfg.blocks[tid].pred
-                                    .iter()
-                                    .any(|&pred| executable[pred]);
+                                let any_pred_exec =
+                                    cfg.blocks[tid].pred.iter().any(|&pred| executable[pred]);
                                 if !any_pred_exec {
                                     executable[tid] = false;
                                 }
@@ -2796,7 +2814,7 @@ pub fn sccp(prog: &QfrProgram) -> QfrProgram {
                         new_code.push(Instruction::ri40(O::Ldi64, rd as u8, val));
                         continue;
                     }
-                    // Value too large for immediate encoding → keep original
+                    // Value too large for immediate encoding в†’ keep original
                 }
                 // Float constants keep original instruction to avoid const_pool management
             }
@@ -2816,7 +2834,7 @@ pub fn sccp(prog: &QfrProgram) -> QfrProgram {
                         old_to_new[i] = Some(new_code.len());
                         new_code.push(Instruction::rri(O::Jmp, 0, 0, orig_imm as u32));
                     } else {
-                        // Branch not taken → omit entirely (fall through to next block)
+                        // Branch not taken в†’ omit entirely (fall through to next block)
                         continue;
                     }
                     continue;
@@ -3099,7 +3117,7 @@ pub fn persist_coalesce(prog: &QfrProgram) -> QfrProgram {
             O::PersistGet => {
                 let r = rd;
                 let slot = instr.imm();
-                // Slot already in a register and not dirty → replace with Mov
+                // Slot already in a register and not dirty в†’ replace with Mov
                 if let Some(&cached_r) = slot_reg.get(&slot) {
                     if !dirty.contains(&cached_r) {
                         if cached_r == r {
@@ -3118,7 +3136,7 @@ pub fn persist_coalesce(prog: &QfrProgram) -> QfrProgram {
             O::PersistSet => {
                 let r = rd;
                 let slot = instr.imm();
-                // Writing same value back to the same slot → redundant
+                // Writing same value back to the same slot в†’ redundant
                 if let Some(&cached_r) = slot_reg.get(&slot) {
                     if cached_r == r && !dirty.contains(&r) {
                         continue;
@@ -3157,7 +3175,7 @@ mod tests {
         p
     }
 
-    // ── Int constant folding ──
+    // в”Ђв”Ђ Int constant folding в”Ђв”Ђ
 
     #[test]
     fn fold_int_add() {
@@ -3285,7 +3303,7 @@ mod tests {
         assert_eq!(opt.code[2].imm_signed(), 0);
     }
 
-    // ── Bitwise ──
+    // в”Ђв”Ђ Bitwise в”Ђв”Ђ
 
     #[test]
     fn fold_bitwise_and() {
@@ -3320,7 +3338,7 @@ mod tests {
         assert_eq!(opt.code[2].imm_signed(), 256);
     }
 
-    // ── Float constant folding ──
+    // в”Ђв”Ђ Float constant folding в”Ђв”Ђ
 
     #[test]
     fn fold_float_add() {
@@ -3401,7 +3419,7 @@ mod tests {
         }
     }
 
-    // ── Conversion folding ──
+    // в”Ђв”Ђ Conversion folding в”Ђв”Ђ
 
     #[test]
     fn fold_i2f() {
@@ -3427,7 +3445,7 @@ mod tests {
         assert_eq!(opt.code[1].imm_signed(), 3);
     }
 
-    // ── Control flow boundary ──
+    // в”Ђв”Ђ Control flow boundary в”Ђв”Ђ
     // After a branch, known-const state is cleared
 
     #[test]
@@ -3453,7 +3471,7 @@ mod tests {
         assert_eq!(opt.code[1].opcode(), O::Add);
     }
 
-    // ── Ldi64 folding ──
+    // в”Ђв”Ђ Ldi64 folding в”Ђв”Ђ
 
     #[test]
     fn fold_ldi64_propagation() {
@@ -3464,7 +3482,7 @@ mod tests {
             I::rrr(O::Add, 2, 0, 1), // 400_000_000_000 + 200_000_000_000 = 600_000_000_000
         ];
         let opt = constant_fold(&p);
-        // Result doesn't fit in 32-bit or 40-bit → uses Ldc
+        // Result doesn't fit in 32-bit or 40-bit в†’ uses Ldc
         assert_eq!(opt.code[2].opcode(), O::LdcF64);
         let f_idx = opt.code[2].imm() as usize;
         if f_idx < opt.f64_consts.len() {
@@ -3475,7 +3493,7 @@ mod tests {
         }
     }
 
-    // ── Float comparison folding ──
+    // в”Ђв”Ђ Float comparison folding в”Ђв”Ђ
 
     #[test]
     fn fold_float_cmp_eq() {
@@ -3513,7 +3531,7 @@ mod tests {
         }
     }
 
-    // ── Optimize pipeline ──
+    // в”Ђв”Ђ Optimize pipeline в”Ђв”Ђ
 
     #[test]
     fn optimize_runs_without_panicking() {
@@ -3535,7 +3553,7 @@ mod tests {
         assert!(p.code.is_empty());
     }
 
-    // ── Realistic strategies ──
+    // в”Ђв”Ђ Realistic strategies в”Ђв”Ђ
 
     #[test]
     fn fold_realistic_scalper_constants() {
@@ -3567,7 +3585,7 @@ mod tests {
         assert_eq!(opt.code.len(), 4);
     }
 
-    // ── Immediate op folding ──
+    // в”Ђв”Ђ Immediate op folding в”Ђв”Ђ
 
     #[test]
     fn fold_addi() {
@@ -3619,7 +3637,7 @@ mod tests {
         assert_eq!(opt.code[1].imm_signed(), 1);
     }
 
-    // ── Division by zero safety ──
+    // в”Ђв”Ђ Division by zero safety в”Ђв”Ђ
 
     #[test]
     fn fold_div_by_zero_returns_zero() {
@@ -3652,7 +3670,7 @@ mod tests {
         }
     }
 
-    // ── Entry points preserved ──
+    // в”Ђв”Ђ Entry points preserved в”Ђв”Ђ
 
     #[test]
     fn folding_preserves_entry_points() {
@@ -3731,13 +3749,13 @@ mod tests {
         assert_eq!(p.code.len(), 4);
     }
 
-    // ── Common Subexpression Elimination ──
+    // в”Ђв”Ђ Common Subexpression Elimination в”Ђв”Ђ
 
     #[test]
     fn cse_same_add_replaced_with_mov() {
         let p = make_prog(vec![
             I::rrr(O::Add, 2, 0, 1), // r2 = r0 + r1
-            I::rrr(O::Add, 3, 0, 1), // r3 = r0 + r1 → Mov r3, r2
+            I::rrr(O::Add, 3, 0, 1), // r3 = r0 + r1 в†’ Mov r3, r2
         ]);
         let opt = common_subexpr_elim(&p);
         assert_eq!(opt.code.len(), 2);
@@ -3762,7 +3780,7 @@ mod tests {
     fn cse_different_op_not_eliminated() {
         let p = make_prog(vec![
             I::rrr(O::Add, 2, 0, 1),
-            I::rrr(O::Sub, 3, 0, 1), // different op → not eliminated
+            I::rrr(O::Sub, 3, 0, 1), // different op в†’ not eliminated
         ]);
         let opt = common_subexpr_elim(&p);
         assert_eq!(opt.code.len(), 2);
@@ -3773,7 +3791,7 @@ mod tests {
     fn cse_different_regs_not_eliminated() {
         let p = make_prog(vec![
             I::rrr(O::Add, 2, 0, 1),
-            I::rrr(O::Add, 3, 0, 2), // different rs2 → not eliminated
+            I::rrr(O::Add, 3, 0, 2), // different rs2 в†’ not eliminated
         ]);
         let opt = common_subexpr_elim(&p);
         assert_eq!(opt.code.len(), 2);
@@ -3785,7 +3803,7 @@ mod tests {
         let p = make_prog(vec![
             I::rrr(O::Add, 2, 0, 1),
             I::single(O::Ret),
-            I::rrr(O::Add, 3, 0, 1), // after Ret → cache cleared → not eliminated
+            I::rrr(O::Add, 3, 0, 1), // after Ret в†’ cache cleared в†’ not eliminated
         ]);
         let opt = common_subexpr_elim(&p);
         assert_eq!(opt.code.len(), 3);
@@ -3811,7 +3829,7 @@ mod tests {
     fn cse_addi_eliminated() {
         let p = make_prog(vec![
             I::rri(O::AddI, 1, 0, 5),
-            I::rri(O::AddI, 2, 0, 5), // same r0, imm=5 → Mov r2, r1
+            I::rri(O::AddI, 2, 0, 5), // same r0, imm=5 в†’ Mov r2, r1
         ]);
         let opt = common_subexpr_elim(&p);
         assert_eq!(opt.code.len(), 2);
@@ -3822,7 +3840,7 @@ mod tests {
     fn cse_muli_with_different_imm_not_eliminated() {
         let p = make_prog(vec![
             I::rri(O::MulI, 1, 0, 5),
-            I::rri(O::MulI, 2, 0, 3), // different imm → not eliminated
+            I::rri(O::MulI, 2, 0, 3), // different imm в†’ not eliminated
         ]);
         let opt = common_subexpr_elim(&p);
         assert_eq!(opt.code.len(), 2);
@@ -3833,7 +3851,7 @@ mod tests {
     fn cse_neg_eliminated() {
         let p = make_prog(vec![
             I::rr(O::Neg, 1, 0),
-            I::rr(O::Neg, 2, 0), // same r0 → Mov r2, r1
+            I::rr(O::Neg, 2, 0), // same r0 в†’ Mov r2, r1
         ]);
         let opt = common_subexpr_elim(&p);
         assert_eq!(opt.code.len(), 2);
@@ -3859,9 +3877,9 @@ mod tests {
     #[test]
     fn cse_invalidated_when_source_reg_overwritten() {
         let p = make_prog(vec![
-            I::rrr(O::Add, 2, 0, 1), // cache (Add, r0, r1) → r2
-            I::rri(O::Ldi, 0, 0, 5), // r0 overwritten → invalidates cache
-            I::rrr(O::Add, 3, 0, 1), // no longer matches → full computation
+            I::rrr(O::Add, 2, 0, 1), // cache (Add, r0, r1) в†’ r2
+            I::rri(O::Ldi, 0, 0, 5), // r0 overwritten в†’ invalidates cache
+            I::rrr(O::Add, 3, 0, 1), // no longer matches в†’ full computation
         ]);
         let opt = common_subexpr_elim(&p);
         assert_eq!(opt.code.len(), 3);
@@ -3871,9 +3889,9 @@ mod tests {
     #[test]
     fn cse_invalidated_when_rs2_overwritten() {
         let p = make_prog(vec![
-            I::rrr(O::Add, 2, 0, 1),  // cache (Add, r0, r1) → r2
-            I::rri(O::Ldi, 1, 0, 10), // r1 overwritten → invalidates
-            I::rrr(O::Add, 3, 0, 1),  // no match → full Add
+            I::rrr(O::Add, 2, 0, 1),  // cache (Add, r0, r1) в†’ r2
+            I::rri(O::Ldi, 1, 0, 10), // r1 overwritten в†’ invalidates
+            I::rrr(O::Add, 3, 0, 1),  // no match в†’ full Add
         ]);
         let opt = common_subexpr_elim(&p);
         assert_eq!(opt.code[2].opcode(), O::Add);
@@ -3882,9 +3900,9 @@ mod tests {
     #[test]
     fn cse_invalidated_when_cached_rd_overwritten() {
         let p = make_prog(vec![
-            I::rrr(O::Add, 2, 0, 1),  // cache (Add, r0, r1) → r2
-            I::rri(O::Ldi, 2, 0, 99), // r2 overwritten → cache entry invalid
-            I::rrr(O::Add, 3, 0, 1),  // no match → full Add (r2's value lost)
+            I::rrr(O::Add, 2, 0, 1),  // cache (Add, r0, r1) в†’ r2
+            I::rri(O::Ldi, 2, 0, 99), // r2 overwritten в†’ cache entry invalid
+            I::rrr(O::Add, 3, 0, 1),  // no match в†’ full Add (r2's value lost)
         ]);
         let opt = common_subexpr_elim(&p);
         assert_eq!(opt.code[2].opcode(), O::Add);
@@ -3941,10 +3959,10 @@ mod tests {
 
     #[test]
     fn cse_chain_keeps_working_after_invalidation() {
-        // Add r2, r0, r1 → cache
-        // Ldi r0, 5 → invalidates
-        // Add r3, r0, r1 → full Add (new cache)
-        // Add r4, r0, r1 → Mov r4, r3
+        // Add r2, r0, r1 в†’ cache
+        // Ldi r0, 5 в†’ invalidates
+        // Add r3, r0, r1 в†’ full Add (new cache)
+        // Add r4, r0, r1 в†’ Mov r4, r3
         let p = make_prog(vec![
             I::rrr(O::Add, 2, 0, 1),
             I::rri(O::Ldi, 0, 0, 5),
@@ -4032,7 +4050,7 @@ mod tests {
         assert!(opt.code.is_empty());
     }
 
-    // ── CFG Simplification ──
+    // в”Ђв”Ђ CFG Simplification в”Ђв”Ђ
 
     fn make_prog_entry(code: Vec<I>, entry_offsets: &[u32]) -> QfrProgram {
         let mut p = QfrProgram::new();
@@ -4093,7 +4111,7 @@ mod tests {
 
     #[test]
     fn cfg_simplify_merges_blocks() {
-        // Two blocks: [0-2) Jmp→next, [2-4). After merge: single block.
+        // Two blocks: [0-2) Jmpв†’next, [2-4). After merge: single block.
         let p = make_prog_entry(
             vec![
                 I::rri(O::Ldi, 0, 0, 5), // 0
@@ -4112,7 +4130,7 @@ mod tests {
 
     #[test]
     fn cfg_simplify_if_else_keeps_structure() {
-        // if/else: [Ldi, Ldi, Jz→else, Add(then), Jmp→end, Ldi(else), Ret(end)]
+        // if/else: [Ldi, Ldi, Jzв†’else, Add(then), Jmpв†’end, Ldi(else), Ret(end)]
         let p = make_prog_entry(
             vec![
                 I::rri(O::Ldi, 0, 0, 5),  // 0
@@ -4127,7 +4145,7 @@ mod tests {
         );
         let opt = cfg_simplify(&p);
         // Blocks: [0-3), [3-5), [5-6), [6-7)
-        // Block 1 (then): Jmp at 4 → target 6 (block 3). Not adjacent (block 2 in between). Jmp stays.
+        // Block 1 (then): Jmp at 4 в†’ target 6 (block 3). Not adjacent (block 2 in between). Jmp stays.
         // Block 2 (else): falls through to block 3. Jmp at 4 stays.
         assert_eq!(opt.code.len(), 7); // no Jmps removed
                                        // Jz to else (position 5): offset = 5-2-1 = 2
@@ -4153,17 +4171,17 @@ mod tests {
             &[0],
         );
         let opt = cfg_simplify(&p);
-        // Jmp at 1→5. Code at 2,3 is unreachable. After CFG: block [0-2) → block [4-6)
+        // Jmp at 1в†’5. Code at 2,3 is unreachable. After CFG: block [0-2) в†’ block [4-6)
         // Wait, leaders: 0(entry), 2(fallthrough from Jmp), 5(target of Jmp)
         // Actually Jmp at 1: target=1+1+3=5. Fallthrough at 2.
         // Leaders: 0, 2, 5. Blocks: [0-2), [2-5), [5-6)
-        // Block 0: Jmp → block 2. Block 1: [2-5) never reached.
+        // Block 0: Jmp в†’ block 2. Block 1: [2-5) never reached.
         // Block 2: [5-6) Ret.
         // Remove unreachable: only block 0 and 2 remain.
         // Block 0 Jmp to block 2: need to recalc offset
-        // Block 0: start=0, end=2 → instr 0-1 (Jmp)
-        // Block 2: start=5, end=6 → instr 5 (Ret)
-        // After emission: code = [Ldi, Jmp→?, Ret]
+        // Block 0: start=0, end=2 в†’ instr 0-1 (Jmp)
+        // Block 2: start=5, end=6 в†’ instr 5 (Ret)
+        // After emission: code = [Ldi, Jmpв†’?, Ret]
         // Jmp now at position 1, target Ret at position 2
         // offset = 2 - 1 - 1 = 0
         assert_eq!(opt.code.len(), 3);
@@ -4175,7 +4193,7 @@ mod tests {
 
     #[test]
     fn cfg_simplify_jump_chain() {
-        // A → B → C where A has Jmp to B, B has Jmp to C
+        // A в†’ B в†’ C where A has Jmp to B, B has Jmp to C
         // A's Jmp should redirect to C directly
         let p = make_prog_entry(
             vec![
@@ -4228,15 +4246,15 @@ mod tests {
         assert!(opt.entries[1].code_offset < opt.code.len() as u32);
     }
 
-    // ── Sparse Conditional Constant Propagation (SCCP) ──
+    // в”Ђв”Ђ Sparse Conditional Constant Propagation (SCCP) в”Ђв”Ђ
 
     #[test]
     fn sccp_constant_jnz_always_taken() {
-        // Jnz with r0=1 → always taken, then-block removed
+        // Jnz with r0=1 в†’ always taken, then-block removed
         let p = make_prog_entry(
             vec![
                 I::rri(O::Ldi, 0, 0, 1),  // 0
-                I::rri(O::Jnz, 0, 0, 2),  // 1: r0!=0 → jump to 4
+                I::rri(O::Jnz, 0, 0, 2),  // 1: r0!=0 в†’ jump to 4
                 I::rri(O::Ldi, 1, 0, 10), // 2: then (dead)
                 I::single(O::Ret),        // 3
                 I::rri(O::Ldi, 1, 0, 99), // 4: else
@@ -4245,7 +4263,7 @@ mod tests {
             &[0],
         );
         let opt = sccp(&p);
-        // Jnz→Jmp, then-block removed
+        // Jnzв†’Jmp, then-block removed
         assert_eq!(opt.code.len(), 4);
         assert_eq!(opt.code[1].opcode(), O::Jmp);
         assert_eq!(opt.code[2].opcode(), O::Ldi);
@@ -4254,11 +4272,11 @@ mod tests {
 
     #[test]
     fn sccp_constant_jz_fallthrough() {
-        // Jz with r0=0 → always jumps to target, then-block removed
+        // Jz with r0=0 в†’ always jumps to target, then-block removed
         let p = make_prog_entry(
             vec![
                 I::rri(O::Ldi, 0, 0, 0),  // 0
-                I::rri(O::Jz, 0, 0, 2),   // 1: r0==0 → jump to 4
+                I::rri(O::Jz, 0, 0, 2),   // 1: r0==0 в†’ jump to 4
                 I::rri(O::Ldi, 1, 0, 10), // 2: then (dead)
                 I::single(O::Ret),        // 3
                 I::rri(O::Ldi, 1, 0, 99), // 4: else
@@ -4267,7 +4285,7 @@ mod tests {
             &[0],
         );
         let opt = sccp(&p);
-        // Jz→Jmp, then-block removed
+        // Jzв†’Jmp, then-block removed
         assert_eq!(opt.code.len(), 4);
         assert_eq!(opt.code[1].opcode(), O::Jmp);
         assert_eq!(opt.code[2].imm_signed(), 99);
@@ -4276,13 +4294,13 @@ mod tests {
     #[test]
     fn sccp_propagates_across_blocks() {
         // Block A: r0 = 10, Jmp B
-        // Block B: r1 = r0 + 5  → folds to Ldi r1, 15
+        // Block B: r1 = r0 + 5  в†’ folds to Ldi r1, 15
         let p = make_prog_entry(
             vec![
                 I::rri(O::Ldi, 0, 0, 10), // 0
                 I::rri(O::Jmp, 0, 0, 1),  // 1: Jmp to 3
                 I::single(O::Ret),        // 2: never reached
-                I::rri(O::AddI, 1, 0, 5), // 3: r1 = r0 + 5 → 15
+                I::rri(O::AddI, 1, 0, 5), // 3: r1 = r0 + 5 в†’ 15
                 I::single(O::Ret),        // 4
             ],
             &[0],
@@ -4297,12 +4315,12 @@ mod tests {
     #[test]
     fn sccp_pipeline_folds_known_branches() {
         // Full pipeline: if(true) { r2 = r1 + r1 } else { r2 = 0 }
-        // SCCP sees r0=1 → Jz not taken → else block eliminated → r2=84 folded
+        // SCCP sees r0=1 в†’ Jz not taken в†’ else block eliminated в†’ r2=84 folded
         let mut p = make_prog_entry(
             vec![
                 I::rri(O::Ldi, 0, 0, 1),  // 0: r0 = 1
                 I::rri(O::Ldi, 1, 0, 42), // 1: r1 = 42
-                I::rri(O::Jz, 0, 0, 2),   // 2: if r0 == 0 → jump to 5 (else)
+                I::rri(O::Jz, 0, 0, 2),   // 2: if r0 == 0 в†’ jump to 5 (else)
                 I::rrr(O::Add, 2, 1, 1),  // 3: r2 = r1 + r1 = 84
                 I::rri(O::Jmp, 0, 0, 1),  // 4: Jmp to 6 (end)
                 I::rri(O::Ldi, 2, 0, 0),  // 5: else: r2 = 0
@@ -4312,7 +4330,7 @@ mod tests {
         );
         optimize(&mut p);
         // After all passes: Ldi r0=1, Ldi r1=42, Ldi r2=84, Jmp(0), Ret
-        // Jmp(0) is residual from if/else → end jump (no-op after else removed)
+        // Jmp(0) is residual from if/else в†’ end jump (no-op after else removed)
         assert_eq!(p.code.len(), 5);
         assert_eq!(p.code[2].imm_signed(), 84);
         assert_eq!(p.code[4].opcode(), O::Ret);

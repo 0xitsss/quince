@@ -1,3 +1,10 @@
+﻿// SPDX-FileCopyrightText: 2026 0xitsss
+//
+// SPDX-License-Identifier: AGPL-3.0-only OR LicenseRef-Quince-Commercial
+//! Binance WebSocket message parsing.
+//! Fast JSON deserialization of Binance stream events (aggTrade, depth, kline)
+//! into [`StreamMsg`] variants using simd-json.
+
 use crate::r#trait::StreamMsg;
 use quince_core::types::*;
 use simd_json::prelude::*;

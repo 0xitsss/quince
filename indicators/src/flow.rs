@@ -1,3 +1,10 @@
+﻿// SPDX-FileCopyrightText: 2026 0xitsss
+//
+// SPDX-License-Identifier: AGPL-3.0-only OR LicenseRef-Quince-Commercial
+//! Money Flow Index (MFI) indicator.
+//! A volume-weighted momentum oscillator that uses price and volume to identify
+//! overbought/oversold conditions. [`Mfi`] tracks positive and negative money flow.
+
 use crate::Candle;
 use quince_core::ring::RingVec;
 

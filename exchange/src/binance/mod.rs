@@ -1,3 +1,10 @@
+﻿// SPDX-FileCopyrightText: 2026 0xitsss
+//
+// SPDX-License-Identifier: AGPL-3.0-only OR LicenseRef-Quince-Commercial
+//! Authenticated Binance exchange implementation.
+//! Provides REST order placement, account queries, and WebSocket-backed
+//! market data streaming via the [`Binance`] struct.
+
 pub mod public;
 pub mod types;
 pub mod ws;

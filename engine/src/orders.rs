@@ -1,3 +1,10 @@
+﻿// SPDX-FileCopyrightText: 2026 0xitsss
+//
+// SPDX-License-Identifier: AGPL-3.0-only OR LicenseRef-Quince-Commercial
+//! Order lifecycle management.
+//! Tracks pending orders, active stop-loss/take-profit levels, and order fill
+//! reconciliation via [`OrderManager`], [`PendingOrder`], and [`ActiveStop`].
+
 use quince_core::types::*;
 use std::collections::HashMap;
 use std::time::Instant;
@@ -316,7 +323,7 @@ mod tests {
         let stops = om.active_sl_tp();
         assert_eq!(stops.len(), 1);
         assert_eq!(stops[0].client_id, id1);
-        assert_eq!(stops[0].side, Side::Sell); // buy→close with sell
+        assert_eq!(stops[0].side, Side::Sell); // buyв†’close with sell
         assert_eq!(stops[0].stop_loss, Some(99.0));
         assert_eq!(stops[0].take_profit, Some(101.0));
 
@@ -451,6 +458,6 @@ mod tests {
         om.update_fill(&id, 1.0, 100.0);
         let stops = om.active_sl_tp();
         assert_eq!(stops.len(), 1);
-        assert_eq!(stops[0].side, Side::Buy); // sell→close with buy
+        assert_eq!(stops[0].side, Side::Buy); // sellв†’close with buy
     }
 }

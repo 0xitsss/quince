@@ -1,3 +1,10 @@
+﻿// SPDX-FileCopyrightText: 2026 0xitsss
+//
+// SPDX-License-Identifier: AGPL-3.0-only OR LicenseRef-Quince-Commercial
+//! Read-only Binance exchange for public market data.
+//! [`BinancePublic`] implements the [`Exchange`] trait without authentication,
+//! supporting trade/depth subscriptions via combined WebSocket streams.
+
 use crate::r#trait::{Exchange, ExchangeError, OrderStatus, Result, Stream};
 use futures_util::StreamExt;
 use quince_core::types::*;

@@ -1,3 +1,10 @@
+﻿// SPDX-FileCopyrightText: 2026 0xitsss
+//
+// SPDX-License-Identifier: AGPL-3.0-only OR LicenseRef-Quince-Commercial
+//! Binance WebSocket client implementation.
+//! Maintains a persistent WSS connection with automatic reconnection,
+//! request/response routing, and HMAC-SHA256 signed authenticated requests.
+
 use crate::r#trait::{ExchangeError, Result, StreamMsg};
 use futures_util::{SinkExt, StreamExt};
 use serde_json::{Map, Value};

@@ -1,0 +1,107 @@
+﻿Quince Commercial License v1.0
+
+Copyright (c) 2026 0xItsss
+Contact: js2302247@gmail.com | Telegram: @its_unknow
+
+
+DUAL-LICENSING NOTICE
+
+This Software is dual-licensed. This Commercial License is an alternative to the
+AGPL-3.0-only terms. By paying the license fee, the Licensee is exempted from
+the copyleft obligations of the AGPL-3.0, including the requirement to disclose
+source code when providing network services.
+
+
+DEFINITIONS
+
+"Software" means all source code, compiled bytecode, intermediate representations,
+scripts, configuration files, and documentation distributed under the
+LicenseRef-Quince-Commercial identifier.
+
+"Licensee" means any person or legal entity that has lawfully acquired the Software
+and paid the applicable annual license fee.
+
+"Internal Use" means use of the Software within the Licensee's own organization
+for its own business operations.
+
+
+GRANT OF LICENSE
+
+Subject to the payment of the annual license fee, the Copyright Holder grants
+the Licensee a non-exclusive, non-transferable right to use, copy, modify, and
+merge the Software internally for a period of one (1) year (365 days) from the
+date of payment.
+
+
+1. Annual Term and Renewal
+
+This license is valid for one year. To continue using the Software after the
+expiration of the term, the Licensee must renew the license by paying the
+then-current annual fee. If the license is not renewed, all rights granted
+hereunder expire immediately.
+
+
+2. Internal Use and No Copyleft
+
+The Software may be used internally for commercial operations without requiring
+the release of source code. The AGPL-3.0 requirement to distribute source code
+to network users does NOT apply to the Licensee under this Commercial License.
+
+
+3. Prohibited Activities
+
+The following activities are strictly prohibited:
+
+  a) Redistribution, resale, sublicensing, or public distribution of the
+     Software or any derivative thereof, in whole or in part, whether in
+     source or compiled form.
+
+  b) Relicensing — the Licensee may not modify, replace, or remove the
+     license terms of the Software, nor distribute the Software under any
+     license other than this Commercial License or the AGPL-3.0-only.
+
+  c) Decompilation or reverse engineering of QFR bytecode (*.qfr) or any
+     compiled intermediate representation of QFL strategies.
+
+  d) Any use that exceeds the scope of Internal Use as defined herein.
+
+
+4. SPDX and License Retention
+
+All SPDX-FileCopyrightText and SPDX-License-Identifier headers must be retained
+in every source file, unchanged and unremoved. The Licensee must not alter,
+remove, or obscure any copyright notice, license identifier, or attribution
+present in the Software.
+
+
+5. No Warranty
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+COPYRIGHT HOLDER BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY ARISING
+FROM THE USE OF THE SOFTWARE.
+
+
+6. Termination
+
+This license terminates automatically upon:
+
+  a) Expiration of the one-year term without renewal.
+
+  b) Breach of any terms of this license.
+
+Upon termination, the Licensee must immediately cease all use of the Software
+and destroy all copies in their possession.
+
+
+7. Governing Law
+
+This license shall be governed by and construed in accordance with the laws of
+the Russian Federation.
+
+
+To purchase or renew this license, contact:
+
+  Email:   js2302247@gmail.com
+  Telegram: @its_unknow

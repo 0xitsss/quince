@@ -1,14 +1,18 @@
-/// QFL type system — strong domain-specific types for trading.
-///
-/// Rules:
-/// - Numeric types (I64, F64, Price, Qty, Timestamp, Duration) support
-///   arithmetic within their group and with direct promotion rules.
-/// - Domain types (Symbol, Side, OrderId, Bool) are NOT numeric and
-///   do NOT support arithmetic.
-/// - Price + Price → Price (valid)
-/// - Price + Duration → Price (valid — offset in time)
-/// - Price * Qty → Price (valid — notional)
-/// - Price + Side → TypeError (invalid)
+﻿// SPDX-FileCopyrightText: 2026 0xitsss
+//
+// SPDX-License-Identifier: AGPL-3.0-only OR LicenseRef-Quince-Commercial
+//! QFL type system — strong domain-specific types for algorithmic trading.
+//!
+//! Rules:
+//! - **Numeric types** (`I64`, `F64`, `Price`, `Qty`, `Timestamp`, `Duration`)
+//!   support arithmetic within their group and with direct promotion rules.
+//! - **Domain types** (`Symbol`, `Side`, `OrderId`, `Bool`) are NOT numeric and
+//!   do NOT support arithmetic.
+//! - `Price + Price в†’ Price`, `Price + Duration в†’ Price`, `Price * Qty в†’ Price`
+//! - `Price + Side в†’ TypeError`
+//!
+//! Entry point: [`check_program()`] validates a typed AST.
+
 use std::fmt;
 
 // --- Section: QflType enum — domain-specific type system for trading strategies ---
@@ -80,7 +84,7 @@ impl fmt::Display for QflType {
 // --- Section: Type parsing from declarations ---
 
 /// Parse a state declaration type string to QflType.
-/// e.g. "f64" → QflType::F64, "qty" → QflType::Qty, "i32" → QflType::I64
+/// e.g. "f64" в†’ QflType::F64, "qty" в†’ QflType::Qty, "i32" в†’ QflType::I64
 pub fn parse_state_type(s: &str) -> QflType {
     match s {
         "f64" => QflType::F64,
@@ -111,7 +115,7 @@ impl fmt::Display for TypeError {
     }
 }
 
-// ── Arithmetic type rules ──
+// в”Ђв”Ђ Arithmetic type rules в”Ђв”Ђ
 
 /// Result type for binary operations, or a TypeError.
 pub type TypeResult = Result<QflType, TypeError>;
@@ -150,13 +154,13 @@ pub fn bin_op_type(lhs: QflType, op: &crate::ast::BinOp, rhs: QflType) -> TypeRe
     // --- Arithmetic ops (Add, Sub, Mul, Div, IDiv, Mod, Pow, Concat) ---
 
     match (lhs, rhs) {
-        // Same type → same type (numeric)
+        // Same type в†’ same type (numeric)
         (a, b) if a == b && a.is_numeric() => Ok(a),
 
-        // Price + Duration → Price (time offset: adding an interval to a price timestamp)
+        // Price + Duration в†’ Price (time offset: adding an interval to a price timestamp)
         (Price, Duration) | (Duration, Price) => Ok(Price),
 
-        // Price * Qty → Price (notional: quantity times price gives total value)
+        // Price * Qty в†’ Price (notional: quantity times price gives total value)
         (Price, Qty) | (Qty, Price) if matches!(op, BinOp::Mul) => Ok(Price),
 
         // I64 promotion: I64 promotes to the wider type when paired with a domain float
@@ -232,7 +236,7 @@ pub fn literal_type(lit: &crate::ast::Literal) -> QflType {
     }
 }
 
-// ── Program-level type checker ──
+// в”Ђв”Ђ Program-level type checker в”Ђв”Ђ
 
 // Helper: returns true if the type is compatible with 'side' (Side or I64)
 fn is_side_compat(t: QflType) -> bool {
@@ -324,9 +328,7 @@ impl TypeChecker {
                 persist: _,
                 is_local: _,
             } => {
-                let expected_type = type_name
-                    .as_ref()
-                    .map(|tn| parse_state_type(tn));
+                let expected_type = type_name.as_ref().map(|tn| parse_state_type(tn));
                 if let Some(exprs) = init {
                     for (i, name) in names.iter().enumerate() {
                         let typ = if i < exprs.len() {
@@ -595,9 +597,7 @@ impl TypeChecker {
             // Literal: direct type mapping
             Literal(lit) => literal_type(lit),
             // Identifier: look up in scope, default to I64 if not found
-            Ident(name) => {
-                self.lookup(name).unwrap_or(QflType::I64)
-            }
+            Ident(name) => self.lookup(name).unwrap_or(QflType::I64),
             // Function call: defer to the specialized inference method
             FnCall { name, args } => self.infer_fn_call(name, args),
             // Method call: defer to the specialized inference method
@@ -644,7 +644,7 @@ impl TypeChecker {
         let arg_types: Vec<QflType> = args.iter().map(|a| self.infer_expr(a)).collect();
 
         match name {
-            // quince.get("key") retrieves a named indicator value → F64
+            // quince.get("key") retrieves a named indicator value в†’ F64
             "quince.get" | "get" => {
                 if !arg_types.is_empty() && arg_types[0] != QflType::Symbol {
                     self.error(format!(
@@ -654,11 +654,11 @@ impl TypeChecker {
                 }
                 QflType::F64
             }
-            // quince.price() returns the current market price → Price
+            // quince.price() returns the current market price в†’ Price
             "quince.price" | "price" => QflType::Price,
-            // quince.position() returns the current position → Qty
+            // quince.position() returns the current position в†’ Qty
             "quince.position" | "position" => QflType::Qty,
-            // quince.balance("asset") returns the current balance → F64
+            // quince.balance("asset") returns the current balance в†’ F64
             "quince.balance" | "balance" => {
                 if !arg_types.is_empty() && arg_types[0] != QflType::Symbol {
                     self.error(format!(
@@ -668,7 +668,7 @@ impl TypeChecker {
                 }
                 QflType::F64
             }
-            // quince.order(side, qty, price) places an order → I64 (order ID)
+            // quince.order(side, qty, price) places an order в†’ I64 (order ID)
             "quince.order" | "order" => {
                 if !arg_types.is_empty() && !is_side_compat(arg_types[0]) {
                     self.error(format!(
@@ -684,7 +684,7 @@ impl TypeChecker {
                 }
                 QflType::I64
             }
-            // quince.log("message", ...) logs a message → I64
+            // quince.log("message", ...) logs a message в†’ I64
             "quince.log" | "log" => {
                 if let Some(arg_type) = arg_types.first() {
                     if *arg_type != QflType::Symbol {
@@ -799,7 +799,7 @@ mod tests {
     use crate::ast::UnaryOp;
     use QflType::*;
 
-    // ── Basic type properties ──
+    // в”Ђв”Ђ Basic type properties в”Ђв”Ђ
 
     #[test]
     fn i64_is_numeric() {
@@ -867,7 +867,7 @@ mod tests {
         assert!(!Price.is_integer());
     }
 
-    // ── Same type arithmetic ──
+    // в”Ђв”Ђ Same type arithmetic в”Ђв”Ђ
 
     #[test]
     fn i64_add_i64_returns_i64() {
@@ -886,7 +886,7 @@ mod tests {
         assert_eq!(bin_op_type(Qty, &Div, Qty), Ok(Qty));
     }
 
-    // ── Price arithmetic ──
+    // в”Ђв”Ђ Price arithmetic в”Ђв”Ђ
 
     #[test]
     fn price_add_duration_returns_price() {
@@ -909,7 +909,7 @@ mod tests {
         assert_eq!(bin_op_type(Qty, &Mul, Price), Ok(Price));
     }
 
-    // ── Numeric promotion ──
+    // в”Ђв”Ђ Numeric promotion в”Ђв”Ђ
 
     #[test]
     fn i64_add_f64_returns_f64() {
@@ -936,7 +936,7 @@ mod tests {
         assert_eq!(bin_op_type(I64, &Add, Timestamp), Ok(Timestamp));
     }
 
-    // ── Comparison ops ──
+    // в”Ђв”Ђ Comparison ops в”Ђв”Ђ
 
     #[test]
     fn i64_eq_i64_returns_bool() {
@@ -955,7 +955,7 @@ mod tests {
         assert_eq!(bin_op_type(Symbol, &Eq, Symbol), Ok(Bool));
     }
 
-    // ── Logical ops ──
+    // в”Ђв”Ђ Logical ops в”Ђв”Ђ
 
     #[test]
     fn bool_and_bool_returns_bool() {
@@ -966,14 +966,14 @@ mod tests {
         assert_eq!(bin_op_type(Bool, &Or, Bool), Ok(Bool));
     }
 
-    // ── Concat ──
+    // в”Ђв”Ђ Concat в”Ђв”Ђ
 
     #[test]
     fn symbol_concat_symbol_returns_symbol() {
         assert_eq!(bin_op_type(Symbol, &Concat, Symbol), Ok(Symbol));
     }
 
-    // ── Unary ops ──
+    // в”Ђв”Ђ Unary ops в”Ђв”Ђ
 
     #[test]
     fn neg_i64_returns_i64() {
@@ -992,7 +992,7 @@ mod tests {
         assert_eq!(unary_op_type(&UnaryOp::Len, Symbol), Ok(I64));
     }
 
-    // ── Type errors (invalid operations) ──
+    // в”Ђв”Ђ Type errors (invalid operations) в”Ђв”Ђ
 
     #[test]
     fn price_add_side_is_error() {
@@ -1051,7 +1051,7 @@ mod tests {
         assert!(result.is_err());
     }
 
-    // ── And/Or require Bool ──
+    // в”Ђв”Ђ And/Or require Bool в”Ђв”Ђ
 
     #[test]
     fn i64_and_bool_is_error() {
@@ -1064,7 +1064,7 @@ mod tests {
         assert!(result.is_err());
     }
 
-    // ── Literal type inference ──
+    // в”Ђв”Ђ Literal type inference в”Ђв”Ђ
 
     #[test]
     fn literal_i64_type() {
@@ -1090,7 +1090,7 @@ mod tests {
         assert_eq!(literal_type(&crate::ast::Literal::Nil), I64);
     }
 
-    // ── Program-level type checker ──
+    // в”Ђв”Ђ Program-level type checker в”Ђв”Ђ
 
     fn check(src: &str) -> Result<(), Vec<TypeError>> {
         let program = crate::parser::parse(src).unwrap();
@@ -1249,7 +1249,7 @@ mod tests {
         assert!(check("@persist local x = 42 function on_eval() end").is_ok());
     }
 
-    // ── Realistic strategies ──
+    // в”Ђв”Ђ Realistic strategies в”Ђв”Ђ
 
     #[test]
     fn check_scalper_strategy_ok() {

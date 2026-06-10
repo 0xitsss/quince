@@ -1,4 +1,12 @@
-// --- Section: Imports ---
+﻿// SPDX-FileCopyrightText: 2026 0xitsss
+//
+// SPDX-License-Identifier: AGPL-3.0-only OR LicenseRef-Quince-Commercial
+//! QFL lexer — tokenises source text into 73 token kinds.
+//!
+//! Produces a [`Token`] stream consumed by the Pratt parser. Handles string
+//! escapes, block comments, Lua-style `--` comments, and `@directive` markers.
+//!
+//! Entry point: [`tokenize()`] or [`Lexer::tokenize()`].
 
 use std::fmt;
 
@@ -74,8 +82,8 @@ pub enum Token {
     AtWindow,  // @window
 
     // Phase-4h syntactic sugar keywords
-    On,  // on
-    Fn,  // fn
+    On, // on
+    Fn, // fn
 
     // Comment content (text after -- or inside --[[ ... ]])
     Comment(String),
@@ -707,7 +715,7 @@ mod tests {
         assert_eq!(tokens[8], Token::Then);
     }
 
-    // ── Additional lexer tests ──
+    // в”Ђв”Ђ Additional lexer tests в”Ђв”Ђ
 
     #[test]
     fn test_empty_input() {
@@ -844,7 +852,7 @@ mod tests {
 
     #[test]
     fn test_unicode_ident() {
-        let result = tokenize("café");
+        let result = tokenize("cafГ©");
         // Should either error or treat as ident
         assert!(result.is_ok() || result.is_err());
     }
@@ -974,8 +982,8 @@ mod tests {
 
     #[test]
     fn test_mixed_ascii_and_unicode() {
-        let tokens = tokenize("\"café\"").unwrap();
-        assert_eq!(tokens[0], Token::String("café".into()));
+        let tokens = tokenize("\"cafГ©\"").unwrap();
+        assert_eq!(tokens[0], Token::String("cafГ©".into()));
     }
 
     #[test]

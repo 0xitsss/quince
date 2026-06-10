@@ -1,11 +1,13 @@
 # Quince
 
 [![Build](https://img.shields.io/badge/build-passing-brightgreen?style=for-the-badge)](https://github.com/0xitsss/quince)
-[![Tests](https://img.shields.io/badge/tests-960%2B%20passing-brightgreen?style=for-the-badge)](https://github.com/0xitsss/quince)
+[![Tests](https://img.shields.io/badge/tests-944%20passing-brightgreen?style=for-the-badge)](https://github.com/0xitsss/quince)
 [![Clippy](https://img.shields.io/badge/clippy-0%20warnings-brightgreen?style=for-the-badge)](https://github.com/0xitsss/quince)
-[![License](https://img.shields.io/badge/license-AGPL--3.0-blue?style=for-the-badge)](https://www.gnu.org/licenses/agpl-3.0)
+[![License](https://img.shields.io/badge/license-AGPL--3.0%20OR%20Commercial-blue?style=for-the-badge)](https://www.gnu.org/licenses/agpl-3.0)
+[![REUSE](https://img.shields.io/badge/REUSE-compliant-green?style=for-the-badge)](https://reuse.software)
 [![Rust](https://img.shields.io/badge/rust-1.80+-orange?style=for-the-badge&logo=rust)](https://www.rust-lang.org)
-[![Version](https://img.shields.io/badge/version-0.6.9-purple?style=for-the-badge)](https://github.com/0xitsss/quince/releases)
+[![Version](https://img.shields.io/badge/version-0.7.0-purple?style=for-the-badge)](https://github.com/0xitsss/quince/releases)
+[![Docs](https://img.shields.io/badge/docs-mdBook-blue?style=for-the-badge&logo=mdbook)](https://0xitsss.github.io/quince)
 [![Benchmark](https://img.shields.io/badge/bench-Criterion-ff69b4?style=for-the-badge)](https://0xitsss.github.io/quince/dev/bench/)
 [![SonarQube](https://img.shields.io/badge/sonar-passing-brightgreen?style=for-the-badge&logo=sonarcloud)](https://sonarcloud.io/project/overview?id=0xitsss_quince)
 
@@ -15,40 +17,85 @@ Low-latency trading engine using crossbeam channels throughout. Engine loop uses
 
 ---
 
+## Table of Contents
+
+- [Features](#features)
+- [Project Structure](#project-structure)
+- [Quick Start](#quick-start)
+- [Architecture](#architecture)
+  - [System Overview](#system-overview)
+  - [Engine Loop Sequence](#engine-loop-sequence)
+  - [QFL Compilation Pipeline](#qfl-compilation-pipeline)
+  - [Optimiser Pass Pipeline](#optimiser-pass-pipeline)
+  - [QFL VM Hot/Cold Architecture](#qfl-vm-hotcold-architecture)
+  - [Core Domain Types](#core-domain-types)
+  - [Engine Loop State Machine](#engine-loop-state-machine)
+  - [Event Handling Flow](#event-handling-flow)
+  - [Trading Strategy Lifecycle (hot-reload)](#trading-strategy-lifecycle-hot-reload)
+- [Performance](#performance)
+- [Documentation](#documentation)
+- [REUSE / SPDX Compliance](#reuse--spdx-compliance)
+- [Version History](#version-history)
+- [License](#license)
+- [Contact](#contact)
+
+---
+
+## Features
+
+### Engine
+- Priority-polling event loop with `try_recv` on crossbeam channels
+- Hot-reload support — swap strategies at runtime without restart
+- Realized PnL tracking, position management, order lifecycle
+- OrderManager with SL/TP tracking and timeout checks
+- Mock exchange mode for backtesting without API keys
+
+### QFL Language & VM
+- Register-based VM with direct threaded dispatch (jump table)
+- Hot/cold split — ~2 KB hot path fits in L1 cache
+- Zero heap allocation in the hot execution path
+- 256-entry function pointer table with tail-call dispatch
+- 10 domain-specific types (Price, Qty, Symbol, Side, etc.)
+- 70 opcodes spanning arithmetic, control flow, indicators, orders
+- SSE branchless float sanitizer (`_mm_cmpunord_sd` + `_mm_andnot_pd`)
+- 11-pass optimisation pipeline (CFG, CSE, SCCP, LICM, GVN, DCE, ...)
+- Persistent state across hot-reloads (64 persist slots)
+- Tracer and profiler built into the VM
+
+### Indicators (50+)
+- Moving Averages: SMA, EMA, WMA, VWMA, LSMA
+- Oscillators: RSI, MACD, Stochastic, CCI, ROC
+- Volatility: ATR, Bollinger Bands, Keltner Channels
+- Flow/Microstructure: OBV, CVD, MFI, ADX, DOM, Z-Score, NetOI
+
+### Risk Controls
+- Position size limits, max notional checks
+- Drawdown detection and daily loss limits
+- Rate limiting per time window
+- Automatic cooldown on consecutive losses
+- Reduce-only order enforcement
+
+### Compliance
+- REUSE 3.2 specification — SPDX headers on all 47 Rust source files
+- Dual licensing: AGPL-3.0-only for open source / Quince Commercial License for proprietary use
+- QFL (.qfl) and QFR (.qfr) formats protected under commercial license
+
+---
+
 ## Project Structure
 
 | Crate | Lines (code) | Description |
 |-------|-------------|-------------|
-| `core/` | 595 | Shared types, RingBuffer, RingVec |
-| `exchange/` | 929 | Binance Futures WS + REST client |
-| `engine/` | 2,212 | Event loop, OrderManager, IndicatorBank, RiskControls |
-| `indicators/` | 2,026 | 50+ technical indicators |
-| `logger/` | 223 | Trade fill logger (JSON Lines) |
-| `qfl/` | 15,783 | Parser, type checker, optimizer, compiler, VM, tracer |
-| `risk/` | 246 | Position limits, drawdown, rate limiting |
-| `quince/` | 519 | CLI binary, MockExchange |
-| **Total** | **22,533** | **42 Rust source files** |
-
----
-
-## Performance
-
-Criterion benchmarks (ubuntu-latest, x86_64) — 4 groups, 14 strategies:
-
-| Group | Strategy | Throughput |
-|-------|----------|-----------|
-| **Pipeline** (parse + compile + optimize) | ema_cross | 42 µs |
-| | scalper | 78 µs |
-| | heavy_test | 412 µs |
-| **VM tick** (10k iters) | ema_cross | 1,850 ops/ms |
-| | scalper | 920 ops/ms |
-| | momentum | 1,120 ops/ms |
-| **VM scale** (heavy_test) | 1k iters | 1,780 ops/ms |
-| | 10k iters | 1,690 ops/ms |
-| | 100k iters | 1,550 ops/ms |
-| **Runtime feed** (heavy_test) | 10k trades | 420 ops/ms |
-
-VM dispatch: ~1.7 million ops/ms sustained. Zero heap allocation in hot path.
+| `core/` | 713 | Shared types, RingBuffer, RingVec |
+| `exchange/` | 1,060 | Binance Futures WS + REST client, MockExchange |
+| `engine/` | 2,508 | Event loop, OrderManager, IndicatorBank, RiskControls |
+| `indicators/` | 2,354 | 50+ technical indicators |
+| `logger/` | 248 | Trade fill logger (JSON Lines) |
+| `qfl/` | 20,757 | Parser, type checker, optimizer, compiler, VM, tracer |
+| `risk/` | 296 | Position limits, drawdown, rate limiting |
+| `quince/` | 599 | CLI binary, MockExchange |
+| `docgen/` | 622 | syn-based API doc generator |
+| **Total** | **29,157** | **47 Rust source files** |
 
 ---
 
@@ -76,25 +123,18 @@ cargo run --features profiling
 # Dump compiled QFL bytecode as assembly
 cargo run --bin dump_qfl -- strategies/ema_cross.qfl
 
-# Run all tests (960+)
+# Run all tests (944)
 cargo test
 
 # Run benchmarks
 cargo bench -p quince-qfl --bench bench
 
+# Build documentation site (auto-generates API docs from source)
+cargo run -p docgen && mdbook build book
+
 # Check clippy (zero warnings)
 cargo clippy --all-targets -- -D warnings
 ```
-
----
-
-## Documentation
-
-- **[`docs/QUINCE.md`](docs/QUINCE.md)** — Architecture, performance benchmarks, crate breakdown
-- **[`docs/QFL.md`](docs/QFL.md)** — Quince-Flavored Language syntax, types, indicators, example strategies
-- **[`qfl/docs/spec/spec.pdf`](qfl/docs/spec/spec.pdf)** — Full QFL specification (46 pages, LaTeX)
-- **[Criterion Benchmarks](https://0xitsss.github.io/quince/dev/bench/)** — Historical benchmark chart on gh-pages
-- **[SonarQube](https://sonarcloud.io/project/overview?id=0xitsss_quince)** — Static analysis dashboard
 
 ---
 
@@ -464,10 +504,69 @@ sequenceDiagram
 
 ---
 
+## Performance
+
+Criterion benchmarks (ubuntu-latest, x86_64) — 4 groups, 14 strategies:
+
+| Group | Strategy | Throughput |
+|-------|----------|-----------|
+| **Pipeline** (parse + compile + optimize) | ema_cross | 42 µs |
+| | scalper | 78 µs |
+| | heavy_test | 412 µs |
+| **VM tick** (10k iters) | ema_cross | 1,850 ops/ms |
+| | scalper | 920 ops/ms |
+| | momentum | 1,120 ops/ms |
+| **VM scale** (heavy_test) | 1k iters | 1,780 ops/ms |
+| | 10k iters | 1,690 ops/ms |
+| | 100k iters | 1,550 ops/ms |
+| **Runtime feed** (heavy_test) | 10k trades | 420 ops/ms |
+
+VM dispatch: ~1.7 million ops/ms sustained. Zero heap allocation in hot path.
+Float sanitizer uses branchless SSE (`_mm_cmpunord_sd` + `_mm_andnot_pd`) — no branch mispredictions on NaN/Inf paths.
+
+Tick speed benchmarks per strategy:
+
+| Strategy | MHz |
+|----------|-----|
+| ema_cross | 38.4 MHz |
+| rsi_reversion | 23.1 MHz |
+| momentum | 18.7 MHz |
+| scalper | 11.5 MHz |
+| heavy_test | 4.6 MHz |
+
+---
+
+## Documentation
+
+- **[mdBook](https://0xitsss.github.io/quince)** — Full documentation site (51 pages, auto-generated from doc comments, CI/CD)
+- **[`docs/QUINCE.md`](docs/QUINCE.md)** — Architecture, performance benchmarks, crate breakdown
+- **[`docs/QFL.md`](docs/QFL.md)** — Quince-Flavored Language syntax, types, indicators, example strategies
+- **[Criterion Benchmarks](https://0xitsss.github.io/quince/dev/bench/)** — Historical benchmark chart on gh-pages
+- **[SonarQube](https://sonarcloud.io/project/overview?id=0xitsss_quince)** — Static analysis dashboard
+
+---
+
+## REUSE / SPDX Compliance
+
+This project follows the [REUSE Specification 3.2](https://reuse.software/spec/) by the Free Software Foundation Europe:
+
+- **47 Rust source files** — each carries `SPDX-FileCopyrightText` and `SPDX-License-Identifier` headers
+- **REUSE.toml** — covers configuration files (CI/CD, Cargo.toml, .gitignore, mdBook config)
+- **LICENSES/ directory** — contains the full text of every referenced license:
+  - `AGPL-3.0-only.txt` — GNU Affero General Public License v3.0 only
+  - `LicenseRef-Quince-Commercial.txt` — Quince Commercial License v1.0
+
+Every file in the repository is REUSE-compliant with a clear, unambiguous license.
+
+---
+
 ## Version History
 
 | Version | Phase | Changes |
 | ------- | ----- | ------- |
+| v0.7.0 | 8a | Docgen rewrite with syn item-level extraction, mdBook GitHub Pages via CI, 29,157 LOC across 47 Rust files |
+| v0.6.11 | 7e | QuinceHash64 checksum, computed_goto dispatch, CI/CD docs.yml |
+| v0.6.10 | 7e | `//!` module doc pass across 42 source files, mdBook setup with Mermaid diagrams, docgen preprocessor |
 | v0.6.9 | 7d | Fix Windows .exe extension in release, restore Cargo.lock before benchmark gh-pages switch |
 | v0.6.8 | 7d | Bump version, create gh-pages branch for benchmark charts |
 | v0.6.7 | 7d | Overhaul release.yml (caching, version resolution, package), add caching to ci.yml |
@@ -496,4 +595,24 @@ sequenceDiagram
 
 ## License
 
-GNU Affero General Public License v3.0
+Dual-licensed under **GNU Affero General Public License v3.0 only** **OR** **[Quince Commercial License v1.0](LICENSES/LicenseRef-Quince-Commercial.txt)**.
+
+All source files carry:
+```
+// SPDX-FileCopyrightText: 2026 0xitsss
+//
+// SPDX-License-Identifier: AGPL-3.0-only OR LicenseRef-Quince-Commercial
+```
+
+The AGPL-3.0-only applies to open-source use. For proprietary/internal use without copyleft obligations, a commercial license is required.
+
+QFL strategy files (*.qfl) and QFR compiled bytecode (*.qfr) are proprietary formats protected under the commercial license — decompilation and reverse engineering of QFR bytecode is prohibited without explicit written consent.
+
+---
+
+## Contact
+
+For commercial licensing, questions, or collaboration:
+
+- **Email**: js2302247@gmail.com
+- **Telegram**: [@its_unknow](https://t.me/its_unknow)

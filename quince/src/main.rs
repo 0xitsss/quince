@@ -1,3 +1,10 @@
+﻿// SPDX-FileCopyrightText: 2026 0xitsss
+//
+// SPDX-License-Identifier: AGPL-3.0-only OR LicenseRef-Quince-Commercial
+//! Quince trading bot binary entry point.
+//! Configures the trading environment from environment variables, selects
+//! mock/public/live exchange mode, and launches the main engine event loop.
+
 mod mock;
 
 use quince::engine::{Engine, EngineError};

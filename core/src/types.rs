@@ -1,3 +1,10 @@
+﻿// SPDX-FileCopyrightText: 2026 0xitsss
+//
+// SPDX-License-Identifier: AGPL-3.0-only OR LicenseRef-Quince-Commercial
+//! Core domain types shared across all Quince crates.
+//! Defines [`Trade`], [`Side`], [`Depth`], [`Order`], [`Position`], [`Balance`],
+//! and related types used throughout the trading pipeline.
+
 use std::sync::Arc;
 
 use chrono::{DateTime, Utc};

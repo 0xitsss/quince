@@ -1,3 +1,11 @@
+﻿// SPDX-FileCopyrightText: 2026 0xitsss
+//
+// SPDX-License-Identifier: AGPL-3.0-only OR LicenseRef-Quince-Commercial
+//! Main trading engine event loop.
+//! Drives the [`Engine`] lifecycle: subscribes to exchange streams, evaluates
+//! strategy conditions via QFL runtime, manages order placement/tracking,
+//! applies risk controls, and coordinates all subsystems.
+
 use crate::indicators::{parse_using, IndicatorBank};
 use crate::orders::{OrderManager, PendingStatus};
 use quince_core::types::*;
@@ -44,7 +52,7 @@ pub struct Engine<E: Exchange> {
     last_price: f64,
     daily_pnl: f64,
     peak_equity: f64,
-    // Account state for equity check (Vec + linear search, N ≤ 5)
+    // Account state for equity check (Vec + linear search, N в‰¤ 5)
     balance_names: Vec<String>,
     balance_values: Vec<f64>,
     position: Option<Position>,
@@ -172,7 +180,7 @@ impl<E: Exchange> Engine<E> {
         let entry_price_slot = qfl.ensure_indicator_slot("entry_price");
         let unrealized_pnl_slot = qfl.ensure_indicator_slot("unrealized_pnl");
 
-        // Finalize VM const→slot lookups (replaces HashMap+String in vm_getind/vm_getbal)
+        // Finalize VM constв†’slot lookups (replaces HashMap+String in vm_getind/vm_getbal)
         qfl.finalize_vm_init();
 
         tracing::info!("indicator bank ready: {} indicators", ind_cfg.len());
@@ -386,7 +394,7 @@ impl<E: Exchange> Engine<E> {
         }
     }
 
-    /// Vec-based balance store — linear search over N ≤ 5.
+    /// Vec-based balance store — linear search over N в‰¤ 5.
     fn set_balance(&mut self, name: &str, val: f64) {
         if let Some(i) = self.balance_names.iter().position(|n| n == name) {
             self.balance_values[i] = val;

@@ -1,9 +1,46 @@
-// --- VM module: bytecode interpreter with jump-table dispatch ---
-// Executes compiled QFL programs. Hot/cold split for cache efficiency.
+﻿// SPDX-FileCopyrightText: 2026 0xitsss
+//
+// SPDX-License-Identifier: AGPL-3.0-only OR LicenseRef-Quince-Commercial
+//! QFL bytecode VM — register-based interpreter with direct threaded dispatch.
+//!
+//! # Architecture
+//!
+//! The VM executes compiled [`QfrProgram`]s via a 256-entry function pointer table
+//! ([`DISPATCH_TABLE`]). Each instruction is a packed `u64`, decoded by bit-field
+//! extractors (`rd`, `rs1`, `rs2`, `imm`).
+//!
+//! ## Hot / Cold split
+//!
+//! The hot path (registers, PC, call stack, raw code pointer) lives in [`Vm`] (~2 KB,
+//! fits in L1). Cold data (indicators, balances, depth book, windows, persist) lives
+//! behind `Box<ColdVm>` (~30+ KB, L2/L3). This keeps the dispatch loop cache-friendly.
+//!
+//! ## Register file
+//!
+//! 256 slots: regs `0..=191` are conventionally integer (`i64`), `192..=255` float
+//! (`f64`). Stored as a `union Register` (`#[repr(C)]`) for zero-overhead access.
+//!
+//! ## Dispatch
+//!
+//! The single entry point is [`Vm::call`] which looks up an entry offset by name,
+//! sets `vm.pc`, and calls [`Vm::run`]. `run` fetches the first instruction and
+//! dispatches via [`DISPATCH_TABLE`]. Each handler finishes with
+//! `become dispatch_next(vm, instr)` — a guaranteed tail-call that advances `pc`,
+//! fetches, and dispatches the next instruction. Control-flow handlers (`vm_jmp`,
+//! `vm_call`, etc.) set `pc` directly before tail-calling. `vm_halt` returns
+//! normally, unwinding the flat dispatch stack back to `run`.
+//!
+//! ## Safety
+//!
+//! Handlers use unchecked register access (`get_unchecked`) and raw pointer arithmetic
+//! on `code_ptr`. Preconditions are documented per-handler via `# Safety` sections.
+//! The VM is not thread-safe; each [`Vm`] is pinned to one thread.
 
 use crate::ir::{ConstEntry, QfrProgram};
 use crate::opcodes::Instruction;
+use std::arch::x86_64::_mm_prefetch;
 use std::collections::HashMap;
+use std::intrinsics::{likely, unlikely};
 use std::io::Write;
 
 // --- Architectural constants ---
@@ -31,6 +68,11 @@ pub const REG_SEND_REDUCE: u8 = 254; // Reduce-only flag (i64)
 // A 256-slot register file. Each slot stores either an i64 or f64 (union).
 // Regs 0-191 are conventionally integer; regs 192-255 are conventionally float.
 
+/// A single register slot — stores either an `i64` or `f64` via `union`.
+///
+/// Regs `0..=191` are conventionally integer, `192..=255` float.
+/// Access via [`Self::from_i64`], [`Self::from_f64`], or directly through the union
+/// fields (`reg.i`, `reg.f`).
 #[derive(Clone, Copy)]
 #[repr(C)]
 pub union Register {
@@ -48,10 +90,12 @@ impl std::fmt::Debug for Register {
 }
 
 impl Register {
+    /// Wrap an `i64` into a register slot.
     #[inline(always)]
     pub fn from_i64(val: i64) -> Self {
         Register { i: val }
     }
+    /// Wrap an `f64` into a register slot.
     #[inline(always)]
     pub fn from_f64(val: f64) -> Self {
         Register { f: val }
@@ -67,10 +111,18 @@ impl Default for Register {
 // --- Persist Slots (hot-reload safe state) ---
 // Tag 0 = integer, tag 1 = float. Survives across hot-reloads via snapshot/restore.
 
+/// A single persist slot — survives across hot-reload cycles.
+///
+/// `tag` determines which field carries the value:
+/// - `0` в†’ [`int_val`](Self::int_val)
+/// - `1` в†’ [`float_val`](Self::float_val)
 #[derive(Debug, Clone, Copy)]
 pub struct PersistSlot {
-    pub tag: u8, // 0=int, 1=float — determines which field the reader uses
+    /// Tag: `0` = integer, `1` = float.
+    pub tag: u8,
+    /// Integer value (valid when [`tag`](Self::tag) == 0).
     pub int_val: i64,
+    /// Float value (valid when [`tag`](Self::tag) == 1).
     pub float_val: f64,
 }
 
@@ -84,14 +136,18 @@ impl Default for PersistSlot {
     }
 }
 
-// --- EMA State (Exponential Moving Average) ---
-// Used by the vm_ema opcode for fused feature computation.
-
+/// EMA (Exponential Moving Average) state for one slot.
+///
+/// Used by the `vm_ema` opcode. On first push (`initialized == false`) the value
+/// is seeded directly; thereafter it updates as `value = alpha * input + (1 - alpha) * value`.
 #[derive(Debug, Clone, Copy)]
 pub struct EmaState {
-    pub alpha: f64, // Smoothing factor (set at compile time from program.ema_alphas)
-    pub value: f64, // Current EMA value
-    pub initialized: bool, // False until first value pushed (seeds with raw value)
+    /// Smoothing factor (0..1), set at compile time from `program.ema_alphas`.
+    pub alpha: f64,
+    /// Current EMA value.
+    pub value: f64,
+    /// `false` before first push — first value seeds `value` directly.
+    pub initialized: bool,
 }
 
 impl Default for EmaState {
@@ -193,18 +249,19 @@ impl WindowMeta {
     }
 }
 
-// --- Cold VM data ---
-// Behind a `Box` pointer so hot fields stay cache-friendly.
-// These large arrays (~30+ KB) live in L2/L3, not L1.
-
+/// Cold (L2/L3) VM data — behind a `Box` to keep [`Vm`] cache-friendly.
+///
+/// Contains large arrays (~30+ KB) pushed out of L1: indicators, balances,
+/// depth book, persist slots, window arena, EMA states, and profiling/tracing
+/// infrastructure. Accessed through [`Vm::cold`].
 #[derive(Debug)]
 #[repr(C)]
 pub struct ColdVm {
     // Large flat arrays (pushed out of L1, behind Box)
     pub indicators: [f64; MAX_INDICATORS], // Named indicator values by slot
-    pub indicator_by_str: Vec<u16>,        // String constant index → indicator slot
+    pub indicator_by_str: Vec<u16>,        // String constant index в†’ indicator slot
     pub balances: [f64; MAX_BALANCES],     // Named balance values by slot
-    pub balance_by_str: Vec<u16>,          // String constant index → balance slot
+    pub balance_by_str: Vec<u16>,          // String constant index в†’ balance slot
 
     // Depth book (order book snapshots)
     pub depth_bids_price: [f64; MAX_DEPTH_LEVELS], // Bid prices per level
@@ -234,7 +291,7 @@ pub struct ColdVm {
     pub const_pool: Vec<ConstEntry>,
     pub const_strings: Vec<String>,
 
-    // Name→slot mapping (hash-based, O(1) lookup instead of O(n) linear scan)
+    // Nameв†’slot mapping (hash-based, O(1) lookup instead of O(n) linear scan)
     pub indicator_map: HashMap<String, u16>,
     pub balance_map: HashMap<String, u16>,
 
@@ -252,16 +309,20 @@ pub struct ColdVm {
     pub log_buffer: Option<crate::log_buffer::LogBuffer>,
 }
 
-// --- Hot VM Data ---
-// Flat VM — Vec/HashMap only in setup paths, NOT in execute_tick hot path.
-// Hot fields are declared first, cold fields behind `Box<ColdVm>`.
-
+/// Hot VM — the primary interpreter struct, sized to fit in L1 cache (~2 KB).
+///
+/// Registers, PC, call stack, and raw code pointers live here. All cold
+/// (large-array) state lives in [`ColdVm`] behind a `Box`.
+///
+/// # Thread safety
+///
+/// `Vm` is **not** `Send` or `Sync`. Each instance must remain on one thread.
 #[derive(Debug)]
 #[repr(C)]
 pub struct Vm {
-    // ════════════════════════════════════════════════════════════════
+    // в•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђ
     //  HOT PATH — accessed by almost every instruction in run()
-    // ════════════════════════════════════════════════════════════════
+    // в•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђ
     // Register file (2048 bytes, fits in L1)
     pub regs: [Register; NUM_REGS],
 
@@ -297,60 +358,26 @@ pub struct Vm {
 
 impl Vm {
     // --- Constructor ---
-    // Builds a Vm from a compiled QfrProgram. Copies code/constants into owned Vecs
-    // and sets up raw pointers, entry-point cache, handler cache, and initial state.
 
+    /// Build a VM from a compiled [`QfrProgram`].
+    ///
+    /// Takes ownership of the program's code and constant pools, sets up raw
+    /// pointers for zero-cost dispatch, and initialises all runtime state.
     pub fn new(program: QfrProgram) -> Self {
-        // Take ownership of compiled code and constants
-        let _code_owned: Vec<u64> = program.code.iter().map(|i| i.raw()).collect();
-        let code_ptr = _code_owned.as_ptr();
-        let code_len = _code_owned.len();
-
-        let _consts_owned = program.f64_consts.clone();
-        let _i64_consts_owned = program.i64_consts.clone();
-        let const_strings = program.string_consts.clone();
-        let consts_ptr = _consts_owned.as_ptr();
-        let const_count = _consts_owned.len() as u32;
-        let i64_consts_ptr = _i64_consts_owned.as_ptr();
-        let i64_const_count = _i64_consts_owned.len() as u32;
-
-        // Pack entry point names into u64 for fast comparison
-        let mut entry_names = [0u64; 8];
-        let mut entry_offsets = [0u32; 8];
-        let entry_count = program.entries.len().min(8) as u8;
-        for (i, e) in program
-            .entries
-            .iter()
-            .enumerate()
-            .take(entry_count as usize)
-        {
-            let mut name_bytes = [0u8; 8];
-            let src = e.name.as_bytes();
-            let n = src.len().min(8);
-            name_bytes[..n].copy_from_slice(&src[..n]);
-            entry_names[i] = u64::from_le_bytes(name_bytes);
-            entry_offsets[i] = e.code_offset;
-        }
-
-        // Initialize lookup tables — filled later during registration phase
+        let (_code_owned, code_ptr, code_len) = Self::take_code(&program);
+        let (
+            _consts_owned,
+            _i64_consts_owned,
+            const_strings,
+            consts_ptr,
+            const_count,
+            i64_consts_ptr,
+            i64_const_count,
+        ) = Self::take_consts(&program);
+        let (entry_names, entry_offsets, entry_count) = Self::pack_entries(&program);
         let indicator_by_str = vec![u16::MAX; const_strings.len()];
         let balance_by_str = vec![u16::MAX; const_strings.len()];
-
-        // Pre-compute handler cache: no linear scan needed in hot path
-        const HANDLER_LABELS: [&str; 4] = ["on_trade", "on_eval", "on_fill", "on_depth"];
-        let mut handler_cache = [u32::MAX; 4];
-        for (i, &label) in HANDLER_LABELS.iter().enumerate() {
-            let label_bytes = label.as_bytes();
-            let label_len = label_bytes.len();
-            for j in 0..entry_count as usize {
-                let stored = entry_names[j].to_le_bytes();
-                if stored[..label_len] == label_bytes[..label_len] {
-                    handler_cache[i] = entry_offsets[j];
-                    break;
-                }
-            }
-        }
-
+        let handler_cache = Self::build_handler_cache(&entry_names, &entry_offsets, entry_count);
         // Assemble the Vm with all default state
         let mut vm = Vm {
             regs: [Register::default(); NUM_REGS],
@@ -411,9 +438,84 @@ impl Vm {
         vm
     }
 
-    // --- Register Access Helpers ---
-    // Unsafe getters/setters with unchecked indexing (hot-path).
+    // --- Constructor helpers ---
 
+    /// Take ownership of the program's bytecode and return `(owned_vec, ptr, len)`.
+    fn take_code(program: &QfrProgram) -> (Vec<u64>, *const u64, usize) {
+        let owned: Vec<u64> = program.code.iter().map(|i| i.raw()).collect();
+        let ptr = owned.as_ptr();
+        let len = owned.len();
+        (owned, ptr, len)
+    }
+
+    /// Clone constant pools and return raw pointers for zero-cost access.
+    #[allow(clippy::too_many_arguments)]
+    fn take_consts(
+        program: &QfrProgram,
+    ) -> (
+        Vec<f64>,
+        Vec<i64>,
+        Vec<String>,
+        *const f64,
+        u32,
+        *const i64,
+        u32,
+    ) {
+        let f64_owned = program.f64_consts.clone();
+        let i64_owned = program.i64_consts.clone();
+        let strings = program.string_consts.clone();
+        let f64_ptr = f64_owned.as_ptr();
+        let f64_cnt = f64_owned.len() as u32;
+        let i64_ptr = i64_owned.as_ptr();
+        let i64_cnt = i64_owned.len() as u32;
+        (
+            f64_owned, i64_owned, strings, f64_ptr, f64_cnt, i64_ptr, i64_cnt,
+        )
+    }
+
+    /// Pack entry-point names into 8-byte u64s for O(1) comparison in the hot path.
+    fn pack_entries(program: &QfrProgram) -> ([u64; 8], [u32; 8], u8) {
+        let mut names = [0u64; 8];
+        let mut offsets = [0u32; 8];
+        let count = program.entries.len().min(8) as u8;
+        for (i, e) in program.entries.iter().enumerate().take(count as usize) {
+            let mut name_bytes = [0u8; 8];
+            let src = e.name.as_bytes();
+            let n = src.len().min(8);
+            name_bytes[..n].copy_from_slice(&src[..n]);
+            names[i] = u64::from_le_bytes(name_bytes);
+            offsets[i] = e.code_offset;
+        }
+        (names, offsets, count)
+    }
+
+    /// Build the handler-offset cache for the four standard entry points
+    /// (`on_trade`, `on_eval`, `on_fill`, `on_depth`) so the hot path avoids
+    /// a linear scan.
+    fn build_handler_cache(
+        entry_names: &[u64; 8],
+        entry_offsets: &[u32; 8],
+        entry_count: u8,
+    ) -> [u32; 4] {
+        const LABELS: [&str; 4] = ["on_trade", "on_eval", "on_fill", "on_depth"];
+        let mut cache = [u32::MAX; 4];
+        for (i, &label) in LABELS.iter().enumerate() {
+            let label_bytes = label.as_bytes();
+            let label_len = label_bytes.len();
+            for j in 0..entry_count as usize {
+                let stored = entry_names[j].to_le_bytes();
+                if stored[..label_len] == label_bytes[..label_len] {
+                    cache[i] = entry_offsets[j];
+                    break;
+                }
+            }
+        }
+        cache
+    }
+
+    // --- Register Access Helpers ---
+
+    /// Set reg `reg` to `val` (integer). Uses unchecked indexing for speed.
     #[inline(always)]
     pub fn set_int(&mut self, reg: u8, val: i64) {
         unsafe {
@@ -515,184 +617,211 @@ impl Vm {
         }
         None
     }
+
+    // в”Ђв”Ђ OS Core Isolation + Memory Pinning в”Ђв”Ђ
+
+    /// Pin the current thread to a specific CPU core.
+    #[cfg(target_os = "windows")]
+    pub fn pin_to_core(core_id: usize) -> Result<(), String> {
+        #[link(name = "kernel32")]
+        extern "system" {
+            fn GetCurrentThread() -> *mut std::ffi::c_void;
+            fn SetThreadAffinityMask(hThread: *mut std::ffi::c_void, mask: usize) -> usize;
+        }
+        unsafe {
+            let mask: usize = 1 << core_id;
+            let ret = SetThreadAffinityMask(GetCurrentThread(), mask);
+            if ret == 0 {
+                Err(format!("SetThreadAffinityMask failed for core {}", core_id))
+            } else {
+                Ok(())
+            }
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    pub fn pin_to_core(core_id: usize) -> Result<(), String> {
+        extern "C" {
+            fn sched_setaffinity(pid: i32, cpusetsize: usize, mask: *mut u64) -> i32;
+        }
+        unsafe {
+            let mut mask: u64 = 1 << core_id;
+            let ret = sched_setaffinity(0, std::mem::size_of::<u64>(), &mut mask);
+            if ret != 0 {
+                Err(format!("sched_setaffinity failed for core {}", core_id))
+            } else {
+                Ok(())
+            }
+        }
+    }
+
+    #[cfg(not(any(target_os = "windows", target_os = "linux")))]
+    pub fn pin_to_core(_core_id: usize) -> Result<(), String> {
+        Err("core pinning not supported on this platform".to_string())
+    }
+
+    /// Lock the VM's hot memory pages into RAM to prevent swapping.
+    #[cfg(target_os = "windows")]
+    pub fn lock_hot_memory(&mut self) -> Result<(), String> {
+        #[link(name = "kernel32")]
+        extern "system" {
+            fn VirtualLock(lpAddress: *mut std::ffi::c_void, dwSize: usize) -> i32;
+        }
+        unsafe {
+            let regs_ptr = self.regs.as_ptr() as *mut std::ffi::c_void;
+            if VirtualLock(regs_ptr, std::mem::size_of_val(&self.regs)) == 0 {
+                return Err("VirtualLock(regs) failed".to_string());
+            }
+            let code_ptr = self.code_ptr as *mut std::ffi::c_void;
+            if VirtualLock(code_ptr, self.code_len * std::mem::size_of::<u64>()) == 0 {
+                return Err("VirtualLock(code) failed".to_string());
+            }
+            Ok(())
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    pub fn lock_hot_memory(&mut self) -> Result<(), String> {
+        extern "C" {
+            fn mlock(addr: *const std::ffi::c_void, len: usize) -> i32;
+        }
+        unsafe {
+            let regs_ptr = self.regs.as_ptr() as *const std::ffi::c_void;
+            if mlock(regs_ptr, std::mem::size_of_val(&self.regs)) != 0 {
+                return Err("mlock(regs) failed".to_string());
+            }
+            let code_ptr = self.code_ptr as *const std::ffi::c_void;
+            if mlock(code_ptr, self.code_len * std::mem::size_of::<u64>()) != 0 {
+                return Err("mlock(code) failed".to_string());
+            }
+            Ok(())
+        }
+    }
+
+    #[cfg(not(any(target_os = "windows", target_os = "linux")))]
+    pub fn lock_hot_memory(&mut self) -> Result<(), String> {
+        let _ = self;
+        Err("memory locking not supported on this platform".to_string())
+    }
 }
 
-// --- Computed Goto Dispatch ---
-// Match on opcode → LLVM generates jump table (computed goto).
-// Each handler is called directly, not through function pointer table.
-// All handlers have #[inline(always)]; LLVM inlines them into this dispatch.
+// --- Direct Threaded Dispatch ---
+// Replaces computed-goto jump table with function pointer table + become tail calls.
+// Each handler does its work then tail-calls the next handler via `become`.
+// DISPATCH_TABLE is a 256-entry const array of function pointers indexed by opcode.
 
-macro_rules! computed_goto {
-    ($vm:expr, $instr:expr) => {
-        match ($instr & 0xFF) as u8 {
-            0 => handlers::vm_add($vm, $instr),
-            1 => handlers::vm_sub($vm, $instr),
-            2 => handlers::vm_mul($vm, $instr),
-            3 => handlers::vm_div($vm, $instr),
-            4 => handlers::vm_mod($vm, $instr),
-            5 => handlers::vm_neg($vm, $instr),
-            6 => handlers::vm_addi($vm, $instr),
-            7 => handlers::vm_subi($vm, $instr),
-            8 => handlers::vm_muli($vm, $instr),
-            9 => handlers::vm_divi($vm, $instr),
-            10 => handlers::vm_fadd($vm, $instr),
-            11 => handlers::vm_fsub($vm, $instr),
-            12 => handlers::vm_fmul($vm, $instr),
-            13 => handlers::vm_fdiv($vm, $instr),
-            14 => handlers::vm_fneg($vm, $instr),
-            15 => handlers::vm_eq($vm, $instr),
-            16 => handlers::vm_ne($vm, $instr),
-            17 => handlers::vm_lt($vm, $instr),
-            18 => handlers::vm_gt($vm, $instr),
-            19 => handlers::vm_le($vm, $instr),
-            20 => handlers::vm_ge($vm, $instr),
-            21 => handlers::vm_feq($vm, $instr),
-            22 => handlers::vm_fne($vm, $instr),
-            23 => handlers::vm_flt($vm, $instr),
-            24 => handlers::vm_fgt($vm, $instr),
-            25 => handlers::vm_fle($vm, $instr),
-            26 => handlers::vm_fge($vm, $instr),
-            27 => handlers::vm_eqi($vm, $instr),
-            28 => handlers::vm_lti($vm, $instr),
-            29 => handlers::vm_gti($vm, $instr),
-            30 => handlers::vm_bitand($vm, $instr),
-            31 => handlers::vm_bitor($vm, $instr),
-            32 => handlers::vm_bitxor($vm, $instr),
-            33 => handlers::vm_bitnot($vm, $instr),
-            34 => handlers::vm_shl($vm, $instr),
-            35 => handlers::vm_shr($vm, $instr),
-            36 => handlers::vm_jmp($vm, $instr),
-            37 => handlers::vm_jz($vm, $instr),
-            38 => handlers::vm_jnz($vm, $instr),
-            39 => handlers::vm_call($vm, $instr),
-            40 => handlers::vm_ret($vm, $instr),
-            41 => handlers::vm_mov($vm, $instr),
-            42 => handlers::vm_ldi($vm, $instr),
-            43 => handlers::vm_ldi64($vm, $instr),
-            44 => handlers::vm_ldcf64($vm, $instr),
-            45 => handlers::vm_i2f($vm, $instr),
-            46 => handlers::vm_f2i($vm, $instr),
-            47 => handlers::vm_getind($vm, $instr),
-            48 => handlers::vm_getprice($vm, $instr),
-            49 => handlers::vm_getpos($vm, $instr),
-            50 => handlers::vm_getbal($vm, $instr),
-            51 => handlers::vm_getdepthbid($vm, $instr),
-            52 => handlers::vm_getdepthask($vm, $instr),
-            53 => handlers::vm_sendorder($vm, $instr),
-            54 => handlers::vm_persistget($vm, $instr),
-            55 => handlers::vm_persistset($vm, $instr),
-            56 => handlers::vm_log($vm, $instr),
-            57 => handlers::vm_halt($vm, $instr),
-            58 => handlers::vm_windowpush($vm, $instr),
-            59 => handlers::vm_windowmean($vm, $instr),
-            60 => handlers::vm_windowstddev($vm, $instr),
-            61 => handlers::vm_windowmin($vm, $instr),
-            62 => handlers::vm_windowmax($vm, $instr),
-            63 => handlers::vm_windowsum($vm, $instr),
-            64 => handlers::vm_ema($vm, $instr),
-            65 => handlers::vm_log2($vm, $instr),
-            66 => handlers::vm_ldi64_c($vm, $instr),
-            67 => handlers::vm_ldcstr($vm, $instr),
-            68 => handlers::vm_pow($vm, $instr),
-            69 => handlers::vm_fpow($vm, $instr),
-            _ => {}
-        }
-    };
+type Handler = unsafe fn(&mut Vm, u64);
+
+const DISPATCH_TABLE: [Handler; 256] = {
+    let mut t: [Handler; 256] = [handlers::vm_halt; 256];
+    t[0] = handlers::vm_add;
+    t[1] = handlers::vm_sub;
+    t[2] = handlers::vm_mul;
+    t[3] = handlers::vm_div;
+    t[4] = handlers::vm_mod;
+    t[5] = handlers::vm_neg;
+    t[6] = handlers::vm_addi;
+    t[7] = handlers::vm_subi;
+    t[8] = handlers::vm_muli;
+    t[9] = handlers::vm_divi;
+    t[10] = handlers::vm_fadd;
+    t[11] = handlers::vm_fsub;
+    t[12] = handlers::vm_fmul;
+    t[13] = handlers::vm_fdiv;
+    t[14] = handlers::vm_fneg;
+    t[15] = handlers::vm_eq;
+    t[16] = handlers::vm_ne;
+    t[17] = handlers::vm_lt;
+    t[18] = handlers::vm_gt;
+    t[19] = handlers::vm_le;
+    t[20] = handlers::vm_ge;
+    t[21] = handlers::vm_feq;
+    t[22] = handlers::vm_fne;
+    t[23] = handlers::vm_flt;
+    t[24] = handlers::vm_fgt;
+    t[25] = handlers::vm_fle;
+    t[26] = handlers::vm_fge;
+    t[27] = handlers::vm_eqi;
+    t[28] = handlers::vm_lti;
+    t[29] = handlers::vm_gti;
+    t[30] = handlers::vm_bitand;
+    t[31] = handlers::vm_bitor;
+    t[32] = handlers::vm_bitxor;
+    t[33] = handlers::vm_bitnot;
+    t[34] = handlers::vm_shl;
+    t[35] = handlers::vm_shr;
+    t[36] = handlers::vm_jmp;
+    t[37] = handlers::vm_jz;
+    t[38] = handlers::vm_jnz;
+    t[39] = handlers::vm_call;
+    t[40] = handlers::vm_ret;
+    t[41] = handlers::vm_mov;
+    t[42] = handlers::vm_ldi;
+    t[43] = handlers::vm_ldi64;
+    t[44] = handlers::vm_ldcf64;
+    t[45] = handlers::vm_i2f;
+    t[46] = handlers::vm_f2i;
+    t[47] = handlers::vm_getind;
+    t[48] = handlers::vm_getprice;
+    t[49] = handlers::vm_getpos;
+    t[50] = handlers::vm_getbal;
+    t[51] = handlers::vm_getdepthbid;
+    t[52] = handlers::vm_getdepthask;
+    t[53] = handlers::vm_sendorder;
+    t[54] = handlers::vm_persistget;
+    t[55] = handlers::vm_persistset;
+    t[56] = handlers::vm_log;
+    t[57] = handlers::vm_halt;
+    t[58] = handlers::vm_windowpush;
+    t[59] = handlers::vm_windowmean;
+    t[60] = handlers::vm_windowstddev;
+    t[61] = handlers::vm_windowmin;
+    t[62] = handlers::vm_windowmax;
+    t[63] = handlers::vm_windowsum;
+    t[64] = handlers::vm_ema;
+    t[65] = handlers::vm_log2;
+    t[66] = handlers::vm_ldi64_c;
+    t[67] = handlers::vm_ldcstr;
+    t[68] = handlers::vm_pow;
+    t[69] = handlers::vm_fpow;
+    t
+};
+
+/// Tail-call helper: advance PC, fetch next instruction, dispatch.
+/// Every normal handler ends with `become dispatch_next(vm, instr)`.
+/// Control-flow handlers (jmp, jz, jnz, call, ret) set `vm.pc` directly,
+/// then fetch + `become DISPATCH_TABLE[...]` inline.
+///
+/// # Safety
+/// - `vm.code_ptr` must point to valid bytecode with at least `vm.pc + 1` instructions.
+/// - Caller must ensure `vm` is in a consistent state before dispatching.
+#[inline(never)]
+pub unsafe fn dispatch_next(vm: &mut Vm, instr: u64) {
+    vm.trace_exec(instr);
+    vm.pc = vm.pc.wrapping_add(1);
+    let next = *vm.code_ptr.add(vm.pc);
+    become DISPATCH_TABLE[(next & 0xFF) as usize](vm, next);
 }
 
 impl Vm {
-    #[inline(always)]
-    fn run_bare(&mut self) {
-        unsafe {
-            loop {
-                if !self.running || self.pc >= self.code_len {
-                    break;
-                }
-                let instr = *self.code_ptr.add(self.pc);
-                self.pc += 1;
-                computed_goto!(self, instr);
-            }
-        }
-    }
-
-    #[inline(never)]
-    fn run_profiled(&mut self) {
-        unsafe {
-            loop {
-                if !self.running || self.pc >= self.code_len {
-                    break;
-                }
-                #[cfg(feature = "profiling")]
-                let tsc_start = crate::profiler::rdtsc();
-                let instr = *self.code_ptr.add(self.pc);
-                self.pc += 1;
-                let opcode = (instr & 0xFF) as u8;
-                if let Some(ref mut p) = self.cold.profiler {
-                    #[cfg(feature = "profiling")]
-                    {
-                        let tsc_end = crate::profiler::rdtsc();
-                        let cycles = tsc_end.wrapping_sub(tsc_start);
-                        p.record_opcode_tsc(crate::opcodes::Opcode::from_u8(opcode), cycles);
-                    }
-                    #[cfg(not(feature = "profiling"))]
-                    p.record_opcode(crate::opcodes::Opcode::from_u8(opcode));
-                }
-                computed_goto!(self, instr);
-            }
-        }
-    }
-
-    #[inline(never)]
-    fn run_traced(&mut self) {
-        unsafe {
-            loop {
-                if !self.running || self.pc >= self.code_len {
-                    break;
-                }
-                let instr = *self.code_ptr.add(self.pc);
-                self.pc += 1;
-                let opcode = (instr & 0xFF) as u8;
-                computed_goto!(self, instr);
-                self.trace_op(opcode, instr);
-            }
-        }
-    }
-
-    #[inline(never)]
-    fn run_with_tracevm(&mut self) {
-        unsafe {
-            loop {
-                if !self.running || self.pc >= self.code_len {
-                    break;
-                }
-                let instr = *self.code_ptr.add(self.pc);
-                self.pc += 1;
-                let opcode = (instr & 0xFF) as u8;
-                computed_goto!(self, instr);
-                self.trace_vm_instruction(opcode, instr);
-            }
-        }
-    }
-
-    // Selects the appropriate dispatch loop based on profiling/tracing configuration.
-
+    /// Entry point: dispatch to the first instruction.
+    /// After that, each handler tail-calls the next via `become`.
+    /// The stack stays flat — `vm_halt` returns directly to this function.
     #[inline(always)]
     fn run(&mut self) {
-        let has_profiler = self.cold.profiler.is_some();
-        let has_tracer = self.cold.tracer.is_some();
-        if self.cold.trace_vm_enabled {
-            self.run_with_tracevm();
-        } else if has_profiler {
-            self.run_profiled();
-        } else if has_tracer {
-            self.run_traced();
-        } else {
-            self.run_bare();
+        unsafe {
+            let first = *self.code_ptr.add(self.pc);
+            DISPATCH_TABLE[(first & 0xFF) as usize](self, first);
         }
     }
 
-    // Stub: placeholder for trace_op callback (currently unused by default tracer).
-    fn trace_op(&mut self, _opcode: u8, _instr: u64) {}
+    // Inline trace check — zero cost when trace_vm_enabled is false.
+    #[inline(always)]
+    fn trace_exec(&mut self, instr: u64) {
+        if unlikely(self.cold.trace_vm_enabled) {
+            self.trace_vm_instruction((instr & 0xFF) as u8, instr);
+        }
+    }
 
     // Writes a detailed instruction trace line to the VM trace file.
     // Includes: timestamp (us), PC, opcode name, register values, and immediate.
@@ -734,9 +863,10 @@ impl Vm {
         }
     }
 
-    // Opens a file and enables VM trace mode. All future instruction executions
-    // will be logged with register state to the given path.
-
+    /// Enable per-instruction VM tracing to a file.
+    ///
+    /// Each executed instruction is logged with: timestamp, PC, opcode, register
+    /// values (rd, rs1, rs2), and immediate. Useful for debugging miscompilation.
     pub fn enable_trace_vm(&mut self, path: &str) {
         match std::fs::File::create(path) {
             Ok(file) => {
@@ -753,7 +883,7 @@ impl Vm {
     // --- State Setters ---
     // Called by the engine before each tick to push external state into the VM.
 
-    // Sets a named balance value. Grows the balance list if this is a new name.
+    /// Set a named balance. Creates a new slot if the name is not yet registered.
     pub fn set_balance(&mut self, asset: &str, val: f64) {
         if let Some(&slot) = self.cold.balance_map.get(asset) {
             if (slot as usize) < MAX_BALANCES {
@@ -776,7 +906,7 @@ impl Vm {
         self.position_size = size;
     }
 
-    // Copies ordered bid levels into the depth book.
+    /// Copy ordered bid levels into the depth book.
     pub fn set_depth_bids(&mut self, bids: &[quince_core::types::DepthLevel]) {
         let n = bids.len().min(MAX_DEPTH_LEVELS);
         for (i, bid) in bids.iter().enumerate().take(n) {
@@ -860,7 +990,7 @@ impl Vm {
         }
     }
 
-    // Rebuilds indicator_by_str / balance_by_str from the current name→slot lists.
+    // Rebuilds indicator_by_str / balance_by_str from the current nameв†’slot lists.
     // Must be called after all indicator/balance registrations (e.g. from Engine).
     // This allows vm_getind / vm_getbal opcodes to resolve string constants to slots
     // in O(1) via the string-constant index.
@@ -923,9 +1053,11 @@ impl Vm {
     }
 }
 
-// --- Snapshot Struct ---
-// Holds the portion of VM state that survives hot-reload.
-
+/// Snapshot of VM state that survives hot-reload.
+///
+/// Captured by [`Vm::snapshot`] before a hot-reload and restored by
+/// [`Vm::restore`] afterwards. Carries registers, persist slots, program
+/// counter, indicators, and balances.
 #[derive(Debug, Clone)]
 pub struct VmSnapshot {
     pub regs: [Register; NUM_REGS],
@@ -935,9 +1067,9 @@ pub struct VmSnapshot {
     pub balances: [f64; MAX_BALANCES],
 }
 
-// ═══════════════════════════════════════════════════════════════════════════════
+// в•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђ
 // Jump Table Handlers
-// ═══════════════════════════════════════════════════════════════════════════════
+// в•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђ
 // Each opcode handler is a function pointer in JUMP_TABLE.
 // Handlers follow the signature: fn(&mut Vm, instr: u64)
 
@@ -966,13 +1098,14 @@ unsafe fn immu(instr: u64) -> u32 {
     (instr >> 32) as u32 // Unsigned 32-bit immediate
 }
 
-// NaN/Inf sanitizer — debug-only assertion that float values are finite.
+// NaN/Inf sanitizer — branchless via SSE: replace NaN/Inf with 0.0.
 #[inline(always)]
 fn sanitize_f(val: f64) -> f64 {
-    if !val.is_finite() {
-        0.0
-    } else {
-        val
+    unsafe {
+        let a = std::arch::x86_64::_mm_set_sd(val);
+        let mask = std::arch::x86_64::_mm_cmpunord_sd(a, a);
+        let masked = std::arch::x86_64::_mm_andnot_pd(mask, a);
+        std::arch::x86_64::_mm_cvtsd_f64(masked)
     }
 }
 
@@ -981,7 +1114,7 @@ fn sanitize_f(val: f64) -> f64 {
 pub mod handlers {
     use super::*;
 
-    // ── Int arithmetic ──
+    // в”Ђв”Ђ Int arithmetic в”Ђв”Ђ
     // All integer ops use wrapping arithmetic (no overflow panic).
 
     // rd = rs1 + rs2 (wrapping add)
@@ -996,6 +1129,7 @@ pub mod handlers {
         let a = vm.regs.get_unchecked(rs1(instr) as usize).i;
         let b = vm.regs.get_unchecked(rs2(instr) as usize).i;
         vm.regs.get_unchecked_mut(r).i = a.wrapping_add(b);
+        become dispatch_next(vm, instr);
     }
 
     // rd = rs1 - rs2 (wrapping sub)
@@ -1012,6 +1146,7 @@ pub mod handlers {
             .get_unchecked(rs1(instr) as usize)
             .i
             .wrapping_sub(vm.regs.get_unchecked(rs2(instr) as usize).i);
+        become dispatch_next(vm, instr);
     }
 
     // rd = rs1 * rs2 (wrapping mul)
@@ -1028,6 +1163,7 @@ pub mod handlers {
             .get_unchecked(rs1(instr) as usize)
             .i
             .wrapping_mul(vm.regs.get_unchecked(rs2(instr) as usize).i);
+        become dispatch_next(vm, instr);
     }
 
     // rd = rs1 / rs2 (returns 0 on division by zero)
@@ -1040,11 +1176,12 @@ pub mod handlers {
         debug_assert!((rs1(instr) as usize) < NUM_REGS);
         debug_assert!((rs2(instr) as usize) < NUM_REGS);
         let divisor = vm.regs.get_unchecked(rs2(instr) as usize).i;
-        vm.regs.get_unchecked_mut(r).i = if divisor == 0 {
+        vm.regs.get_unchecked_mut(r).i = if unlikely(divisor == 0) {
             0
         } else {
             vm.regs.get_unchecked(rs1(instr) as usize).i / divisor
         };
+        become dispatch_next(vm, instr);
     }
 
     // rd = rs1 % rs2 (returns 0 on division by zero)
@@ -1057,11 +1194,12 @@ pub mod handlers {
         debug_assert!((rs1(instr) as usize) < NUM_REGS);
         debug_assert!((rs2(instr) as usize) < NUM_REGS);
         let divisor = vm.regs.get_unchecked(rs2(instr) as usize).i;
-        vm.regs.get_unchecked_mut(r).i = if divisor == 0 {
+        vm.regs.get_unchecked_mut(r).i = if unlikely(divisor == 0) {
             0
         } else {
             vm.regs.get_unchecked(rs1(instr) as usize).i % divisor
         };
+        become dispatch_next(vm, instr);
     }
 
     // rd = -rs1 (wrapping neg)
@@ -1074,6 +1212,7 @@ pub mod handlers {
         debug_assert!((rs1(instr) as usize) < NUM_REGS);
         vm.regs.get_unchecked_mut(r).i =
             vm.regs.get_unchecked(rs1(instr) as usize).i.wrapping_neg();
+        become dispatch_next(vm, instr);
     }
 
     // rd = rs1 + imm (wrapping add immediate)
@@ -1089,6 +1228,7 @@ pub mod handlers {
             .get_unchecked(rs1(instr) as usize)
             .i
             .wrapping_add(imm(instr) as i64);
+        become dispatch_next(vm, instr);
     }
 
     // rd = rs1 - imm (wrapping sub immediate)
@@ -1104,6 +1244,7 @@ pub mod handlers {
             .get_unchecked(rs1(instr) as usize)
             .i
             .wrapping_sub(imm(instr) as i64);
+        become dispatch_next(vm, instr);
     }
 
     // rd = rs1 * imm (wrapping mul immediate)
@@ -1119,6 +1260,7 @@ pub mod handlers {
             .get_unchecked(rs1(instr) as usize)
             .i
             .wrapping_mul(imm(instr) as i64);
+        become dispatch_next(vm, instr);
     }
 
     // rd = rs1 / imm (returns 0 on division by zero)
@@ -1130,21 +1272,22 @@ pub mod handlers {
         debug_assert!(r < NUM_REGS);
         debug_assert!((rs1(instr) as usize) < NUM_REGS);
         let divisor = imm(instr) as i64;
-        vm.regs.get_unchecked_mut(r).i = if divisor == 0 {
+        vm.regs.get_unchecked_mut(r).i = if unlikely(divisor == 0) {
             0
         } else {
             vm.regs.get_unchecked(rs1(instr) as usize).i / divisor
         };
+        become dispatch_next(vm, instr);
     }
 
-    // ── Float arithmetic ──
+    // в”Ђв”Ђ Float arithmetic в”Ђв”Ђ
 
     // Macro that generates a float binary-op handler: a $op b
     macro_rules! float_binop {
         ($name:ident, $op:tt) => {
             /// # Safety
             /// Caller must ensure the VM is in a valid state with initialized code pointer and register file.
-            #[inline(always)]
+            #[inline(never)]
 pub unsafe fn $name(vm: &mut Vm, instr: u64) {
                 let r = rd(instr) as usize;
                 debug_assert!(r < NUM_REGS);
@@ -1153,6 +1296,7 @@ pub unsafe fn $name(vm: &mut Vm, instr: u64) {
                 let a = vm.regs.get_unchecked(rs1(instr) as usize).f;
                 let b = vm.regs.get_unchecked(rs2(instr) as usize).f;
                 vm.regs.get_unchecked_mut(r).f = sanitize_f(a $op b);
+                become dispatch_next(vm, instr);
             }
         };
     }
@@ -1168,11 +1312,12 @@ pub unsafe fn $name(vm: &mut Vm, instr: u64) {
     pub unsafe fn vm_fdiv(vm: &mut Vm, instr: u64) {
         let r = rd(instr) as usize;
         let divisor = vm.regs.get_unchecked(rs2(instr) as usize).f;
-        vm.regs.get_unchecked_mut(r).f = if divisor == 0.0 {
+        vm.regs.get_unchecked_mut(r).f = if unlikely(divisor == 0.0) {
             0.0
         } else {
             sanitize_f(vm.regs.get_unchecked(rs1(instr) as usize).f / divisor)
         };
+        become dispatch_next(vm, instr);
     }
 
     // rd = -rs1 (float negate)
@@ -1182,16 +1327,17 @@ pub unsafe fn $name(vm: &mut Vm, instr: u64) {
     pub unsafe fn vm_fneg(vm: &mut Vm, instr: u64) {
         let r = rd(instr) as usize;
         vm.regs.get_unchecked_mut(r).f = sanitize_f(-vm.regs.get_unchecked(rs1(instr) as usize).f);
+        become dispatch_next(vm, instr);
     }
 
-    // ── Int comparison ──
+    // в”Ђв”Ђ Int comparison в”Ђв”Ђ
     // Sets rd = 1 if comparison is true, 0 otherwise.
 
     macro_rules! int_cmp {
         ($name:ident, $cmp:tt) => {
             /// # Safety
             /// Caller must ensure the VM is in a valid state with initialized code pointer and register file.
-            #[inline(always)]
+            #[inline(never)]
 pub unsafe fn $name(vm: &mut Vm, instr: u64) {
                 let r = rd(instr) as usize;
                 debug_assert!(r < NUM_REGS);
@@ -1200,6 +1346,7 @@ pub unsafe fn $name(vm: &mut Vm, instr: u64) {
                 let a = vm.regs.get_unchecked(rs1(instr) as usize).i;
                 let b = vm.regs.get_unchecked(rs2(instr) as usize).i;
                 vm.regs.get_unchecked_mut(r).i = if a $cmp b { 1 } else { 0 };
+                become dispatch_next(vm, instr);
             }
         };
     }
@@ -1211,14 +1358,14 @@ pub unsafe fn $name(vm: &mut Vm, instr: u64) {
     int_cmp!(vm_le, <=); // rd = (rs1 <= rs2) ? 1 : 0
     int_cmp!(vm_ge, >=); // rd = (rs1 >= rs2) ? 1 : 0
 
-    // ── Float comparison ──
+    // в”Ђв”Ђ Float comparison в”Ђв”Ђ
     // Sets rd = 1 if comparison is true, 0 otherwise. Result is i64.
 
     macro_rules! float_cmp {
         ($name:ident, $cmp:tt) => {
             /// # Safety
             /// Caller must ensure the VM is in a valid state with initialized code pointer and register file.
-            #[inline(always)]
+            #[inline(never)]
 pub unsafe fn $name(vm: &mut Vm, instr: u64) {
                 let r = rd(instr) as usize;
                 debug_assert!(r < NUM_REGS);
@@ -1227,6 +1374,7 @@ pub unsafe fn $name(vm: &mut Vm, instr: u64) {
                 let a = vm.regs.get_unchecked(rs1(instr) as usize).f;
                 let b = vm.regs.get_unchecked(rs2(instr) as usize).f;
                 vm.regs.get_unchecked_mut(r).i = if a $cmp b { 1 } else { 0 };
+                become dispatch_next(vm, instr);
             }
         };
     }
@@ -1238,7 +1386,7 @@ pub unsafe fn $name(vm: &mut Vm, instr: u64) {
     float_cmp!(vm_fle, <=); // rd = (rs1 <= rs2) ? 1 : 0 (float)
     float_cmp!(vm_fge, >=); // rd = (rs1 >= rs2) ? 1 : 0 (float)
 
-    // ── Immediate comparison ──
+    // в”Ђв”Ђ Immediate comparison в”Ђв”Ђ
 
     // rd = (rs1 == imm) ? 1 : 0
     /// # Safety
@@ -1248,6 +1396,7 @@ pub unsafe fn $name(vm: &mut Vm, instr: u64) {
         let r = rd(instr) as usize;
         let a = vm.regs.get_unchecked(rs1(instr) as usize).i;
         vm.regs.get_unchecked_mut(r).i = if a == imm(instr) as i64 { 1 } else { 0 };
+        become dispatch_next(vm, instr);
     }
 
     // rd = (rs1 < imm) ? 1 : 0
@@ -1258,6 +1407,7 @@ pub unsafe fn $name(vm: &mut Vm, instr: u64) {
         let r = rd(instr) as usize;
         let a = vm.regs.get_unchecked(rs1(instr) as usize).i;
         vm.regs.get_unchecked_mut(r).i = if a < imm(instr) as i64 { 1 } else { 0 };
+        become dispatch_next(vm, instr);
     }
 
     // rd = (rs1 > imm) ? 1 : 0
@@ -1268,16 +1418,17 @@ pub unsafe fn $name(vm: &mut Vm, instr: u64) {
         let r = rd(instr) as usize;
         let a = vm.regs.get_unchecked(rs1(instr) as usize).i;
         vm.regs.get_unchecked_mut(r).i = if a > imm(instr) as i64 { 1 } else { 0 };
+        become dispatch_next(vm, instr);
     }
 
-    // ── Bitwise operations ──
+    // в”Ђв”Ђ Bitwise operations в”Ђв”Ђ
 
     // Macro that generates a bitwise binary-op handler.
     macro_rules! bitwise_binop {
         ($name:ident, $op:tt) => {
             /// # Safety
             /// Caller must ensure the VM is in a valid state with initialized code pointer and register file.
-            #[inline(always)]
+            #[inline(never)]
 pub unsafe fn $name(vm: &mut Vm, instr: u64) {
                 let r = rd(instr) as usize;
                 debug_assert!(r < NUM_REGS);
@@ -1286,6 +1437,7 @@ pub unsafe fn $name(vm: &mut Vm, instr: u64) {
                 let a = vm.regs.get_unchecked(rs1(instr) as usize).i;
                 let b = vm.regs.get_unchecked(rs2(instr) as usize).i;
                 vm.regs.get_unchecked_mut(r).i = a $op b;
+                become dispatch_next(vm, instr);
             }
         };
     }
@@ -1303,6 +1455,7 @@ pub unsafe fn $name(vm: &mut Vm, instr: u64) {
         debug_assert!(r < NUM_REGS);
         debug_assert!((rs1(instr) as usize) < NUM_REGS);
         vm.regs.get_unchecked_mut(r).i = !vm.regs.get_unchecked(rs1(instr) as usize).i;
+        become dispatch_next(vm, instr);
     }
 
     // rd = rs1 << rs2 (wrapping shift left)
@@ -1317,6 +1470,7 @@ pub unsafe fn $name(vm: &mut Vm, instr: u64) {
         let a = vm.regs.get_unchecked(rs1(instr) as usize).i;
         let b = vm.regs.get_unchecked(rs2(instr) as usize).i;
         vm.regs.get_unchecked_mut(r).i = a.wrapping_shl(b as u32);
+        become dispatch_next(vm, instr);
     }
 
     // rd = rs1 >> rs2 (logical shift right, zero-extend)
@@ -1331,9 +1485,10 @@ pub unsafe fn $name(vm: &mut Vm, instr: u64) {
         let a = vm.regs.get_unchecked(rs1(instr) as usize).i as u64;
         let b = vm.regs.get_unchecked(rs2(instr) as usize).i;
         vm.regs.get_unchecked_mut(r).i = a.wrapping_shr(b as u32) as i64;
+        become dispatch_next(vm, instr);
     }
 
-    // ── Control flow ──
+    // в”Ђв”Ђ Control flow в”Ђв”Ђ
 
     // Unconditional jump: PC += imm
     /// # Safety
@@ -1341,11 +1496,13 @@ pub unsafe fn $name(vm: &mut Vm, instr: u64) {
     #[inline(always)]
     pub unsafe fn vm_jmp(vm: &mut Vm, instr: u64) {
         let target = (vm.pc as i64).wrapping_add(imm(instr) as i64) as usize;
-        if target >= vm.code_len {
+        if unlikely(target >= vm.code_len) {
             vm.running = false;
             return;
         }
         vm.pc = target;
+        let next = *vm.code_ptr.add(vm.pc);
+        become DISPATCH_TABLE[(next & 0xFF) as usize](vm, next);
     }
 
     // Conditional jump: PC += imm if rs1 == 0
@@ -1354,14 +1511,15 @@ pub unsafe fn $name(vm: &mut Vm, instr: u64) {
     #[inline(always)]
     pub unsafe fn vm_jz(vm: &mut Vm, instr: u64) {
         debug_assert!((rs1(instr) as usize) < NUM_REGS);
-        if vm.regs.get_unchecked(rs1(instr) as usize).i == 0 {
+        if unlikely(vm.regs.get_unchecked(rs1(instr) as usize).i == 0) {
             let target = (vm.pc as i64).wrapping_add(imm(instr) as i64) as usize;
-            if target >= vm.code_len {
+            if unlikely(target >= vm.code_len) {
                 vm.running = false;
                 return;
             }
             vm.pc = target;
         }
+        become dispatch_next(vm, instr);
     }
 
     // Conditional jump: PC += imm if rs1 != 0
@@ -1370,14 +1528,15 @@ pub unsafe fn $name(vm: &mut Vm, instr: u64) {
     #[inline(always)]
     pub unsafe fn vm_jnz(vm: &mut Vm, instr: u64) {
         debug_assert!((rs1(instr) as usize) < NUM_REGS);
-        if vm.regs.get_unchecked(rs1(instr) as usize).i != 0 {
+        if likely(vm.regs.get_unchecked(rs1(instr) as usize).i != 0) {
             let target = (vm.pc as i64).wrapping_add(imm(instr) as i64) as usize;
-            if target >= vm.code_len {
+            if unlikely(target >= vm.code_len) {
                 vm.running = false;
                 return;
             }
             vm.pc = target;
         }
+        become dispatch_next(vm, instr);
     }
 
     // Subroutine call: push return address onto call_stack, then PC += imm
@@ -1386,19 +1545,20 @@ pub unsafe fn $name(vm: &mut Vm, instr: u64) {
     #[inline(always)]
     pub unsafe fn vm_call(vm: &mut Vm, instr: u64) {
         let depth = vm.call_depth as usize;
-        if depth < MAX_CALL_DEPTH {
-            *vm.call_stack.get_unchecked_mut(depth) = vm.pc;
-            vm.call_depth += 1;
-        } else {
+        if unlikely(depth >= MAX_CALL_DEPTH) {
             vm.running = false;
             return;
         }
+        *vm.call_stack.get_unchecked_mut(depth) = vm.pc + 1;
+        vm.call_depth += 1;
         let target = (vm.pc as i64).wrapping_add(imm(instr) as i64) as usize;
-        if target >= vm.code_len {
+        if unlikely(target >= vm.code_len) {
             vm.running = false;
             return;
         }
         vm.pc = target;
+        let next = *vm.code_ptr.add(vm.pc);
+        become DISPATCH_TABLE[(next & 0xFF) as usize](vm, next);
     }
 
     // Return from subroutine: pop return address from call_stack; if depth 0, halt.
@@ -1407,15 +1567,17 @@ pub unsafe fn $name(vm: &mut Vm, instr: u64) {
     #[inline(always)]
     pub unsafe fn vm_ret(vm: &mut Vm, instr: u64) {
         let _ = instr;
-        if vm.call_depth > 0 {
-            vm.call_depth -= 1;
-            vm.pc = *vm.call_stack.get_unchecked(vm.call_depth as usize);
-        } else {
+        if unlikely(vm.call_depth == 0) {
             vm.running = false;
+            return;
         }
+        vm.call_depth -= 1;
+        vm.pc = *vm.call_stack.get_unchecked(vm.call_depth as usize);
+        let next = *vm.code_ptr.add(vm.pc);
+        become DISPATCH_TABLE[(next & 0xFF) as usize](vm, next);
     }
 
-    // ── Data movement ──
+    // в”Ђв”Ђ Data movement в”Ђв”Ђ
 
     // rd = rs1 (copy register value, preserves union type)
     /// # Safety
@@ -1425,6 +1587,7 @@ pub unsafe fn $name(vm: &mut Vm, instr: u64) {
         let r = rd(instr) as usize;
         let s = rs1(instr) as usize;
         *vm.regs.get_unchecked_mut(r) = *vm.regs.get_unchecked(s);
+        become dispatch_next(vm, instr);
     }
 
     // rd = imm (load 32-bit signed immediate, sign-extended to i64)
@@ -1434,6 +1597,7 @@ pub unsafe fn $name(vm: &mut Vm, instr: u64) {
     pub unsafe fn vm_ldi(vm: &mut Vm, instr: u64) {
         let r = rd(instr) as usize;
         vm.regs.get_unchecked_mut(r).i = imm(instr) as i64;
+        become dispatch_next(vm, instr);
     }
 
     // rd = 40-bit immediate encoded across imm(32) + rs2(8), sign-extended to i64
@@ -1442,8 +1606,8 @@ pub unsafe fn $name(vm: &mut Vm, instr: u64) {
     #[inline(always)]
     pub unsafe fn vm_ldi64(vm: &mut Vm, instr: u64) {
         let r = rd(instr) as usize;
-        let low = instr >> 32; // imm = bits 32-63 = low 32 of 40-bit val
-        let high = (instr >> 24) & 0xFF; // rs2 = bits 24-31 = high 8 of 40-bit val
+        let low = instr >> 32;
+        let high = (instr >> 24) & 0xFF;
         let val = (high << 32) | low;
         let sign = (val >> 39) & 1;
         vm.regs.get_unchecked_mut(r).i = if sign == 1 {
@@ -1451,6 +1615,7 @@ pub unsafe fn $name(vm: &mut Vm, instr: u64) {
         } else {
             val as i64
         };
+        become dispatch_next(vm, instr);
     }
 
     // rd = i64_consts[idx]  — load i64 from constant pool by index (immediate)
@@ -1460,10 +1625,10 @@ pub unsafe fn $name(vm: &mut Vm, instr: u64) {
     pub unsafe fn vm_ldi64_c(vm: &mut Vm, instr: u64) {
         let r = rd(instr) as usize;
         let idx = immu(instr) as usize;
-        if idx >= vm.i64_const_count as usize {
-            return;
+        if likely(idx < vm.i64_const_count as usize) {
+            vm.regs.get_unchecked_mut(r).i = *vm.i64_consts_ptr.add(idx);
         }
-        vm.regs.get_unchecked_mut(r).i = *vm.i64_consts_ptr.add(idx);
+        become dispatch_next(vm, instr);
     }
 
     // rd = consts[idx]  — load f64 from constant pool by index (immediate)
@@ -1473,10 +1638,10 @@ pub unsafe fn $name(vm: &mut Vm, instr: u64) {
     pub unsafe fn vm_ldcf64(vm: &mut Vm, instr: u64) {
         let r = rd(instr) as usize;
         let idx = immu(instr) as usize;
-        if idx >= vm.const_count as usize {
-            return;
+        if likely(idx < vm.const_count as usize) {
+            vm.regs.get_unchecked_mut(r).f = *vm.consts_ptr.add(idx);
         }
-        vm.regs.get_unchecked_mut(r).f = *vm.consts_ptr.add(idx);
+        become dispatch_next(vm, instr);
     }
 
     // rd = idx  — load string constant index into register (as i64)
@@ -1488,9 +1653,10 @@ pub unsafe fn $name(vm: &mut Vm, instr: u64) {
         let idx = immu(instr) as usize;
         debug_assert!(idx < vm.cold.const_strings.len());
         vm.regs.get_unchecked_mut(r).i = idx as i64;
+        become dispatch_next(vm, instr);
     }
 
-    // ── Type conversion ──
+    // в”Ђв”Ђ Type conversion в”Ђв”Ђ
 
     // rd = (f64)rs1  — convert integer register to float
     /// # Safety
@@ -1500,6 +1666,7 @@ pub unsafe fn $name(vm: &mut Vm, instr: u64) {
         let r = rd(instr) as usize;
         let val = vm.regs.get_unchecked(rs1(instr) as usize).i;
         vm.regs.get_unchecked_mut(r).f = val as f64;
+        become dispatch_next(vm, instr);
     }
 
     // rd = (i64)rs1  — convert float register to integer (truncate)
@@ -1510,9 +1677,10 @@ pub unsafe fn $name(vm: &mut Vm, instr: u64) {
         let r = rd(instr) as usize;
         let val = vm.regs.get_unchecked(rs1(instr) as usize).f;
         vm.regs.get_unchecked_mut(r).i = val as i64;
+        become dispatch_next(vm, instr);
     }
 
-    // ── Engine builtins ──
+    // в”Ђв”Ђ Engine builtins в”Ђв”Ђ
 
     // rd = indicator value at string-constant index rs1 (0.0 if not found)
     /// # Safety
@@ -1532,6 +1700,7 @@ pub unsafe fn $name(vm: &mut Vm, instr: u64) {
             0.0
         };
         vm.regs.get_unchecked_mut(r).f = val;
+        become dispatch_next(vm, instr);
     }
 
     // rd = last_price (most recent trade price set by engine)
@@ -1539,9 +1708,9 @@ pub unsafe fn $name(vm: &mut Vm, instr: u64) {
     /// Caller must ensure the VM is in a valid state with initialized code pointer and register file.
     #[inline(always)]
     pub unsafe fn vm_getprice(vm: &mut Vm, instr: u64) {
-        let _ = instr;
         let r = rd(instr) as usize;
         vm.regs.get_unchecked_mut(r).f = vm.last_price;
+        become dispatch_next(vm, instr);
     }
 
     // rd = position_size (current position set by engine)
@@ -1549,9 +1718,9 @@ pub unsafe fn $name(vm: &mut Vm, instr: u64) {
     /// Caller must ensure the VM is in a valid state with initialized code pointer and register file.
     #[inline(always)]
     pub unsafe fn vm_getpos(vm: &mut Vm, instr: u64) {
-        let _ = instr;
         let r = rd(instr) as usize;
         vm.regs.get_unchecked_mut(r).f = vm.position_size;
+        become dispatch_next(vm, instr);
     }
 
     // rd = balance value at string-constant index rs1 (0.0 if not found)
@@ -1572,6 +1741,7 @@ pub unsafe fn $name(vm: &mut Vm, instr: u64) {
             0.0
         };
         vm.regs.get_unchecked_mut(r).f = val;
+        become dispatch_next(vm, instr);
     }
 
     // rd = bid quantity at depth level rs1 (0.0 if beyond book)
@@ -1587,6 +1757,7 @@ pub unsafe fn $name(vm: &mut Vm, instr: u64) {
             0.0
         };
         vm.regs.get_unchecked_mut(r).f = val;
+        become dispatch_next(vm, instr);
     }
 
     // rd = ask quantity at depth level rs1 (0.0 if beyond book)
@@ -1602,6 +1773,7 @@ pub unsafe fn $name(vm: &mut Vm, instr: u64) {
             0.0
         };
         vm.regs.get_unchecked_mut(r).f = val;
+        become dispatch_next(vm, instr);
     }
 
     // --- SendOrder logic ---
@@ -1613,12 +1785,6 @@ pub unsafe fn $name(vm: &mut Vm, instr: u64) {
     /// Caller must ensure the VM is in a valid state with initialized code pointer and register file.
     #[inline(always)]
     pub unsafe fn vm_sendorder(vm: &mut Vm, instr: u64) {
-        let _ = instr;
-        debug_assert!((REG_SEND_SIDE as usize) < NUM_REGS);
-        debug_assert!((REG_SEND_QTY as usize) < NUM_REGS);
-        debug_assert!((REG_SEND_PRICE as usize) < NUM_REGS);
-        debug_assert!((REG_SEND_TYPE as usize) < NUM_REGS);
-        debug_assert!((REG_SEND_REDUCE as usize) < NUM_REGS);
         vm.has_pending_order = true;
         tracing::debug!(
             "QFL: SEND_ORDER side={} qty={} price={} type={} reduce={}",
@@ -1628,9 +1794,10 @@ pub unsafe fn $name(vm: &mut Vm, instr: u64) {
             vm.regs.get_unchecked(REG_SEND_TYPE as usize).i,
             vm.regs.get_unchecked(REG_SEND_REDUCE as usize).i,
         );
+        become dispatch_next(vm, instr);
     }
 
-    // ── Persist operations ──
+    // в”Ђв”Ђ Persist operations в”Ђв”Ђ
     // Hot-reload-safe state: tagged slots that survive across code reloads.
 
     // rd = persist[imm]  — read persist slot; if tag=0 read int, else read float
@@ -1640,39 +1807,39 @@ pub unsafe fn $name(vm: &mut Vm, instr: u64) {
     pub unsafe fn vm_persistget(vm: &mut Vm, instr: u64) {
         let r = rd(instr) as usize;
         let slot = immu(instr) as usize;
-        if slot >= PERSIST_SLOTS {
-            return;
+        if likely(slot < PERSIST_SLOTS) {
+            let ps = vm.cold.persist.get_unchecked(slot);
+            if ps.tag == 0 {
+                vm.regs.get_unchecked_mut(r).i = ps.int_val;
+            } else {
+                vm.regs.get_unchecked_mut(r).f = ps.float_val;
+            }
         }
-        let ps = vm.cold.persist.get_unchecked(slot);
-        if ps.tag == 0 {
-            vm.regs.get_unchecked_mut(r).i = ps.int_val;
-        } else {
-            vm.regs.get_unchecked_mut(r).f = ps.float_val;
-        }
+        become dispatch_next(vm, instr);
     }
 
     // persist[imm] = rd  — write persist slot; auto-tag based on register number
-    // (rd >= INT_REG_COUNT → float, else int)
+    // (rd >= INT_REG_COUNT в†’ float, else int)
     /// # Safety
     /// Caller must ensure the VM is in a valid state with initialized code pointer and register file.
     #[inline(always)]
     pub unsafe fn vm_persistset(vm: &mut Vm, instr: u64) {
         let slot = immu(instr) as usize;
         let r = rd(instr) as usize;
-        if slot >= PERSIST_SLOTS {
-            return;
+        if likely(slot < PERSIST_SLOTS) {
+            let ps = vm.cold.persist.get_unchecked_mut(slot);
+            if r >= INT_REG_COUNT as usize {
+                ps.tag = 1;
+                ps.float_val = vm.regs.get_unchecked(r).f;
+            } else {
+                ps.tag = 0;
+                ps.int_val = vm.regs.get_unchecked(r).i;
+            }
         }
-        let ps = vm.cold.persist.get_unchecked_mut(slot);
-        if r >= INT_REG_COUNT as usize {
-            ps.tag = 1;
-            ps.float_val = vm.regs.get_unchecked(r).f;
-        } else {
-            ps.tag = 0;
-            ps.int_val = vm.regs.get_unchecked(r).i;
-        }
+        become dispatch_next(vm, instr);
     }
 
-    // ── Logging ──
+    // в”Ђв”Ђ Logging в”Ђв”Ђ
 
     // Log message from string constant at rs1 (no value).
     // Pushes to ring buffer in debug builds; dumped to qflvm.log on graceful shutdown.
@@ -1693,11 +1860,7 @@ pub unsafe fn $name(vm: &mut Vm, instr: u64) {
                 buf.push(format!("QFL: {}", msg));
             }
         }
-        #[cfg(not(debug_assertions))]
-        {
-            let _ = vm;
-            let _ = instr;
-        }
+        become dispatch_next(vm, instr);
     }
 
     // Log message from string constant at rs1 with f64 value from rs2.
@@ -1723,11 +1886,7 @@ pub unsafe fn $name(vm: &mut Vm, instr: u64) {
                 }
             }
         }
-        #[cfg(not(debug_assertions))]
-        {
-            let _ = vm;
-            let _ = instr;
-        }
+        become dispatch_next(vm, instr);
     }
 
     // Halts execution by setting running = false.
@@ -1739,7 +1898,7 @@ pub unsafe fn $name(vm: &mut Vm, instr: u64) {
         vm.running = false;
     }
 
-    // ── Window opcodes ──
+    // в”Ђв”Ђ Window opcodes в”Ђв”Ђ
     // Rolling window operations: push a value, query aggregates (mean, stddev, min, max, sum).
 
     // Push value onto window wid. Maintains ring buffer, running sum/sum_sq,
@@ -1752,8 +1911,8 @@ pub unsafe fn $name(vm: &mut Vm, instr: u64) {
         let wid = immu(instr) as usize;
         let val = vm.regs.get_unchecked(rs1(instr) as usize).f;
         let r = rd(instr) as usize;
-        if wid >= MAX_WINDOWS {
-            return;
+        if unlikely(wid >= MAX_WINDOWS) {
+            become dispatch_next(vm, instr);
         }
         let meta = vm.cold.window_meta.get_unchecked_mut(wid);
         // Auto-initialize on first push
@@ -1774,6 +1933,12 @@ pub unsafe fn $name(vm: &mut Vm, instr: u64) {
         let cap = meta.capacity as usize;
         let off = meta.offset as usize;
         let head = meta.head as usize;
+
+        // Software prefetch: bring next ring buffer slot and current into L1
+        let arena_ptr = vm.cold.window_arena.as_ptr();
+        let next_head = (head + 1) % cap;
+        _mm_prefetch(arena_ptr.add(off + next_head) as *const i8, 0);
+        _mm_prefetch(arena_ptr.add(off + head) as *const i8, 1);
 
         // Write value to ring buffer head position
         *vm.cold.window_arena.get_unchecked_mut(off + head) = val;
@@ -1853,6 +2018,7 @@ pub unsafe fn $name(vm: &mut Vm, instr: u64) {
         }
 
         vm.regs.get_unchecked_mut(r).f = val;
+        become dispatch_next(vm, instr);
     }
 
     // Macro generating window unary query handlers (mean, stddev, min, max, sum).
@@ -1861,18 +2027,19 @@ pub unsafe fn $name(vm: &mut Vm, instr: u64) {
         ($name:ident, $method:ident) => {
             /// # Safety
             /// Caller must ensure the VM is in a valid state with initialized code pointer and register file.
-            #[inline(always)]
+            #[inline(never)]
             pub unsafe fn $name(vm: &mut Vm, instr: u64) {
                 let wid = immu(instr) as usize;
                 let r = rd(instr) as usize;
-                if wid >= MAX_WINDOWS {
-                    return;
+                if unlikely(wid >= MAX_WINDOWS) {
+                    become dispatch_next(vm, instr);
                 }
                 let meta = vm.cold.window_meta.get_unchecked(wid);
                 let result = meta.$method();
                 if meta.len > 0 {
                     vm.regs.get_unchecked_mut(r).f = result;
                 }
+                become dispatch_next(vm, instr);
             }
         };
     }
@@ -1883,7 +2050,7 @@ pub unsafe fn $name(vm: &mut Vm, instr: u64) {
     window_unary!(vm_windowmax, max); // rd = max of window wid
     window_unary!(vm_windowsum, sum); // rd = sum of window wid
 
-    // ── Phase 4g: fused feature opcodes ──
+    // в”Ђв”Ђ Phase 4g: fused feature opcodes в”Ђв”Ђ
 
     // EMA update: rd = ema_state[sid].update(rs1)
     // On first call (initialized=false), seeds value = input.
@@ -1904,9 +2071,10 @@ pub unsafe fn $name(vm: &mut Vm, instr: u64) {
             st.initialized = true;
         }
         vm.regs.get_unchecked_mut(r).f = sanitize_f(st.value);
+        become dispatch_next(vm, instr);
     }
 
-    // ── Power operations ──
+    // в”Ђв”Ђ Power operations в”Ђв”Ђ
 
     // rd = rs1 ^ rs2  (integer exponentiation via exponentiation by squaring)
     // Returns 0 for negative exp, 1 for exp == 0.
@@ -1939,6 +2107,7 @@ pub unsafe fn $name(vm: &mut Vm, instr: u64) {
             }
             result
         };
+        become dispatch_next(vm, instr);
     }
 
     // rd = rs1 ^ rs2  (float exponentiation via powf)
@@ -1953,5 +2122,6 @@ pub unsafe fn $name(vm: &mut Vm, instr: u64) {
         let a = vm.regs.get_unchecked(rs1(instr) as usize).f;
         let b = vm.regs.get_unchecked(rs2(instr) as usize).f;
         vm.regs.get_unchecked_mut(r).f = sanitize_f(a.powf(b));
+        become dispatch_next(vm, instr);
     }
 }

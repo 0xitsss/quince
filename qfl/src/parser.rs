@@ -1,9 +1,18 @@
+﻿// SPDX-FileCopyrightText: 2026 0xitsss
+//
+// SPDX-License-Identifier: AGPL-3.0-only OR LicenseRef-Quince-Commercial
+//! QFL Pratt parser — token stream в†’ AST.
+//!
+//! Implements a Pratt (precedence-climbing) parser over the [`Token`] stream
+//! from the lexer. Produces a [`Program`] AST for subsequent type-checking
+//! and compilation.
+//!
+//! Entry point: [`Parser::parse()`].
+
 use crate::ast::*;
 use crate::lexer::Token;
 
-// --- Section: ParseError ---
-
-// Error produced during parsing, carrying the error message and token position.
+/// Error produced during parsing, carrying the message and token position.
 #[derive(Debug, Clone)]
 pub struct ParseError {
     pub msg: String,
@@ -918,7 +927,7 @@ pub fn parse(input: &str) -> Result<Program, ParseError> {
 mod tests {
     use super::*;
 
-    // ── Basic expression tests ──
+    // в”Ђв”Ђ Basic expression tests в”Ђв”Ђ
 
     #[test]
     fn test_empty() {
@@ -986,7 +995,7 @@ mod tests {
         );
     }
 
-    // ── Variable declaration tests ──
+    // в”Ђв”Ђ Variable declaration tests в”Ђв”Ђ
 
     #[test]
     fn test_local_var() {
@@ -1033,7 +1042,7 @@ mod tests {
         );
     }
 
-    // ── Assignment tests ──
+    // в”Ђв”Ђ Assignment tests в”Ђв”Ђ
 
     #[test]
     fn test_assign() {
@@ -1062,7 +1071,7 @@ mod tests {
         );
     }
 
-    // ── Legacy function declaration tests ──
+    // в”Ђв”Ђ Legacy function declaration tests в”Ђв”Ђ
 
     #[test]
     fn test_fn_decl() {
@@ -1083,7 +1092,7 @@ mod tests {
         );
     }
 
-    // ── Control flow tests ──
+    // в”Ђв”Ђ Control flow tests в”Ђв”Ђ
 
     #[test]
     fn test_if_stmt() {
@@ -1153,7 +1162,7 @@ mod tests {
         }
     }
 
-    // ── For loop tests ──
+    // в”Ђв”Ђ For loop tests в”Ђв”Ђ
 
     #[test]
     fn test_numeric_for() {
@@ -1205,7 +1214,7 @@ mod tests {
         }
     }
 
-    // ── Function call tests ──
+    // в”Ђв”Ђ Function call tests в”Ђв”Ђ
 
     #[test]
     fn test_fn_call() {
@@ -1235,7 +1244,7 @@ mod tests {
         );
     }
 
-    // ── Field access tests ──
+    // в”Ђв”Ђ Field access tests в”Ђв”Ђ
 
     #[test]
     fn test_field_access() {
@@ -1252,7 +1261,7 @@ mod tests {
         );
     }
 
-    // ── Table constructor tests ──
+    // в”Ђв”Ђ Table constructor tests в”Ђв”Ђ
 
     #[test]
     fn test_table_simple() {
@@ -1283,7 +1292,7 @@ mod tests {
         }
     }
 
-    // ── Unary operator tests ──
+    // в”Ђв”Ђ Unary operator tests в”Ђв”Ђ
 
     #[test]
     fn test_unary_minus() {
@@ -1309,7 +1318,7 @@ mod tests {
         );
     }
 
-    // ── String concat and power tests ──
+    // в”Ђв”Ђ String concat and power tests в”Ђв”Ђ
 
     #[test]
     fn test_concat() {
@@ -1373,7 +1382,7 @@ mod tests {
         }
     }
 
-    // ── Edge case: empty function ──
+    // в”Ђв”Ђ Edge case: empty function в”Ђв”Ђ
 
     #[test]
     fn test_empty_fn() {
@@ -1388,7 +1397,7 @@ mod tests {
         );
     }
 
-    // ── Nested block tests ──
+    // в”Ђв”Ђ Nested block tests в”Ђв”Ђ
 
     #[test]
     fn test_nested_blocks() {
@@ -1438,7 +1447,7 @@ end
         }
     }
 
-    // ── Return statement tests ──
+    // в”Ђв”Ђ Return statement tests в”Ђв”Ђ
 
     #[test]
     fn test_multiple_returns() {
@@ -1466,7 +1475,7 @@ end
         }
     }
 
-    // ── Multi-variable local ──
+    // в”Ђв”Ђ Multi-variable local в”Ђв”Ђ
 
     #[test]
     fn test_multi_local() {
@@ -1486,7 +1495,7 @@ end
         );
     }
 
-    // ── Parenthesised expression ──
+    // в”Ђв”Ђ Parenthesised expression в”Ђв”Ђ
 
     #[test]
     fn test_expr_in_parens() {
@@ -1505,7 +1514,7 @@ end
         );
     }
 
-    // ── Integer division and modulo ──
+    // в”Ђв”Ђ Integer division and modulo в”Ђв”Ђ
 
     #[test]
     fn test_idiv_mod() {
@@ -1534,7 +1543,7 @@ end
         }
     }
 
-    // ── Hex literal ──
+    // в”Ђв”Ђ Hex literal в”Ђв”Ђ
 
     #[test]
     fn test_hex_number() {
@@ -1542,7 +1551,7 @@ end
         assert_eq!(prog[0], Stmt::ExprStmt(Expr::Literal(Literal::I64(255))));
     }
 
-    // ── Semicolon as empty statement ──
+    // в”Ђв”Ђ Semicolon as empty statement в”Ђв”Ђ
 
     #[test]
     fn test_semi_stmt() {
@@ -1550,7 +1559,7 @@ end
         assert_eq!(prog[0], Stmt::ExprStmt(Expr::Literal(Literal::Nil)));
     }
 
-    // ── Index expression ──
+    // в”Ђв”Ђ Index expression в”Ђв”Ђ
 
     #[test]
     fn test_table_field_access() {
@@ -1564,7 +1573,7 @@ end
         );
     }
 
-    // ── Unary not precedence ──
+    // в”Ђв”Ђ Unary not precedence в”Ђв”Ђ
 
     #[test]
     fn test_unary_not_precedence() {
@@ -1592,7 +1601,7 @@ end
         }
     }
 
-    // ── Edge case parser tests ──
+    // в”Ђв”Ђ Edge case parser tests в”Ђв”Ђ
 
     #[test]
     fn test_empty_input() {
@@ -1817,7 +1826,7 @@ end
         assert_eq!(prog.len(), 1);
     }
 
-    // ── Syntax edge cases ──
+    // в”Ђв”Ђ Syntax edge cases в”Ђв”Ђ
 
     #[test]
     fn test_empty_block_in_fn() {
@@ -2037,7 +2046,7 @@ until x >= 10
         }
     }
 
-    // ── Error recovery ──
+    // в”Ђв”Ђ Error recovery в”Ђв”Ђ
 
     #[test]
     fn test_unexpected_token() {
@@ -2092,7 +2101,7 @@ until x >= 10
         }
     }
 
-    // ── Expression edge cases ──
+    // в”Ђв”Ђ Expression edge cases в”Ђв”Ђ
 
     #[test]
     fn test_consecutive_unary_ops() {
@@ -2211,7 +2220,7 @@ until x >= 10
         assert_eq!(count_add_depth(&prog[0]), 99);
     }
 
-    // ── Phase 4g: state, event handler, typed fn tests ──
+    // в”Ђв”Ђ Phase 4g: state, event handler, typed fn tests в”Ђв”Ђ
 
     #[test]
     fn test_state_decl() {
@@ -2311,7 +2320,7 @@ until x >= 10
         }
     }
 
-    // ── Phase 4g parser tests ──
+    // в”Ђв”Ђ Phase 4g parser tests в”Ђв”Ђ
 
     #[test]
     fn test_at_using_directive() {

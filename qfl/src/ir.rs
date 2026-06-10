@@ -1,3 +1,14 @@
+﻿// SPDX-FileCopyrightText: 2026 0xitsss
+//
+// SPDX-License-Identifier: AGPL-3.0-only OR LicenseRef-Quince-Commercial
+//! QFL IR (Intermediate Representation) — serializable bytecode format.
+//!
+//! Defines [`QfrProgram`] (V1/V2), the [`EntryPoint`] table, [`ConstEntry`] pool,
+//! and [`quince_hash64`] checksum. Supports binary serialization/deserialization
+//! with mmap-compatible V2 format.
+//!
+//! Entry points: [`save_qfr()`](crate::runtime::QflRuntime::save_qfr), [`load_qfr()`].
+
 use crate::opcodes::Instruction;
 use std::collections::HashMap;
 use std::fs::File;
@@ -17,13 +28,13 @@ pub const QFR_VERSION_V1: u32 = 1;
 pub const QFR_VERSION_V2: u16 = 2;
 
 // --- QuinceHash64: custom 64-bit checksum ---
-// ARX sponge: 256-bit state (4×u64), Add-Rotate-XOR with multiplicative diffusion.
+// ARX sponge: 256-bit state (4Г—u64), Add-Rotate-XOR with multiplicative diffusion.
 // 3 finalizing rounds, bit padding + length strengthening.
 
 const QH_IV0: u64 = 0xDEAD_BEEF_CAFE_F00D;
-const QH_IV1: u64 = 0xC0FFEE_ABBA_BABE;
-const QH_PHI: u64 = 0x9E37_79B9_7F4A_7C15; // 2^64 / φ
-const QH_PII: u64 = 0x3F6A_3C4D_5E6F_7A89; // 2^64 × √3
+const QH_IV1: u64 = 0x00C0_FFEE_ABBA_BABE;
+const QH_PHI: u64 = 0x9E37_79B9_7F4A_7C15; // 2^64 / П†
+const QH_PII: u64 = 0x3F6A_3C4D_5E6F_7A89; // 2^64 Г— в€љ3
 
 pub fn quince_hash64(data: &[u8]) -> u64 {
     let mut a = QH_IV0;
@@ -230,9 +241,9 @@ impl QfrProgram {
     }
 }
 
-// ═══════════════════════════════════════════════════════════════════════════════
+// в•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђ
 // Zero-Copy Mmap Architecture (QFRv2)
-// ═══════════════════════════════════════════════════════════════════════════════
+// в•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђ
 
 /// Binary header — byte-exact layout for memory mapping.
 /// Total header size: 64 bytes (cache-line aligned).
@@ -412,9 +423,9 @@ impl Loader {
     }
 }
 
-// ═══════════════════════════════════════════════════════════════════════════════
+// в•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђ
 // V2 Serialization (Binarized format)
-// ═══════════════════════════════════════════════════════════════════════════════
+// в•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђ
 
 /// Serialize a QfrProgram into the zero-copy mmap-compatible binary format.
 pub fn serialize_binarized(prog: &QfrProgram) -> Vec<u8> {
@@ -653,9 +664,9 @@ pub fn deserialize_binarized(data: &[u8]) -> Result<QfrProgram, String> {
     })
 }
 
-// ═══════════════════════════════════════════════════════════════════════════════
+// в•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђ
 // V1 Serialization (Legacy, backward compat)
-// ═══════════════════════════════════════════════════════════════════════════════
+// в•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђ
 
 // Serializes a QfrProgram into the legacy V1 binary format
 pub fn serialize_v1(prog: &QfrProgram) -> Vec<u8> {
@@ -958,7 +969,7 @@ mod tests {
     use super::*;
     use crate::opcodes::Opcode;
 
-    // ── V1 roundtrip tests (keep original) ──
+    // в”Ђв”Ђ V1 roundtrip tests (keep original) в”Ђв”Ђ
 
     #[test]
     fn serialize_deserialize_roundtrip_preserves_entries_consts_and_code() {
@@ -1072,7 +1083,7 @@ mod tests {
         assert!(QfrProgram::load("nonexistent.qfr").is_err());
     }
 
-    // ── V2 binarized format tests ──
+    // в”Ђв”Ђ V2 binarized format tests в”Ђв”Ђ
 
     #[test]
     fn binarized_roundtrip_preserves_entries_and_code() {

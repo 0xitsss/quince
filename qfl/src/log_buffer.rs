@@ -1,5 +1,16 @@
+﻿// SPDX-FileCopyrightText: 2026 0xitsss
+//
+// SPDX-License-Identifier: AGPL-3.0-only OR LicenseRef-Quince-Commercial
+//! Debug-only ring buffer for strategy log messages.
+//!
+//! Stores the most recent `max` log entries, dropping oldest when full.
+//! Only compiled in `debug_assertions` builds.
+
 use std::collections::VecDeque;
 
+/// Ring buffer for strategy log messages.
+///
+/// Drops oldest entries when `max` capacity is reached.
 #[derive(Debug, Clone)]
 pub struct LogBuffer {
     entries: VecDeque<String>,

@@ -1,9 +1,20 @@
-// --- Imports ---
+﻿// SPDX-FileCopyrightText: 2026 0xitsss
+//
+// SPDX-License-Identifier: AGPL-3.0-only OR LicenseRef-Quince-Commercial
+//! QFL AST в†’ IR bytecode compiler.
+//!
+//! Translates a type-checked [`Program`] AST into a [`QfrProgram`] bytecode
+//! representation. Allocates registers, emits opcodes, and builds the constant
+//! pool and entry-point table.
+//!
+//! Entry point: [`compile()`].
 
 use crate::ast::*;
 use crate::ir::QfrProgram;
 use crate::opcodes::{Instruction, Opcode as O};
-use crate::vm::{PERSIST_SLOTS, REG_SEND_PRICE, REG_SEND_QTY, REG_SEND_REDUCE, REG_SEND_SIDE, REG_SEND_TYPE};
+use crate::vm::{
+    PERSIST_SLOTS, REG_SEND_PRICE, REG_SEND_QTY, REG_SEND_REDUCE, REG_SEND_SIDE, REG_SEND_TYPE,
+};
 use std::collections::HashMap;
 
 // --- Section: Public API ---
@@ -529,7 +540,7 @@ impl Compiler {
         elseif_branches: &[(Box<Expr>, Vec<Stmt>)],
         else_body: &[Stmt],
     ) {
-        // Compile condition → boolean int register
+        // Compile condition в†’ boolean int register
         let cond_reg = self.compile_cond(cond);
         let jz_to_else = self.current_offset() as usize;
         self.emit(Instruction::rri(O::Jz, 0, cond_reg, 0)); // placeholder, patched below
@@ -542,9 +553,11 @@ impl Compiler {
         self.pop_inner_scope();
 
         // Check if the then-body ended with a terminal (Ret/Halt/Jmp)
-        let then_ended_terminal = self.prog.code.last().is_some_and(|i| {
-            matches!(i.opcode(), O::Ret | O::Halt | O::Jmp)
-        });
+        let then_ended_terminal = self
+            .prog
+            .code
+            .last()
+            .is_some_and(|i| matches!(i.opcode(), O::Ret | O::Halt | O::Jmp));
         // Emit a Jmp over the else/elseif branches (if there are any and then didn't end terminal)
         let jmp_to_end = if !else_body.is_empty() || !elseif_branches.is_empty() {
             if then_ended_terminal {
@@ -577,9 +590,11 @@ impl Compiler {
             self.pop_inner_scope();
 
             // If this elseif body ended terminal, mark it (no Jmp needed)
-            let ebody_ended_terminal = self.prog.code.last().is_some_and(|i| {
-                matches!(i.opcode(), O::Ret | O::Halt | O::Jmp)
-            });
+            let ebody_ended_terminal = self
+                .prog
+                .code
+                .last()
+                .is_some_and(|i| matches!(i.opcode(), O::Ret | O::Halt | O::Jmp));
             if ebody_ended_terminal {
                 elseif_jmps.push((usize::MAX, econd_reg));
             } else {
@@ -661,7 +676,7 @@ impl Compiler {
         }
         self.pop_inner_scope();
 
-        // Evaluate condition; Jz (false) loops back to repeat (repeat-until ≡ while-not)
+        // Evaluate condition; Jz (false) loops back to repeat (repeat-until в‰Ў while-not)
         let cond_reg = self.compile_cond(until);
         let jz_back = self.current_offset();
         let back_offset = loop_start as i64 - jz_back as i64 - 1;
@@ -936,9 +951,9 @@ impl Compiler {
     }
 
     /// Emit an Ldi or Ldi64 instruction, selecting the optimal encoding for the immediate value.
-    /// - 32-bit signed fits → Ldi (3-byte encoding)
-    /// - 40-bit signed fits → Ldi64 with ri40 encoding
-    /// - Otherwise → intern into i64 constant pool and use LdI64
+    /// - 32-bit signed fits в†’ Ldi (3-byte encoding)
+    /// - 40-bit signed fits в†’ Ldi64 with ri40 encoding
+    /// - Otherwise в†’ intern into i64 constant pool and use LdI64
     fn emit_ldi(&mut self, r: u8, val: i64) {
         if val >= i32::MIN as i64 && val <= i32::MAX as i64 {
             self.emit(Instruction::rri(O::Ldi, r, 0, val as u32));
@@ -955,7 +970,7 @@ impl Compiler {
     // --- Section: Identifier / Variable Access Compilation ---
 
     /// Compile a variable/identifier reference.
-    /// Checks: persist slots → trade-convention builtins (on_trade only) → symbol table
+    /// Checks: persist slots в†’ trade-convention builtins (on_trade only) в†’ symbol table
     /// When found in the symbol table, caches the register for reuse (avoids redundant Mov).
     /// If not found anywhere, defaults to 0.
     fn compile_ident(&mut self, name: &str) -> (u8, bool) {
@@ -1032,7 +1047,7 @@ impl Compiler {
     // --- Section: Binary Expression Compilation ---
 
     /// Compile a binary operation (arithmetic, comparison, logical, concatenation).
-    /// Handles operand type promotion (int→float in mixed-type operations).
+    /// Handles operand type promotion (intв†’float in mixed-type operations).
     /// For logical AND/OR: uses short-circuit evaluation with conditional jumps.
     /// For float IDiv/Mod: converts to ints, divides, converts back.
     fn compile_binary(&mut self, lhs: &Expr, op: &BinOp, rhs: &Expr) -> (u8, bool) {
@@ -1340,7 +1355,7 @@ impl Compiler {
     /// Moves each argument into the designated send registers (REG_SEND_*),
     /// then emits the SendOrder opcode.
     fn compile_send_order(&mut self, args: &[Expr]) {
-        // Arg 0: side (int) → REG_SEND_SIDE
+        // Arg 0: side (int) в†’ REG_SEND_SIDE
         if let Some(arg) = args.first() {
             let (r, is_float) = self.compile_expr(arg);
             if is_float {
@@ -1351,7 +1366,7 @@ impl Compiler {
                 self.emit(Instruction::rr(O::Mov, REG_SEND_SIDE, r));
             }
         }
-        // Arg 1: quantity (float) → REG_SEND_QTY
+        // Arg 1: quantity (float) в†’ REG_SEND_QTY
         if let Some(arg) = args.get(1) {
             let (r, is_float) = self.compile_expr(arg);
             if is_float {
@@ -1362,7 +1377,7 @@ impl Compiler {
                 self.emit(Instruction::rr(O::Mov, REG_SEND_QTY, tmp));
             }
         }
-        // Arg 2: price (float) → REG_SEND_PRICE
+        // Arg 2: price (float) в†’ REG_SEND_PRICE
         if let Some(arg) = args.get(2) {
             let (r, is_float) = self.compile_expr(arg);
             if is_float {
@@ -1373,7 +1388,7 @@ impl Compiler {
                 self.emit(Instruction::rr(O::Mov, REG_SEND_PRICE, tmp));
             }
         }
-        // Arg 3: order type (int, optional) → REG_SEND_TYPE, defaults to 0
+        // Arg 3: order type (int, optional) в†’ REG_SEND_TYPE, defaults to 0
         if let Some(arg) = args.get(3) {
             let (r, is_float) = self.compile_expr(arg);
             if is_float {
@@ -1386,7 +1401,7 @@ impl Compiler {
         } else {
             self.emit(Instruction::rri(O::Ldi, REG_SEND_TYPE, 0, 0));
         }
-        // Arg 4: reduce_only (int, optional) → REG_SEND_REDUCE, defaults to 0
+        // Arg 4: reduce_only (int, optional) в†’ REG_SEND_REDUCE, defaults to 0
         if let Some(arg) = args.get(4) {
             let (r, is_float) = self.compile_expr(arg);
             if is_float {
@@ -1858,7 +1873,7 @@ on eval() {
             );
         }
         for e in &prog.entries {
-            eprintln!("entry: {} @{}", e.name, e.code_offset            );
+            eprintln!("entry: {} @{}", e.name, e.code_offset);
         }
         assert!(!prog.code.is_empty());
     }
@@ -1998,7 +2013,7 @@ end
         );
     }
 
-    // ── Macro: strategy compilation tests ──
+    // в”Ђв”Ђ Macro: strategy compilation tests в”Ђв”Ђ
 
     macro_rules! strategy_compiles {
         ($name:ident, $src:expr, $entries:expr, $min_instr:expr) => {
@@ -2020,7 +2035,7 @@ end
         };
     }
 
-    // ── Strategy compilation tests ──
+    // в”Ђв”Ђ Strategy compilation tests в”Ђв”Ђ
 
     strategy_compiles!(
         test_sma_cross,
@@ -2163,7 +2178,7 @@ end
         4
     ); // at least 4 instr (5 field accesses via Mov)
 
-    // ── Expression compilation tests ──
+    // в”Ђв”Ђ Expression compilation tests в”Ђв”Ђ
 
     macro_rules! expr_compiles {
         ($name:ident, $src:expr, $opcode:path) => {
@@ -2217,7 +2232,7 @@ end
     expr_compiles!(test_expr_log_str, "quince.log(\"msg\")", O::Log);
     expr_compiles!(test_expr_log_ident, "quince.log(\"x\")", O::Log);
 
-    // ── Edge-case tests ──
+    // в”Ђв”Ђ Edge-case tests в”Ђв”Ђ
 
     #[test]
     fn test_if_elseif_else() {
@@ -2295,7 +2310,7 @@ end
         assert!(has_fadd, "mixed add must emit FAdd");
     }
 
-    // ── Error path tests ──
+    // в”Ђв”Ђ Error path tests в”Ђв”Ђ
 
     #[test]
     fn test_parse_error_invalid_syntax() {
@@ -2503,7 +2518,7 @@ end
         assert_eq!(prog.code[0].opcode(), O::Ldi);
     }
 
-    // ── compile_checked (type-checked compilation) tests ──
+    // в”Ђв”Ђ compile_checked (type-checked compilation) tests в”Ђв”Ђ
 
     #[test]
     fn compile_checked_valid_program_ok() {
@@ -2539,7 +2554,7 @@ end
         );
     }
 
-    // ── Phase 4g: feature/signal compilation tests ──
+    // в”Ђв”Ђ Phase 4g: feature/signal compilation tests в”Ђв”Ђ
 
     strategy_compiles!(
         test_feature_signal,

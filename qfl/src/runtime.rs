@@ -1,12 +1,23 @@
-// --- Section: Imports ---
+﻿// SPDX-FileCopyrightText: 2026 0xitsss
+//
+// SPDX-License-Identifier: AGPL-3.0-only OR LicenseRef-Quince-Commercial
+//! QFL runtime — high-level interface between the trading engine and the VM.
+//!
+//! Owns a [`Vm`], a compiled strategy path, symbol context, an order-sending
+//! channel, and a [`RiskEngine`](quince_risk::RiskEngine). Exposes `feed_*`
+//! methods that push external events (trade, depth, fill, eval) into the VM.
+//!
+//! Entry point: [`QflRuntime::load()`].
+
 use crate::vm::Vm;
 use quince_core::types::{Depth, OrderFill, Side, Trade};
 use std::path::PathBuf;
 use std::sync::Arc;
 
-// --- Section: Event enum ---
-// Unified exchange event that can be dispatched to the QFL runtime.
-// Each variant triggers a different handler in the VM.
+/// Unified exchange event dispatched to the QFL runtime.
+///
+/// Each variant triggers a different handler (`on_trade`, `on_depth`, etc.)
+/// inside the VM.
 #[derive(Debug, Clone)]
 pub enum Event {
     Trade(Trade),    // Market trade tick
@@ -860,7 +871,7 @@ end
         let _ = std::fs::remove_file(&path);
     }
 
-    // ── Additional runtime tests ──
+    // в”Ђв”Ђ Additional runtime tests в”Ђв”Ђ
 
     #[test]
     fn test_feed_eval_no_handler() {
@@ -1225,7 +1236,7 @@ end
         let _ = std::fs::remove_file(&path_v2);
     }
 
-    // ── Hot-reload tests ──
+    // в”Ђв”Ђ Hot-reload tests в”Ђв”Ђ
 
     #[test]
     fn test_hot_reload_persist_type_change() {
@@ -1349,7 +1360,7 @@ end
         }
     }
 
-    // ── Persist edge case tests ──
+    // в”Ђв”Ђ Persist edge case tests в”Ђв”Ђ
 
     #[test]
     fn test_persist_all_64_slots_filled() {
@@ -1439,7 +1450,7 @@ end
         let _ = std::fs::remove_file(&path);
     }
 
-    // ── Order flow edge case tests ──
+    // в”Ђв”Ђ Order flow edge case tests в”Ђв”Ђ
 
     #[test]
     fn test_order_send_buy_market_after_trade() {
@@ -1573,7 +1584,7 @@ end
         let _ = std::fs::remove_file(&path);
     }
 
-    // ── Error path tests ──
+    // в”Ђв”Ђ Error path tests в”Ђв”Ђ
 
     #[test]
     fn test_load_nonexistent_file() {
@@ -1599,7 +1610,7 @@ end
         let _ = std::fs::remove_file(path);
     }
 
-    // ── Feed state update tests ──
+    // в”Ђв”Ђ Feed state update tests в”Ђв”Ђ
 
     #[test]
     fn test_feed_trade_updates_last_price() {
@@ -1703,7 +1714,7 @@ end
         let _ = std::fs::remove_file(&path);
     }
 
-    // ── Type-checked runtime loading ──
+    // в”Ђв”Ђ Type-checked runtime loading в”Ђв”Ђ
 
     #[test]
     fn test_load_type_error_rejected() {
@@ -1744,7 +1755,7 @@ end
         let _ = std::fs::remove_file(&path);
     }
 
-    // ── Risk engine integration ──
+    // в”Ђв”Ђ Risk engine integration в”Ђв”Ђ
 
     #[test]
     fn test_risk_rejects_large_order() {
@@ -1826,7 +1837,7 @@ end
         let _ = std::fs::remove_file(&path);
     }
 
-    // ── Tracer integration ──
+    // в”Ђв”Ђ Tracer integration в”Ђв”Ђ
 
     fn make_tracer_rt(name: &str, src: &str) -> (QflRuntime, String) {
         let path = write_test_strategy(name, src);
@@ -1943,7 +1954,7 @@ end
         let _ = std::fs::remove_file(&path);
     }
 
-    // ── .qfr save/load integration ──
+    // в”Ђв”Ђ .qfr save/load integration в”Ђв”Ђ
 
     #[test]
     fn qfr_save_load_roundtrip() {
@@ -2034,7 +2045,7 @@ on eval() {
         let _ = std::fs::remove_file(&path);
     }
 
-    // ── Load test: full pipeline + VM execution ──
+    // в”Ђв”Ђ Load test: full pipeline + VM execution в”Ђв”Ђ
 
     const STRATEGIES_DIR: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../strategies/");
 
@@ -2089,7 +2100,7 @@ on eval() {
         let ns_per_tick = elapsed.as_nanos() / 10_000;
         let ops_per_ms = (10_000.0 / elapsed.as_secs_f64()) / 1000.0;
         println!(
-            "\n═══ LOAD TEST scalper.qfl ═══\n  {} iterations in {:?}\n  {:.1} ns/tick  |  {:.0} ops/ms\n  {} instrs (optimized)\n  {} entries\n",
+            "\nв•ђв•ђв•ђ LOAD TEST scalper.qfl в•ђв•ђв•ђ\n  {} iterations in {:?}\n  {:.1} ns/tick  |  {:.0} ops/ms\n  {} instrs (optimized)\n  {} entries\n",
             10_000, elapsed, ns_per_tick, ops_per_ms, qfr.code.len(), qfr.entries.len()
         );
     }
@@ -2135,7 +2146,7 @@ on eval() {
         let ns_per_tick = elapsed.as_nanos() / 10_000;
         let ops_per_ms = (10_000.0 / elapsed.as_secs_f64()) / 1000.0;
         println!(
-            "\n═══ LOAD TEST ema_cross.qfl ═══\n  {} iterations in {:?}\n  {:.1} ns/tick  |  {:.0} ops/ms\n  {} instrs (optimized)\n",
+            "\nв•ђв•ђв•ђ LOAD TEST ema_cross.qfl в•ђв•ђв•ђ\n  {} iterations in {:?}\n  {:.1} ns/tick  |  {:.0} ops/ms\n  {} instrs (optimized)\n",
             10_000, elapsed, ns_per_tick, ops_per_ms, qfr.code.len()
         );
     }
@@ -2181,7 +2192,7 @@ on eval() {
         let ns_per_tick = elapsed.as_nanos() / 10_000;
         let ops_per_ms = (10_000.0 / elapsed.as_secs_f64()) / 1000.0;
         println!(
-            "\n═══ LOAD TEST momentum.qfl ═══\n  {} iterations in {:?}\n  {:.1} ns/tick  |  {:.0} ops/ms\n  {} instrs (optimized)\n",
+            "\nв•ђв•ђв•ђ LOAD TEST momentum.qfl в•ђв•ђв•ђ\n  {} iterations in {:?}\n  {:.1} ns/tick  |  {:.0} ops/ms\n  {} instrs (optimized)\n",
             10_000, elapsed, ns_per_tick, ops_per_ms, qfr.code.len()
         );
     }
@@ -2201,7 +2212,7 @@ on eval() {
         rt.set_position_size(0.0);
 
         println!(
-            "\n═══ HEAVY TEST ═══\n  {} instrs (optimized)\n",
+            "\nв•ђв•ђв•ђ HEAVY TEST в•ђв•ђв•ђ\n  {} instrs (optimized)\n",
             instr_count
         );
 
@@ -2303,7 +2314,7 @@ on eval() {
         let ns_per_event = elapsed.as_nanos() / 100_000;
         let ops_per_ms = (100_000.0 / elapsed.as_secs_f64()) / 1000.0;
         println!(
-            "═══ LOAD TEST heavy_test.qfl ═══\n  {} events in {:?}\n  {:.1} ns/event  |  {:.0} ops/ms\n  {} instrs (optimized)\n",
+            "в•ђв•ђв•ђ LOAD TEST heavy_test.qfl в•ђв•ђв•ђ\n  {} events in {:?}\n  {:.1} ns/event  |  {:.0} ops/ms\n  {} instrs (optimized)\n",
             100_000, elapsed, ns_per_event, ops_per_ms, instr_count
         );
         assert!(elapsed.as_secs() < 30, "heavy_test took too long");

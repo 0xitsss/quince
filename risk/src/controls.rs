@@ -1,3 +1,10 @@
+﻿// SPDX-FileCopyrightText: 2026 0xitsss
+//
+// SPDX-License-Identifier: AGPL-3.0-only OR LicenseRef-Quince-Commercial
+//! Risk control enforcement at runtime.
+//! [`RiskControls`] validates orders and positions against configured limits
+//! (max position size, max drawdown, order frequency, daily loss, cooldown).
+
 use quince_core::types::*;
 use std::time::{Duration, Instant};
 
@@ -144,7 +151,7 @@ mod tests {
     #[test]
     fn check_order_drawdown_exceeded() {
         let mut r = risk();
-        // peak_equity 10000, current equity 8000 → drawdown 20% > 10%
+        // peak_equity 10000, current equity 8000 в†’ drawdown 20% > 10%
         assert!(r.check_order(&make_order(1.0), 10000.0).is_ok());
         let result = r.check_order(&make_order(1.0), 8000.0);
         assert!(result.is_err());

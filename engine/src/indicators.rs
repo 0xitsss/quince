@@ -1,3 +1,10 @@
+﻿// SPDX-FileCopyrightText: 2026 0xitsss
+//
+// SPDX-License-Identifier: AGPL-3.0-only OR LicenseRef-Quince-Commercial
+//! Indicator parsing and management for the trading engine.
+//! Parses `@using` directives from QFL strategy headers into [`IndicatorEntry`] lists
+//! and provides [`IndicatorBank`] for runtime indicator lifecycle.
+
 use quince_core::types::*;
 use quince_indicators::Candle;
 
@@ -46,7 +53,7 @@ fn default_buffer(_: &str, params: &[f64]) -> usize {
     (period * 2).max(DEFAULT_BUFFER)
 }
 
-// ── ActiveIndicator wraps quince-indicators types ──
+// в”Ђв”Ђ ActiveIndicator wraps quince-indicators types в”Ђв”Ђ
 
 enum ActiveIndicator {
     Sma(quince_indicators::ma::Sma),
@@ -78,7 +85,7 @@ enum ActiveIndicator {
     },
 }
 
-// ── IndicatorBank ──
+// в”Ђв”Ђ IndicatorBank в”Ђв”Ђ
 
 pub struct IndicatorBank {
     indicators: Vec<ActiveIndicator>,
@@ -230,7 +237,7 @@ impl IndicatorBank {
         }
     }
 
-    /// Pre-assign name→slot mapping (call once at init).
+    /// Pre-assign nameв†’slot mapping (call once at init).
     /// All indicator slots — zero HashMap lookups in hot path.
     pub fn set_name_to_slot(&mut self, name: &str, slot: u16) {
         match name {
@@ -309,7 +316,10 @@ impl IndicatorBank {
             "depth_imbalance",
             "entry_price",
             "unrealized_pnl",
-        ].iter().enumerate() {
+        ]
+        .iter()
+        .enumerate()
+        {
             self.set_name_to_slot(name, slot as u16);
         }
     }

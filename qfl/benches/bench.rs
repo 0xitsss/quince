@@ -1,14 +1,17 @@
+﻿// SPDX-FileCopyrightText: 2026 0xitsss
+//
+// SPDX-License-Identifier: AGPL-3.0-only OR LicenseRef-Quince-Commercial
 use criterion::{
     black_box, criterion_group, criterion_main, BenchmarkId, Criterion, Throughput,
 };
 use quince_qfl::*;
 
-// ─── Constants ───────────────────────────────────────────────────────────────
+// в”Ђв”Ђв”Ђ Constants в”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђ
 
 const STRATEGIES_DIR: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../strategies/");
 const TICK_ITERS: u64 = 10_000;
 
-// ─── Helpers ─────────────────────────────────────────────────────────────────
+// в”Ђв”Ђв”Ђ Helpers в”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђ
 
 fn strategies() -> Vec<String> {
     let mut files: Vec<String> = std::fs::read_dir(STRATEGIES_DIR)
@@ -63,7 +66,7 @@ fn run_n_ticks(vm: &mut vm::Vm, n: u64) {
     black_box(unsafe { vm.regs[0].f });
 }
 
-// ─── Group 1: Pipeline (parse + compile + optimize) ──────────────────────────
+// в”Ђв”Ђв”Ђ Group 1: Pipeline (parse + compile + optimize) в”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђ
 
 fn bench_pipeline(c: &mut Criterion) {
     let mut group = c.benchmark_group("pipeline");
@@ -95,7 +98,7 @@ fn load_and_count(name: &str) -> (Vec<u64>, usize) {
     (qfr.code.iter().map(|i| i.raw()).collect(), qfr.code.len())
 }
 
-// ─── Group 2: VM tick execution ──────────────────────────────────────────────
+// в”Ђв”Ђв”Ђ Group 2: VM tick execution в”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђ
 
 fn bench_vm_tick(c: &mut Criterion) {
     let mut group = c.benchmark_group("vm_tick");
@@ -115,7 +118,7 @@ fn bench_vm_tick(c: &mut Criterion) {
     group.finish();
 }
 
-// ─── Group 3: VM scale sweep (heavy_test) ────────────────────────────────────
+// в”Ђв”Ђв”Ђ Group 3: VM scale sweep (heavy_test) в”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђ
 
 fn bench_vm_scale(c: &mut Criterion) {
     let mut vm = load_vm("heavy_test");
@@ -136,7 +139,7 @@ fn bench_vm_scale(c: &mut Criterion) {
     group.finish();
 }
 
-// ─── Group 4: Feed benchmark (runtime-level, with setup amortized) ───────────
+// в”Ђв”Ђв”Ђ Group 4: Feed benchmark (runtime-level, with setup amortized) в”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђ
 
 fn bench_runtime(c: &mut Criterion) {
     use quince_core::types::{Side, Trade};
@@ -175,7 +178,7 @@ fn bench_runtime(c: &mut Criterion) {
     group.finish();
 }
 
-// ─── Macro glue ──────────────────────────────────────────────────────────────
+// в”Ђв”Ђв”Ђ Macro glue в”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђ
 
 criterion_group!(
     name = benches;

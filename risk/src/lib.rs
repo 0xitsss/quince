@@ -1,3 +1,10 @@
+﻿// SPDX-FileCopyrightText: 2026 0xitsss
+//
+// SPDX-License-Identifier: AGPL-3.0-only OR LicenseRef-Quince-Commercial
+//! Risk management configuration and controls.
+//! Defines [`RiskConfig`] for parameterizing position sizing, drawdown limits,
+//! order frequency, daily loss caps, and cooldown periods.
+
 pub mod controls;
 
 pub use controls::RiskControls;

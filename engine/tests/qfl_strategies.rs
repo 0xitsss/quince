@@ -1,3 +1,6 @@
+﻿// SPDX-FileCopyrightText: 2026 0xitsss
+//
+// SPDX-License-Identifier: AGPL-3.0-only OR LicenseRef-Quince-Commercial
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -8,7 +11,7 @@ use quince_engine::Engine;
 use quince_exchange::r#trait::{Exchange, OrderStatus, Result, Stream, StreamMsg};
 use quince_risk::{RiskConfig, RiskControls};
 
-// ── Mock exchange for integration tests ──
+// в”Ђв”Ђ Mock exchange for integration tests в”Ђв”Ђ
 
 struct MockState {
     stream_tx: Option<crossbeam_channel::Sender<StreamMsg>>,
@@ -148,7 +151,7 @@ impl Exchange for MockExchange {
     }
 }
 
-// ── Helper ──
+// в”Ђв”Ђ Helper в”Ђв”Ђ
 
 fn write_strategy(name: &str, source: &str) -> String {
     let path = format!("{}.qfl", name);
@@ -183,7 +186,7 @@ async fn run_engine_for_ticks(strategy_path: &str) {
         .ok();
 }
 
-// ── Integration tests ──
+// в”Ђв”Ђ Integration tests в”Ђв”Ђ
 
 macro_rules! integration_test {
     ($name:ident, $src:expr) => {
@@ -436,7 +439,7 @@ end
 "
 );
 
-// ── Full strategies as integration tests ──
+// в”Ђв”Ђ Full strategies as integration tests в”Ђв”Ђ
 
 integration_test!(
     intg_ema_cross,
@@ -584,7 +587,7 @@ on fill(f) {
 "
 );
 
-// ── Risk / edge integration tests ──
+// в”Ђв”Ђ Risk / edge integration tests в”Ђв”Ђ
 
 #[tokio::test]
 async fn intg_risk_rejects_large_order() {

@@ -1,8 +1,13 @@
-/// Risk Engine — runtime-enforced trading limits.
-///
-/// Intercepts orders before they reach the exchange connector.
-/// Rejects orders that violate configured limits.
-/// Limits are set externally (from strategy config or CLI).
+﻿// SPDX-FileCopyrightText: 2026 0xitsss
+//
+// SPDX-License-Identifier: AGPL-3.0-only OR LicenseRef-Quince-Commercial
+//! QFL risk engine — runtime-enforced trading limits.
+//!
+//! Intercepts orders before they reach the exchange connector. Rejects orders
+//! that violate configured limits (max position, max notional, max orders/cycle).
+//!
+//! Entry point: [`RiskEngine::check_order()`].
+
 use quince_core::types::Order;
 
 /// Runtime-enforced risk limits.
@@ -150,7 +155,7 @@ mod tests {
     fn reduce_only_order_skips_position_check() {
         let mut engine = RiskEngine::new(RiskLimits::default());
         engine.current_position = 9.5;
-        // qty=0.1, price=100 → notional=10 < 10000, passes
+        // qty=0.1, price=100 в†’ notional=10 < 10000, passes
         let mut order = make_order(Side::Sell, 0.1, Some(100.0));
         order.reduce_only = true;
         assert_eq!(engine.check_order(&order), RiskVerdict::Allowed);

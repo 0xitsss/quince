@@ -1,3 +1,10 @@
+﻿// SPDX-FileCopyrightText: 2026 0xitsss
+//
+// SPDX-License-Identifier: AGPL-3.0-only OR LicenseRef-Quince-Commercial
+//! Market structure indicators.
+//! Provides [`Adx`] (Average Directional Index) for trend strength measurement
+//! and [`Psar`] (Parabolic SAR) for trend direction and reversal points.
+
 use crate::Candle;
 use quince_core::ring::RingVec;
 

@@ -1,3 +1,10 @@
+﻿// SPDX-FileCopyrightText: 2026 0xitsss
+//
+// SPDX-License-Identifier: AGPL-3.0-only OR LicenseRef-Quince-Commercial
+//! Exchange trait definitions and shared types.
+//! Defines [`Exchange`], [`ExchangeError`], [`StreamMsg`], [`OrderStatus`],
+//! and the [`Stream`] subscription handle used by all exchange backends.
+
 use quince_core::types::*;
 
 pub type Result<T> = std::result::Result<T, ExchangeError>;

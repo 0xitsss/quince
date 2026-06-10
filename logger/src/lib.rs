@@ -1,3 +1,10 @@
+﻿// SPDX-FileCopyrightText: 2026 0xitsss
+//
+// SPDX-License-Identifier: AGPL-3.0-only OR LicenseRef-Quince-Commercial
+//! Structured trade logging.
+//! [`TradeLog`] writes JSON-formatted fill records to a CSV-compatible
+//! log file for post-session analysis and reconciliation.
+
 use quince_core::types::OrderFill;
 use std::fs::{File, OpenOptions};
 use std::io::{BufWriter, Write};

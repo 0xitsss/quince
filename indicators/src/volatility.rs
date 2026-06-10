@@ -1,3 +1,10 @@
+﻿// SPDX-FileCopyrightText: 2026 0xitsss
+//
+// SPDX-License-Identifier: AGPL-3.0-only OR LicenseRef-Quince-Commercial
+//! Volatility indicators.
+//! Provides [`TrueRange`], [`Atr`] (Average True Range), [`BollingerBands`],
+//! and [`KeltnerChannel`] for measuring and visualizing market volatility.
+
 use quince_core::ring::RingVec;
 
 pub struct TrueRange;
