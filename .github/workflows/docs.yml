@@ -22,10 +22,19 @@ jobs:
           curl -fsSL https://github.com/rust-lang/mdBook/releases/download/v0.5.3/mdbook-v0.5.3-x86_64-unknown-linux-gnu.tar.gz \
             | tar xz -C /usr/local/bin
 
-      - name: Install mdBook-mermaid
+      - name: Fetch benchmark data from gh-pages
         run: |
-          curl -fsSL https://github.com/badboy/mdbook-mermaid/releases/download/v0.17.0/mdbook-mermaid-v0.17.0-x86_64-unknown-linux-gnu.tar.gz \
-            | tar xz -C /usr/local/bin
+          git fetch origin gh-pages --depth=1 || true
+          if git show-ref --verify refs/remotes/origin/gh-pages &>/dev/null; then
+            mkdir -p book/src/dev
+            git checkout origin/gh-pages -- dev/bench/ 2>/dev/null || true
+            if [ -d dev/bench ]; then
+              cp -r dev/bench book/src/dev/
+              echo "Benchmark data copied from gh-pages"
+            fi
+          else
+            echo "No gh-pages branch found — skipping benchmark data"
+          fi
 
       - name: Generate API docs
         run: cargo run -p docgen
