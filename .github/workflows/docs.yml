@@ -52,7 +52,7 @@ jobs:
         run: |
           git fetch origin gh-pages --depth=1 || true
           if git show-ref --verify refs/remotes/origin/gh-pages &>/dev/null; then
-            git checkout origin/gh-pages -b gh-pages-deploy
+            git checkout --force origin/gh-pages -b gh-pages-deploy
           else
             git checkout --orphan gh-pages-deploy
           fi
