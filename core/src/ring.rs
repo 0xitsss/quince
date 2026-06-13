@@ -217,6 +217,16 @@ impl RingVec {
         self.len = 0;
     }
 
+    pub fn as_chunks(&self) -> (&[f64], &[f64]) {
+        if self.len == 0 {
+            (&[], &[])
+        } else if self.len < self.cap {
+            (&self.data[0..self.len], &[])
+        } else {
+            (&self.data[self.head..self.cap], &self.data[0..self.head])
+        }
+    }
+
     pub fn iter(&self) -> RingVecIter<'_> {
         RingVecIter { buf: self, pos: 0 }
     }
@@ -333,6 +343,72 @@ mod tests {
             rv.push(v);
         }
         assert!((rv.iter().sum::<f64>() - 10.0).abs() < 1e-10);
+    }
+
+    #[test]
+    fn ringvec_as_chunks_empty() {
+        let rv = RingVec::new(4);
+        let (a, b) = rv.as_chunks();
+        assert!(a.is_empty());
+        assert!(b.is_empty());
+    }
+
+    #[test]
+    fn ringvec_as_chunks_before_warmup() {
+        let mut rv = RingVec::new(4);
+        rv.push(1.0);
+        rv.push(2.0);
+        let (a, b) = rv.as_chunks();
+        assert_eq!(a, &[1.0, 2.0]);
+        assert!(b.is_empty());
+    }
+
+    #[test]
+    fn ringvec_as_chunks_at_capacity_no_wrap() {
+        let mut rv = RingVec::new(4);
+        rv.push(1.0);
+        rv.push(2.0);
+        rv.push(3.0);
+        rv.push(4.0);
+        let (a, b) = rv.as_chunks();
+        assert_eq!(a, &[1.0, 2.0, 3.0, 4.0]);
+        assert!(b.is_empty());
+    }
+
+    #[test]
+    fn ringvec_as_chunks_wrapped() {
+        let mut rv = RingVec::new(4);
+        rv.push(1.0);
+        rv.push(2.0);
+        rv.push(3.0);
+        rv.push(4.0);
+        rv.push(5.0);
+        let (a, b) = rv.as_chunks();
+        assert_eq!(a, &[2.0, 3.0, 4.0]);
+        assert_eq!(b, &[5.0]);
+    }
+
+    #[test]
+    fn ringvec_as_chunks_wrapped_multi() {
+        let mut rv = RingVec::new(4);
+        rv.push(1.0);
+        rv.push(2.0);
+        rv.push(3.0);
+        rv.push(4.0);
+        rv.push(5.0);
+        rv.push(6.0);
+        let (a, b) = rv.as_chunks();
+        assert_eq!(a, &[3.0, 4.0]);
+        assert_eq!(b, &[5.0, 6.0]);
+    }
+
+    #[test]
+    fn ringvec_as_chunks_single_element() {
+        let mut rv = RingVec::new(1);
+        rv.push(42.0);
+        let (a, b) = rv.as_chunks();
+        assert_eq!(a, &[42.0]);
+        assert!(b.is_empty());
     }
 
     #[test]

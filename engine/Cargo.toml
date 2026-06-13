@@ -5,11 +5,17 @@ edition.workspace = true
 license.workspace = true
 
 [features]
-default = []
+default = ["simd"]
+simd = ["quince-indicators/simd"]
 profiling = ["puffin", "quince-qfl/profiling"]
 
 [dev-dependencies]
 async-trait.workspace = true
+criterion = { version = "0.5", features = ["html_reports"] }
+
+[[bench]]
+name = "bench"
+harness = false
 
 [dependencies]
 tokio.workspace = true
@@ -24,5 +30,5 @@ quince-exchange = { path = "../exchange" }
 quince-qfl = { path = "../qfl" }
 quince-risk = { path = "../risk" }
 quince-logger = { path = "../logger" }
-quince-indicators = { path = "../indicators" }
+quince-indicators = { path = "../indicators", default-features = false }
 puffin = { workspace = true, optional = true }

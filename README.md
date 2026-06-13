@@ -1,12 +1,12 @@
 # Quince
 
 [![Build](https://img.shields.io/badge/build-passing-brightgreen?style=for-the-badge)](https://github.com/0xitsss/quince)
-[![Tests](https://img.shields.io/badge/tests-944%20passing-brightgreen?style=for-the-badge)](https://github.com/0xitsss/quince)
+[![Tests](https://img.shields.io/badge/tests-965%20passing-brightgreen?style=for-the-badge)](https://github.com/0xitsss/quince)
 [![Clippy](https://img.shields.io/badge/clippy-0%20warnings-brightgreen?style=for-the-badge)](https://github.com/0xitsss/quince)
 [![License](https://img.shields.io/badge/license-AGPL--3.0%20OR%20Commercial-blue?style=for-the-badge)](https://www.gnu.org/licenses/agpl-3.0)
 [![REUSE](https://img.shields.io/badge/REUSE-compliant-green?style=for-the-badge)](https://reuse.software)
 [![Rust](https://img.shields.io/badge/rust-1.80+-orange?style=for-the-badge&logo=rust)](https://www.rust-lang.org)
-[![Version](https://img.shields.io/badge/version-0.7.1-purple?style=for-the-badge)](https://github.com/0xitsss/quince/releases)
+[![Version](https://img.shields.io/badge/version-0.7.2-purple?style=for-the-badge)](https://github.com/0xitsss/quince)
 [![Docs](https://img.shields.io/badge/docs-mdBook-blue?style=for-the-badge&logo=mdbook)](https://0xitsss.github.io/quince)
 [![Benchmark](https://img.shields.io/badge/bench-Criterion-ff69b4?style=for-the-badge)](https://0xitsss.github.io/quince/dev/bench/)
 [![SonarQube](https://img.shields.io/badge/sonar-passing-brightgreen?style=for-the-badge&logo=sonarcloud)](https://sonarcloud.io/project/overview?id=0xitsss_quince)
@@ -62,11 +62,12 @@ Low-latency trading engine using crossbeam channels throughout. Engine loop uses
 - Persistent state across hot-reloads (64 persist slots)
 - Tracer and profiler built into the VM
 
-### Indicators (50+)
+### Indicators (50+) — SIMD Accelerated
 - Moving Averages: SMA, EMA, WMA, VWMA, LSMA
 - Oscillators: RSI, MACD, Stochastic, CCI, ROC
 - Volatility: ATR, Bollinger Bands, Keltner Channels
 - Flow/Microstructure: OBV, CVD, MFI, ADX, DOM, Z-Score, NetOI
+- 6 AVX2-accelerated kernels (sum, weighted_sum, sum_and_sum_xy, sum_abs_diff, min_max, sum_sq_diff) — ~3x speedup on large window sizes
 
 ### Risk Controls
 - Position size limits, max notional checks
@@ -89,7 +90,7 @@ Low-latency trading engine using crossbeam channels throughout. Engine loop uses
 | `core/` | 713 | Shared types, RingBuffer, RingVec |
 | `exchange/` | 1,060 | Binance Futures WS + REST client, MockExchange |
 | `engine/` | 2,508 | Event loop, OrderManager, IndicatorBank, RiskControls |
-| `indicators/` | 2,354 | 50+ technical indicators |
+| `indicators/` | 2,540 | 50+ technical indicators + SIMD kernels |
 | `logger/` | 248 | Trade fill logger (JSON Lines) |
 | `qfl/` | 20,757 | Parser, type checker, optimizer, compiler, VM, tracer |
 | `risk/` | 296 | Position limits, drawdown, rate limiting |
@@ -123,11 +124,13 @@ cargo run --features profiling
 # Dump compiled QFL bytecode as assembly
 cargo run --bin dump_qfl -- strategies/ema_cross.qfl
 
-# Run all tests (944)
+# Run all tests (965)
 cargo test
 
 # Run benchmarks
 cargo bench -p quince-qfl --bench bench
+cargo bench -p quince-indicators --bench bench  # SIMD vs scalar indicator perf
+cargo bench -p quince-engine --bench bench      # pipeline + VM tick
 
 # Build documentation site (auto-generates API docs from source)
 cargo run -p docgen && mdbook build book
@@ -524,6 +527,12 @@ Criterion benchmarks (ubuntu-latest, x86_64) — 4 groups, 14 strategies:
 VM dispatch: ~1.7 million ops/ms sustained. Zero heap allocation in hot path.
 Float sanitizer uses branchless SSE (`_mm_cmpunord_sd` + `_mm_andnot_pd`) — no branch mispredictions on NaN/Inf paths.
 
+SIMD-accelerated indicator kernels (AVX2, f64):
+
+| Kernel | Scalar | SIMD (AVX2) | Speedup |
+|--------|--------|-------------|---------|
+| WMA/200 update | 13.93 µs | 4.68 µs | **~3.0×** |
+
 Tick speed benchmarks per strategy:
 
 | Strategy | MHz |
@@ -564,6 +573,7 @@ Every file in the repository is REUSE-compliant with a clear, unambiguous licens
 
 | Version | Phase | Changes |
 | ------- | ----- | ------- |
+| v0.7.2 | 8c | SIMD-accelerated indicators: 6 AVX2 kernels (sum, weighted_sum, sum_and_sum_xy, sum_abs_diff, min_max, sum_sq_diff) — ~3× speedup on large windows; engine criterion benchmarks (28 benches); ringvec_as_chunks for zero-copy SIMD feeding; clippy clean, 965 tests |
 | v0.7.1 | 8b | Fix vm_jmp off-by-one causing infinite loop in compound conditions; fix AND/OR short-circuit rd init; 944 tests |
 | v0.7.0 | 8a | Docgen rewrite with syn item-level extraction, mdBook GitHub Pages via CI, 29,157 LOC across 47 Rust files |
 | v0.6.11 | 7e | QuinceHash64 checksum, computed_goto dispatch, CI/CD docs.yml |

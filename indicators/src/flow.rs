@@ -59,8 +59,10 @@ impl Mfi {
             }
 
             if self.count >= self.period {
-                let pos_sum: f64 = self.pos_flow.iter().sum();
-                let neg_sum: f64 = self.neg_flow.iter().sum();
+                let (pa, pb) = self.pos_flow.as_chunks();
+                let (na, nb) = self.neg_flow.as_chunks();
+                let pos_sum = crate::simd::sum(pa, pb);
+                let neg_sum = crate::simd::sum(na, nb);
                 if pos_sum == 0.0 && neg_sum == 0.0 {
                     return Some(50.0);
                 }

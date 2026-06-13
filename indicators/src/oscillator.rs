@@ -149,13 +149,10 @@ impl Cci {
         let tp = (high + low + close) / 3.0;
         self.typical_buffer.push(tp);
         if self.typical_buffer.len() == self.period {
-            let sma_tp: f64 = self.typical_buffer.iter().sum::<f64>() / self.period as f64;
-            let mad: f64 = self
-                .typical_buffer
-                .iter()
-                .map(|v| (v - sma_tp).abs())
-                .sum::<f64>()
-                / self.period as f64;
+            let (a, b) = self.typical_buffer.as_chunks();
+            let sum_tp = crate::simd::sum(a, b);
+            let sma_tp = sum_tp / self.period as f64;
+            let mad = crate::simd::sum_abs_diff(a, b, sma_tp) / self.period as f64;
             if mad == 0.0 {
                 return Some(0.0);
             }
@@ -222,8 +219,10 @@ impl Stochastic {
         self.high_buffer.push(high);
         self.low_buffer.push(low);
         if self.high_buffer.len() == self.period {
-            let highest = self.high_buffer.iter().fold(f64::NEG_INFINITY, f64::max);
-            let lowest = self.low_buffer.iter().fold(f64::INFINITY, f64::min);
+            let (ha, hb) = self.high_buffer.as_chunks();
+            let (la, lb) = self.low_buffer.as_chunks();
+            let (_, highest) = crate::simd::min_max(ha, hb);
+            let (lowest, _) = crate::simd::min_max(la, lb);
             if highest == lowest {
                 return Some(50.0);
             }

@@ -200,9 +200,11 @@ impl ZScore {
     pub fn update(&mut self, value: f64) -> Option<f64> {
         self.buffer.push(value);
         if self.buffer.len() == self.period {
-            let mean: f64 = self.buffer.iter().sum::<f64>() / self.period as f64;
-            let variance: f64 =
-                self.buffer.iter().map(|v| (v - mean).powi(2)).sum::<f64>() / self.period as f64;
+            let (a, b) = self.buffer.as_chunks();
+            let sum = crate::simd::sum(a, b);
+            let mean = sum / self.period as f64;
+            let sum_sq = crate::simd::sum_sq_diff(a, b, mean);
+            let variance = sum_sq / self.period as f64;
             let stddev = variance.sqrt();
             if stddev == 0.0 {
                 return Some(0.0);

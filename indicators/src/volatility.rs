@@ -89,12 +89,9 @@ impl BollingerBands {
         self.buffer.push(price);
         let middle = self.sma.update(price)?;
         if self.buffer.len() == self.period {
-            let variance: f64 = self
-                .buffer
-                .iter()
-                .map(|v| (v - middle).powi(2))
-                .sum::<f64>()
-                / self.period as f64;
+            let (a, b) = self.buffer.as_chunks();
+            let sum_sq = crate::simd::sum_sq_diff(a, b, middle);
+            let variance = sum_sq / self.period as f64;
             let stddev = variance.sqrt();
             Some(BollingerOutput {
                 middle,

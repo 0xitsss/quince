@@ -8,6 +8,7 @@
 pub mod flow;
 pub mod ma;
 pub mod oscillator;
+pub mod simd;
 pub mod structure;
 pub mod volatility;
 

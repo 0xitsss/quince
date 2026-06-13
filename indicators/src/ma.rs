@@ -95,12 +95,8 @@ impl Wma {
     pub fn update(&mut self, value: f64) -> Option<f64> {
         self.buffer.push(value);
         if self.buffer.len() == self.period {
-            let weighted: f64 = self
-                .buffer
-                .iter()
-                .enumerate()
-                .map(|(i, v)| v * (i + 1) as f64)
-                .sum();
+            let (a, b) = self.buffer.as_chunks();
+            let weighted = crate::simd::weighted_sum(a, b, 1);
             Some(weighted / self.denominator)
         } else {
             None
@@ -193,13 +189,8 @@ impl Lsma {
         self.buffer.push(value);
         if self.buffer.len() == self.period {
             let n = self.period as f64;
-            let sum_y: f64 = self.buffer.iter().sum();
-            let sum_xy: f64 = self
-                .buffer
-                .iter()
-                .enumerate()
-                .map(|(i, v)| v * i as f64)
-                .sum();
+            let (a, b) = self.buffer.as_chunks();
+            let (sum_y, sum_xy) = crate::simd::sum_and_sum_xy(a, b);
             let slope =
                 (n * sum_xy - self.sum_x * sum_y) / (n * self.sum_x2 - self.sum_x * self.sum_x);
             let intercept = (sum_y - slope * self.sum_x) / n;
