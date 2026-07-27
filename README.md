@@ -3,7 +3,7 @@
 ![Quince — a high-performance language for HFT](docs/assets/quince-hero.png)
 
 [![Build](https://img.shields.io/badge/build-passing-brightgreen?style=for-the-badge)](https://github.com/0xitsss/quince)
-[![Tests](https://img.shields.io/badge/tests-990%20passing-brightgreen?style=for-the-badge)](https://github.com/0xitsss/quince)
+[![Tests](https://img.shields.io/badge/tests-1001%20passing-brightgreen?style=for-the-badge)](https://github.com/0xitsss/quince)
 [![Clippy](https://img.shields.io/badge/clippy-0%20warnings-brightgreen?style=for-the-badge)](https://github.com/0xitsss/quince)
 [![License](https://img.shields.io/badge/license-AGPL--3.0%20OR%20Commercial-blue?style=for-the-badge)](https://www.gnu.org/licenses/agpl-3.0)
 [![REUSE](https://img.shields.io/badge/REUSE-compliant-green?style=for-the-badge)](https://reuse.software)
@@ -134,6 +134,20 @@ QUINCE_MOCK=1 QUINCE_STRATEGY=strategies/scalper.qfl QUINCE_SYMBOL=btcusdt cargo
 # Testnet mode (Binance testnet credentials)
 BINANCE_API_KEY=xxx BINANCE_SECRET_KEY=xxx QUINCE_TESTNET=1 cargo run
 
+# Optional local, read-only operator dashboard. It is loopback-only by
+# default and deliberately exposes no trading-control endpoints.
+QUINCE_MOCK=1 QUINCE_DASHBOARD=1 cargo run
+# Open http://127.0.0.1:3000 ; JSON status: /api/v1/state
+
+# Inspect or verify a durable order journal offline. These commands never open
+# an exchange socket and never require credentials.
+cargo run --bin quince -- journal inspect trades.orders.jsonl
+cargo run --bin quince -- journal verify trades.orders.jsonl
+
+# Opt-in read-only Binance Futures testnet authentication check (never places an order)
+BINANCE_TESTNET_API_KEY=xxx BINANCE_TESTNET_SECRET_KEY=xxx \
+  cargo test -p quince-exchange --test binance_testnet -- --ignored
+
 # Live mode (real Binance credentials)
 BINANCE_API_KEY=xxx BINANCE_SECRET_KEY=xxx QUINCE_LIVE=1 cargo run
 
@@ -143,13 +157,15 @@ cargo run --features profiling
 # Dump compiled QFL bytecode as assembly
 cargo run --bin dump_qfl -- strategies/ema_cross.qfl
 
-# Run all tests (990)
+# Run all tests (1001)
 cargo test
 
 # Run benchmarks
 cargo bench -p quince-qfl --bench bench
 cargo bench -p quince-indicators --bench bench  # SIMD vs scalar indicator perf
 cargo bench -p quince-engine --bench bench      # pipeline + VM tick
+# Five-minute, three-strategy p50/p95/p99 + throughput matrix (JSON and SVG)
+cargo run -p quince-engine --bin strategy_bench --release --locked -- --duration-secs 300
 
 # Build documentation site (auto-generates API docs from source)
 cargo run -p docgen && mdbook build book
@@ -543,7 +559,10 @@ Criterion benchmarks (ubuntu-latest, x86_64) — 4 groups, 14 strategies:
 | | 100k iters | 1,550 ops/ms |
 | **Runtime feed** (heavy_test) | 10k trades | 420 ops/ms |
 
-VM dispatch: ~1.7 million ops/ms sustained. Zero heap allocation in hot path.
+The historical Criterion values above isolate smaller units of work. For a
+current, full per-tick VM hot-path baseline (indicator update + slot writes +
+`on_trade` dispatch), see [`docs/BENCHMARKS.md`](docs/BENCHMARKS.md). It reports
+throughput and p50/p95/p99 latency with the exact methodology and host scope.
 Float sanitizer uses branchless SSE (`_mm_cmpunord_sd` + `_mm_andnot_pd`) — no branch mispredictions on NaN/Inf paths.
 
 SIMD-accelerated indicator kernels (AVX2, f64):
@@ -552,7 +571,8 @@ SIMD-accelerated indicator kernels (AVX2, f64):
 |--------|--------|-------------|---------|
 | WMA/200 update | 13.93 µs | 4.68 µs | **~3.0×** |
 
-Tick speed benchmarks per strategy:
+Historical VM-only tick speed benchmarks per strategy (not comparable to the
+full hot-path matrix above):
 
 | Strategy | MHz |
 |----------|-----|
@@ -570,6 +590,9 @@ Tick speed benchmarks per strategy:
 - **[`docs/QUINCE.md`](docs/QUINCE.md)** — Architecture, performance benchmarks, crate breakdown
 - **[`docs/QFL.md`](docs/QFL.md)** — Quince-Flavored Language syntax, types, indicators, example strategies
 - **[`docs/EXECUTION_SAFETY.md`](docs/EXECUTION_SAFETY.md)** — execution lifecycle, client-order reconciliation, testnet and live-safety boundaries
+- **[`docs/HYPERLIQUID_EXECUTION.md`](docs/HYPERLIQUID_EXECUTION.md)** — verified signing, test-vector, testnet, and reconciliation acceptance criteria before enabling Hyperliquid orders
+- **[`docs/BENCHMARKS.md`](docs/BENCHMARKS.md)** — reproducible three-strategy VM latency/throughput matrix with p50/p95/p99 graphs
+- **Operator dashboard** — `QUINCE_DASHBOARD=1` starts loopback-only Axum UI; it reads the durable journal via a bounded crossbeam bridge and exposes no mutation endpoints
 - **[Criterion Benchmarks](https://0xitsss.github.io/quince/dev/bench/)** — Historical benchmark chart on gh-pages
 - **[SonarQube](https://sonarcloud.io/project/overview?id=0xitsss_quince)** — Static analysis dashboard
 

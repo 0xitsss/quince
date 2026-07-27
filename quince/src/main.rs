@@ -5,13 +5,72 @@
 //! Configures the trading environment from environment variables, selects
 //! mock/public/live exchange mode, and launches the main engine event loop.
 
+mod dashboard;
 mod mock;
 mod wallet;
 
-use quince::engine::{Engine, EngineError};
+use quince::engine::{Engine, EngineError, OrderJournal};
 use quince::qfl::config::{load_strategy_config, ExchangeKind, Network};
 use quince::risk::{RiskConfig, RiskControls};
 use tracing_subscriber::EnvFilter;
+
+fn start_dashboard_if_enabled(log_path: &str) -> Result<(), EngineError> {
+    if !env_flag("QUINCE_DASHBOARD")? {
+        return Ok(());
+    }
+    let addr = std::env::var("QUINCE_DASHBOARD_ADDR")
+        .unwrap_or_else(|_| "127.0.0.1:3000".into())
+        .parse()
+        .map_err(|e| EngineError::Strategy(format!("invalid QUINCE_DASHBOARD_ADDR: {e}")))?;
+    dashboard::start(
+        addr,
+        std::path::Path::new(log_path).with_extension("orders.jsonl"),
+    )
+    .map_err(EngineError::Strategy)
+}
+
+/// Offline recovery tooling intentionally lives before runtime initialization:
+/// it opens no exchange socket and never has access to API credentials.
+fn run_operator_command() -> Result<bool, EngineError> {
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    if args.is_empty() {
+        return Ok(false);
+    }
+    let [group, action, path] = args.as_slice() else {
+        return Err(EngineError::Strategy(
+            "usage: quince journal <inspect|verify> <orders.jsonl>".into(),
+        ));
+    };
+    if group != "journal" || !matches!(action.as_str(), "inspect" | "verify") {
+        return Err(EngineError::Strategy(
+            "usage: quince journal <inspect|verify> <orders.jsonl>".into(),
+        ));
+    }
+    let records = OrderJournal::recover(path)?;
+    let unresolved = OrderJournal::unresolved_client_order_ids(&records);
+    if action == "inspect" {
+        println!(
+            "{}",
+            serde_json::json!({
+                "journal": path,
+                "records": records.len(),
+                "unresolved_client_order_ids": unresolved,
+                "safe_to_start": unresolved.is_empty(),
+            })
+        );
+    } else if unresolved.is_empty() {
+        println!(
+            "journal verified: {} records, no unresolved orders",
+            records.len()
+        );
+    } else {
+        return Err(EngineError::Strategy(format!(
+            "journal has unresolved client order IDs: {}; reconcile them against the exchange before starting",
+            unresolved.join(", ")
+        )));
+    }
+    Ok(true)
+}
 
 fn env_flag(name: &str) -> Result<bool, EngineError> {
     match std::env::var(name) {
@@ -48,6 +107,9 @@ fn env_u32(name: &str, default: u32) -> Result<u32, EngineError> {
 
 #[tokio::main]
 async fn main() -> Result<(), EngineError> {
+    if run_operator_command()? {
+        return Ok(());
+    }
     tracing_subscriber::fmt()
         .with_env_filter(EnvFilter::from_default_env().add_directive(tracing::Level::INFO.into()))
         .init();
@@ -80,6 +142,7 @@ async fn main() -> Result<(), EngineError> {
     let strategy =
         std::env::var("QUINCE_STRATEGY").unwrap_or_else(|_| "strategies/test_all.qfl".into());
     let log_path = std::env::var("QUINCE_LOG").unwrap_or_else(|_| "trades.log".into());
+    start_dashboard_if_enabled(&log_path)?;
     let mut strategy_config = load_strategy_config(&strategy).map_err(EngineError::Strategy)?;
     if let Ok(exchange) = std::env::var("QUINCE_EXCHANGE") {
         strategy_config.exchange = ExchangeKind::parse(&exchange).map_err(EngineError::Strategy)?;

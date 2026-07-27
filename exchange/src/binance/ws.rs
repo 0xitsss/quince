@@ -22,6 +22,9 @@ const MAINNET_URL: &str = "wss://ws-fapi.binance.com/ws-fapi/v1";
 
 pub struct WsClient {
     pub req_tx: crossbeam_channel::Sender<WsRequest>,
+    /// Shared bounded event ingress. Private user-data and public market-data
+    /// producers both use `try_send`, so a slow engine never blocks a socket.
+    pub stream_tx: crossbeam_channel::Sender<StreamMsg>,
 }
 
 pub struct WsRequest {
@@ -127,6 +130,7 @@ impl BinanceWs {
 
         let api_key = self.api_key.clone();
         let secret_key = self.secret_key.clone();
+        let stream_tx = market_tx.clone();
 
         tokio::spawn(async move {
             let mut pending: HashMap<u64, oneshot::Sender<Result<Value>>> =
@@ -157,7 +161,7 @@ impl BinanceWs {
                                         }
                                     } else if json.get("e").is_some() {
                                         if let Some(stream_msg) = super::types::parse_ws_msg(text) {
-                                            let _ = market_tx.try_send(stream_msg);
+                                            let _ = stream_tx.try_send(stream_msg);
                                         }
                                     }
                                 }
@@ -233,7 +237,13 @@ impl BinanceWs {
             Err(_) => return Err(ExchangeError::Ws("subscribe response timeout".into())),
         }
 
-        Ok((WsClient { req_tx }, market_rx))
+        Ok((
+            WsClient {
+                req_tx,
+                stream_tx: market_tx,
+            },
+            market_rx,
+        ))
     }
 }
 

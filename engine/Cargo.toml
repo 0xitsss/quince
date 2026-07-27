@@ -17,6 +17,10 @@ criterion = { version = "0.5", features = ["html_reports"] }
 name = "bench"
 harness = false
 
+[[bin]]
+name = "strategy_bench"
+path = "src/bin/strategy_bench.rs"
+
 [dependencies]
 tokio.workspace = true
 serde.workspace = true

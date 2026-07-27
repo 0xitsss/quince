@@ -5,8 +5,10 @@
 //! Provides REST order placement, account queries, and WebSocket-backed
 //! market data streaming via the [`Binance`] struct.
 
+pub mod filters;
 pub mod public;
 pub mod types;
+pub mod user_data;
 pub mod ws;
 
 use crate::r#trait::{Exchange, ExchangeError, OrderRequest, OrderStatus, Result, Stream};
@@ -23,6 +25,7 @@ pub struct Binance {
     secret_key: String,
     testnet: bool,
     client: OnceLock<ws::WsClient>,
+    filters: OnceLock<filters::BinanceFilters>,
 }
 
 impl Binance {
@@ -32,6 +35,7 @@ impl Binance {
             secret_key: secret_key.to_string(),
             testnet,
             client: OnceLock::new(),
+            filters: OnceLock::new(),
         }
     }
 
@@ -65,14 +69,50 @@ impl Binance {
         }
     }
 
-    fn order_params(&self, request: &OrderRequest) -> Result<Map<String, Value>> {
+    fn exchange_info_url(&self) -> &'static str {
+        if self.testnet {
+            "https://testnet.binancefuture.com/fapi/v1/exchangeInfo"
+        } else {
+            "https://fapi.binance.com/fapi/v1/exchangeInfo"
+        }
+    }
+
+    async fn load_filters(&self) -> Result<&filters::BinanceFilters> {
+        if let Some(filters) = self.filters.get() {
+            return Ok(filters);
+        }
+        let response = reqwest::Client::new()
+            .get(self.exchange_info_url())
+            .send()
+            .await
+            .map_err(|error| ExchangeError::Rest(format!("fetch Binance exchangeInfo: {error}")))?
+            .error_for_status()
+            .map_err(|error| {
+                ExchangeError::Rest(format!("Binance exchangeInfo status: {error}"))
+            })?;
+        let value = response
+            .json::<Value>()
+            .await
+            .map_err(|error| ExchangeError::Rest(format!("parse Binance exchangeInfo: {error}")))?;
+        let parsed = filters::BinanceFilters::from_exchange_info(&value)?;
+        let _ = self.filters.set(parsed);
+        self.filters
+            .get()
+            .ok_or_else(|| ExchangeError::Rest("Binance exchangeInfo cache unavailable".into()))
+    }
+
+    async fn symbol_filters(&self, symbol: &str) -> Result<&filters::SymbolFilters> {
+        self.load_filters().await?.symbol(symbol)
+    }
+
+    fn order_params(
+        &self,
+        request: &OrderRequest,
+        symbol_filters: &filters::SymbolFilters,
+    ) -> Result<Map<String, Value>> {
         let order = &request.order;
         let symbol = normalize_symbol(&order.symbol)?;
-        if !order.qty.is_finite() || order.qty <= 0.0 {
-            return Err(ExchangeError::Order(
-                "order quantity must be a positive finite number".into(),
-            ));
-        }
+        let normalized_qty = symbol_filters.normalize_quantity(order.qty)?;
 
         let mut params = Map::new();
         params.insert("symbol".into(), Value::String(symbol));
@@ -90,7 +130,6 @@ impl Binance {
                 OrderType::Limit => "LIMIT".into(),
             }),
         );
-        params.insert("quantity".into(), Value::String(order.qty.to_string()));
         let client_order_id = validate_client_order_id(&request.client_order_id)?;
         params.insert("newClientOrderId".into(), Value::String(client_order_id));
         if order.reduce_only {
@@ -98,14 +137,18 @@ impl Binance {
         }
 
         match (order.order_type, order.price) {
-            (OrderType::Market, None) => {}
+            (OrderType::Market, None) => {
+                params.insert("quantity".into(), Value::String(normalized_qty.to_string()));
+            }
             (OrderType::Market, Some(_)) => {
                 return Err(ExchangeError::Order(
                     "market orders must not include a limit price".into(),
                 ));
             }
             (OrderType::Limit, Some(price)) if price.is_finite() && price > 0.0 => {
-                params.insert("price".into(), Value::String(price.to_string()));
+                let normalized = symbol_filters.normalize_limit_order(price, normalized_qty)?;
+                params.insert("quantity".into(), Value::String(normalized.qty.to_string()));
+                params.insert("price".into(), Value::String(normalized.price.to_string()));
                 params.insert("timeInForce".into(), Value::String("GTC".into()));
             }
             (OrderType::Limit, _) => {
@@ -206,7 +249,7 @@ impl Exchange for Binance {
             return Err(ExchangeError::Ws("at least one symbol is required".into()));
         }
         for symbol in symbols {
-            normalize_symbol(symbol)?;
+            self.symbol_filters(symbol).await?;
         }
         if self.client.get().is_some() {
             return Err(ExchangeError::Ws(
@@ -216,13 +259,20 @@ impl Exchange for Binance {
         }
         let ws = ws::BinanceWs::new(&self.api_key, &self.secret_key, self.testnet);
         let (client, rx) = ws.connect(symbols).await?;
+        user_data::start_user_data_stream(
+            self.api_key.clone(),
+            self.testnet,
+            client.stream_tx.clone(),
+        )
+        .await?;
         let _ = self.client.set(client);
         Ok(Stream { rx })
     }
 
     async fn place_order(&self, request: OrderRequest) -> Result<String> {
         let client_order_id = request.client_order_id.clone();
-        let params = self.order_params(&request)?;
+        let symbol_filters = self.symbol_filters(&request.order.symbol).await?;
+        let params = self.order_params(&request, symbol_filters)?;
         let result = self
             .request("order.place", params)
             .await
@@ -391,6 +441,20 @@ fn validate_client_order_id(order_id: &str) -> Result<String> {
 mod tests {
     use super::*;
 
+    fn test_filters() -> filters::BinanceFilters {
+        filters::BinanceFilters::from_exchange_info(&serde_json::json!({
+            "symbols": [{
+                "symbol": "BTCUSDT",
+                "filters": [
+                    {"filterType": "PRICE_FILTER", "minPrice": "0.1", "maxPrice": "1000000", "tickSize": "0.1"},
+                    {"filterType": "LOT_SIZE", "minQty": "0.001", "maxQty": "100", "stepSize": "0.001"},
+                    {"filterType": "MIN_NOTIONAL", "notional": "5"}
+                ]
+            }]
+        }))
+        .unwrap()
+    }
+
     fn order(order_type: OrderType, price: Option<f64>) -> OrderRequest {
         OrderRequest {
             client_order_id: "qc_0123456789abcdef_0000000000000001".into(),
@@ -411,7 +475,10 @@ mod tests {
     fn limit_order_has_required_time_in_force_and_client_id() {
         let binance = Binance::new("key", "secret", true);
         let request = order(OrderType::Limit, Some(100.0));
-        let params = binance.order_params(&request).unwrap();
+        let filters = test_filters();
+        let params = binance
+            .order_params(&request, filters.symbol("BTCUSDT").unwrap())
+            .unwrap();
         assert_eq!(params["symbol"], "BTCUSDT");
         assert_eq!(params["timeInForce"], "GTC");
         assert_eq!(params["newClientOrderId"], request.client_order_id);
@@ -420,15 +487,17 @@ mod tests {
     #[test]
     fn invalid_order_inputs_fail_before_network_io() {
         let binance = Binance::new("key", "secret", true);
+        let filters = test_filters();
+        let symbol_filters = filters.symbol("BTCUSDT").unwrap();
         assert!(binance
-            .order_params(&order(OrderType::Market, Some(1.0)))
+            .order_params(&order(OrderType::Market, Some(1.0)), symbol_filters)
             .is_err());
         assert!(binance
-            .order_params(&order(OrderType::Limit, None))
+            .order_params(&order(OrderType::Limit, None), symbol_filters)
             .is_err());
         let mut invalid_qty = order(OrderType::Market, None);
         invalid_qty.order.qty = f64::NAN;
-        assert!(binance.order_params(&invalid_qty).is_err());
+        assert!(binance.order_params(&invalid_qty, symbol_filters).is_err());
         assert!(normalize_symbol("BTC-USDT").is_err());
         assert!(validate_order_id(" ").is_err());
         assert!(validate_client_order_id("client id with spaces").is_err());

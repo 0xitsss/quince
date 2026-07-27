@@ -55,6 +55,12 @@ pub enum StreamMsg {
     ForceOrder(Trade),
     AccountUpdate(AccountInfo),
     OrderUpdate(OrderFill),
+    /// The private stream had a gap or an integrity failure. Consumers must
+    /// fetch authoritative account/order state before trusting it again.
+    ReconcileRequired {
+        source: &'static str,
+        reason: String,
+    },
 }
 
 #[async_trait::async_trait]

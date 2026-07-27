@@ -428,6 +428,14 @@ impl<E: Exchange> Engine<E> {
                 #[cfg(feature = "profiling")]
                 puffin::profile_scope!("StreamMsg::ForceOrder");
             }
+            StreamMsg::ReconcileRequired { source, reason } => {
+                // Private-stream gaps are an integrity boundary, not a log
+                // detail. Refresh account state and query every locally
+                // active order before permitting the normal loop to proceed.
+                tracing::warn!(%source, %reason, "exchange reconciliation required");
+                self.sync_account().await;
+                self.reconcile_pending_orders().await;
+            }
         }
     }
 
@@ -707,6 +715,65 @@ impl<E: Exchange> Engine<E> {
             }
         }
 
+        self.order_manager.cleanup_terminal();
+    }
+
+    /// Authoritative, non-mutating reconciliation used after a private-stream
+    /// gap. Timeout handling owns cancellation; this path only observes state.
+    async fn reconcile_pending_orders(&mut self) {
+        for cid in self.order_manager.pending_order_ids() {
+            let Some(po) = self.order_manager.get(&cid) else {
+                continue;
+            };
+            let symbol = po.order.symbol.to_string();
+            let status = match self
+                .order_manager
+                .exchange_order_id(&cid)
+                .map(str::to_owned)
+            {
+                Some(order_id) => self.exchange.order_status(&symbol, &order_id).await,
+                None => self.exchange.order_status_by_client_id(&symbol, &cid).await,
+            };
+            let status = match status {
+                Ok(status) => status,
+                Err(error) => {
+                    tracing::error!(client_id = %cid, %error, "immediate order reconciliation failed; exposure remains active");
+                    continue;
+                }
+            };
+            let result = if self.order_manager.exchange_order_id(&cid).is_some() {
+                self.order_manager.reconcile_status(
+                    &cid,
+                    &status.status,
+                    status.filled_qty,
+                    status.avg_price,
+                )
+            } else {
+                self.order_manager.reconcile_client_order(
+                    &cid,
+                    &status.order_id,
+                    &status.status,
+                    status.filled_qty,
+                    status.avg_price,
+                )
+            };
+            if let Err(error) = result {
+                tracing::error!(client_id = %cid, %error, "invalid immediate order reconciliation");
+                continue;
+            }
+            if matches!(
+                status.status.trim().to_ascii_uppercase().as_str(),
+                "FILLED" | "CANCELED" | "CANCELLED" | "EXPIRED" | "REJECTED"
+            ) {
+                if let Err(error) = self.order_journal.append(JournalEvent::Terminal {
+                    client_order_id: cid.clone(),
+                    status: status.status,
+                }) {
+                    self.execution_halted = true;
+                    tracing::error!(client_id = %cid, %error, "terminal reconciliation was not journaled; execution halted");
+                }
+            }
+        }
         self.order_manager.cleanup_terminal();
     }
 
