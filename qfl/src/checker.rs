@@ -242,6 +242,8 @@ pub fn check(source: &str) -> Vec<Diagnostic> {
         ("persist", "@persist — persist variables across reloads"),
         ("using", "@using — declare indicator dependencies"),
         ("window", "@window — declare rolling window"),
+        ("exchange", "@exchange — select exchange adapter"),
+        ("network", "@network — select mainnet or testnet"),
     ];
 
     let mut d = Diagnostics::new(source, known_directives);

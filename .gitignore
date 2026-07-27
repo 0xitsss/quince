@@ -11,6 +11,8 @@ target/
 # Environment
 .env
 .env.local
+wallet.json
+quince-wallet.json
 
 # OS
 Thumbs.db

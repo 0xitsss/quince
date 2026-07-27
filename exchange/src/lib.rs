@@ -3,7 +3,8 @@
 // SPDX-License-Identifier: AGPL-3.0-only OR LicenseRef-Quince-Commercial
 //! Exchange abstraction layer.
 //! Defines the [`Exchange`](r#trait::Exchange) trait and provides exchange-specific
-//! implementations (Binance REST + WebSocket).
+//! implementations (Binance and Hyperliquid public WebSocket adapters).
 
 pub mod binance;
+pub mod hyperliquid;
 pub mod r#trait;

@@ -1,4 +1,4 @@
-﻿// SPDX-FileCopyrightText: 2026 0xitsss
+// SPDX-FileCopyrightText: 2026 0xitsss
 //
 // SPDX-License-Identifier: AGPL-3.0-only OR LicenseRef-Quince-Commercial
 //! Main trading engine event loop.
@@ -11,6 +11,7 @@ use crate::orders::{OrderManager, PendingStatus};
 use quince_core::types::*;
 use quince_exchange::r#trait::{Exchange, ExchangeError, StreamMsg};
 use quince_logger::TradeLog;
+use quince_qfl::risk::RiskLimits;
 use quince_qfl::runtime::QflRuntime;
 use quince_risk::RiskControls;
 use std::sync::Arc;
@@ -90,6 +91,13 @@ impl<E: Exchange> Engine<E> {
             tracing::info!("optimized bytecode saved to {qfr_path}");
             qfl
         };
+
+        // Keep the DSL-side position guard aligned with the engine's configured
+        // hard position limit. The engine remains the final authority.
+        qfl.set_risk_limits(RiskLimits {
+            max_position: risk.max_position_size,
+            ..RiskLimits::default()
+        });
 
         tracing::info!("QFL VM loaded: {strategy_path}");
 
@@ -350,7 +358,7 @@ impl<E: Exchange> Engine<E> {
                     let cid = cid.to_string();
                     self.order_manager.update_fill(&cid, fill.qty, fill.price);
                     self.logger.log_fill(&fill);
-                    self.daily_pnl -= fill.fee;
+                    let mut realized_pnl = -fill.fee;
                     if let Some(pos) = self.position.as_ref() {
                         match (pos.side, fill.side) {
                             (PositionSide::Long, Side::Sell) | (PositionSide::Short, Side::Buy) => {
@@ -359,10 +367,14 @@ impl<E: Exchange> Engine<E> {
                                     PositionSide::Long => fill.price - pos.entry_price,
                                     _ => pos.entry_price - fill.price,
                                 };
-                                self.daily_pnl += price_diff * reducing_qty;
+                                realized_pnl += price_diff * reducing_qty;
                             }
                             _ => {}
                         }
+                    }
+                    self.daily_pnl += realized_pnl;
+                    if realized_pnl < 0.0 {
+                        self.risk.record_loss(-realized_pnl);
                     }
                     self.qfl.feed_fill(fill);
                 }
@@ -374,14 +386,11 @@ impl<E: Exchange> Engine<E> {
                     self.set_balance(&b.asset, b.wallet);
                     self.qfl.set_balance(&b.asset, b.wallet);
                 }
-                if let Some(pos) = info
+                let position = info
                     .positions
                     .into_iter()
-                    .find(|p| p.symbol == self.symbols.first().cloned().unwrap_or_default())
-                {
-                    self.position = Some(pos.clone());
-                    self.qfl.set_position_size(pos.size);
-                }
+                    .find(|p| p.symbol == self.symbols.first().cloned().unwrap_or_default());
+                self.update_position(position);
             }
             StreamMsg::OpenInterest { .. } => {
                 #[cfg(feature = "profiling")]
@@ -404,8 +413,26 @@ impl<E: Exchange> Engine<E> {
         }
     }
 
+    fn update_position(&mut self, position: Option<Position>) {
+        let signed_size = position.as_ref().map_or(0.0, |pos| match pos.side {
+            PositionSide::Long => pos.size,
+            PositionSide::Short => -pos.size,
+            PositionSide::None => 0.0,
+        });
+        self.position = position;
+        self.qfl.set_position_size(signed_size);
+    }
+
     async fn on_strategy_order(&mut self, order: Order) {
-        if let Err(reason) = self.risk.check_order(&order, self.peak_equity) {
+        let current_position = self.position.as_ref().map_or(0.0, |pos| match pos.side {
+            PositionSide::Long => pos.size,
+            PositionSide::Short => -pos.size,
+            PositionSide::None => 0.0,
+        }) + self.order_manager.pending_signed_exposure();
+        if let Err(reason) = self
+            .risk
+            .check_order(&order, self.peak_equity, current_position)
+        {
             tracing::warn!("risk rejected order: {}", reason);
             return;
         }
@@ -430,11 +457,21 @@ impl<E: Exchange> Engine<E> {
             self.qfl.set_balance(name, *bal);
         }
         if let Some(pos) = &self.position {
-            self.qfl.set_position_size(pos.size);
+            let signed_size = match pos.side {
+                PositionSide::Long => pos.size,
+                PositionSide::Short => -pos.size,
+                PositionSide::None => 0.0,
+            };
+            self.qfl.set_position_size(signed_size);
             self.qfl
                 .set_indicator_by_slot(self.entry_price_slot, pos.entry_price);
             self.qfl
                 .set_indicator_by_slot(self.unrealized_pnl_slot, pos.unrealized_pnl);
+        } else {
+            self.qfl.set_position_size(0.0);
+            self.qfl.set_indicator_by_slot(self.entry_price_slot, 0.0);
+            self.qfl
+                .set_indicator_by_slot(self.unrealized_pnl_slot, 0.0);
         }
         self.qfl.feed_eval();
         self.equity_check();
@@ -449,23 +486,17 @@ impl<E: Exchange> Engine<E> {
                     self.set_balance(&b.asset, b.wallet);
                     self.qfl.set_balance(&b.asset, b.wallet);
                 }
-                if let Some(pos) = info
+                let position = info
                     .positions
                     .into_iter()
-                    .find(|p| p.symbol == self.symbols.first().cloned().unwrap_or_default())
-                {
-                    self.position = Some(pos.clone());
-                    self.qfl.set_position_size(pos.size);
-                }
+                    .find(|p| p.symbol == self.symbols.first().cloned().unwrap_or_default());
+                self.update_position(position);
             }
             Err(e) => tracing::warn!("account sync failed: {}", e),
         }
     }
 
     async fn check_timeouts(&mut self) {
-        if !self.order_manager.has_pending() {
-            return;
-        }
         let now = Instant::now();
         let timed_out: Vec<String> = self
             .order_manager
@@ -491,7 +522,7 @@ impl<E: Exchange> Engine<E> {
             }
         }
 
-        self.order_manager.cleanup_filled();
+        self.order_manager.cleanup_terminal();
     }
 
     async fn check_sl_tp(&mut self) {

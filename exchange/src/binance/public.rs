@@ -1,4 +1,4 @@
-﻿// SPDX-FileCopyrightText: 2026 0xitsss
+// SPDX-FileCopyrightText: 2026 0xitsss
 //
 // SPDX-License-Identifier: AGPL-3.0-only OR LicenseRef-Quince-Commercial
 //! Read-only Binance exchange for public market data.
@@ -8,18 +8,13 @@
 use crate::r#trait::{Exchange, ExchangeError, OrderStatus, Result, Stream};
 use futures_util::StreamExt;
 use quince_core::types::*;
-use std::sync::atomic::{AtomicU64, Ordering};
 
 #[derive(Default)]
-pub struct BinancePublic {
-    order_counter: AtomicU64,
-}
+pub struct BinancePublic;
 
 impl BinancePublic {
     pub fn new() -> Self {
-        Self {
-            order_counter: AtomicU64::new(1),
-        }
+        Self
     }
 }
 
@@ -69,25 +64,21 @@ impl Exchange for BinancePublic {
     }
 
     async fn place_order(&self, _order: Order) -> Result<String> {
-        let id = self.order_counter.fetch_add(1, Ordering::Relaxed);
-        Ok(format!("mock_{}", id))
+        Err(ExchangeError::Order(
+            "Binance public adapter is read-only; configure API credentials for trading".into(),
+        ))
     }
 
     async fn cancel_order(&self, _symbol: &str, _order_id: &str) -> Result<()> {
-        Ok(())
+        Err(ExchangeError::Order(
+            "Binance public adapter is read-only".into(),
+        ))
     }
 
-    async fn order_status(&self, symbol: &str, _order_id: &str) -> Result<OrderStatus> {
-        Ok(OrderStatus {
-            order_id: "mock_0".into(),
-            symbol: symbol.into(),
-            side: Side::Buy,
-            qty: 0.0,
-            filled_qty: 0.0,
-            price: 0.0,
-            avg_price: 0.0,
-            status: "NEW".into(),
-        })
+    async fn order_status(&self, _symbol: &str, _order_id: &str) -> Result<OrderStatus> {
+        Err(ExchangeError::Order(
+            "Binance public adapter is read-only".into(),
+        ))
     }
 
     async fn account_info(&self) -> Result<AccountInfo> {
@@ -136,12 +127,11 @@ mod tests {
     #[test]
     fn new_creates_exchange() {
         let ex = BinancePublic::new();
-        let id = ex.order_counter.load(Ordering::Relaxed);
-        assert_eq!(id, 1);
+        assert_eq!(std::mem::size_of_val(&ex), 0);
     }
 
     #[tokio::test]
-    async fn place_order_returns_mock_id() {
+    async fn place_order_is_rejected_by_read_only_adapter() {
         let ex = BinancePublic::new();
         let order = Order {
             symbol: "BTCUSDT".into(),
@@ -153,37 +143,19 @@ mod tests {
             stop_loss: None,
             take_profit: None,
         };
-        let id = ex.place_order(order).await.unwrap();
-        assert!(id.starts_with("mock_"), "id starts with mock_, got: {id}");
-
-        let order2 = Order {
-            symbol: "ETHUSDT".into(),
-            side: Side::Sell,
-            qty: 2.0,
-            price: None,
-            order_type: OrderType::Market,
-            reduce_only: true,
-            stop_loss: None,
-            take_profit: None,
-        };
-        let id2 = ex.place_order(order2).await.unwrap();
-        assert_ne!(id, id2, "sequential calls give different ids");
+        assert!(ex.place_order(order).await.is_err());
     }
 
     #[tokio::test]
-    async fn cancel_order_returns_ok() {
+    async fn cancel_order_is_rejected_by_read_only_adapter() {
         let ex = BinancePublic::new();
-        assert!(ex.cancel_order("BTCUSDT", "12345").await.is_ok());
+        assert!(ex.cancel_order("BTCUSDT", "12345").await.is_err());
     }
 
     #[tokio::test]
-    async fn order_status_uses_symbol() {
+    async fn order_status_is_rejected_by_read_only_adapter() {
         let ex = BinancePublic::new();
-        let status = ex.order_status("ETHUSDT", "ignored").await.unwrap();
-        assert_eq!(status.symbol, "ETHUSDT");
-        assert_eq!(status.status, "NEW");
-        assert_eq!(status.side, Side::Buy);
-        assert_eq!(status.qty, 0.0);
+        assert!(ex.order_status("ETHUSDT", "ignored").await.is_err());
     }
 
     #[tokio::test]

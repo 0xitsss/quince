@@ -145,18 +145,23 @@ impl OrderManager {
             .collect()
     }
 
-    pub fn cleanup_filled(&mut self) {
+    /// Remove terminal orders that no longer carry an active protective stop.
+    /// Filled entry orders with SL/TP must stay tracked until their protection
+    /// is either triggered or explicitly deactivated.
+    pub fn cleanup_terminal(&mut self) {
         let removed: Vec<String> = self
             .orders
             .iter()
             .filter_map(|(id, po)| {
-                let keep = matches!(
+                let is_pending = matches!(
                     po.status,
                     PendingStatus::Waiting
                         | PendingStatus::Placed { .. }
                         | PendingStatus::PartiallyFilled { .. }
                 );
-                if !keep {
+                let has_active_protection = matches!(po.status, PendingStatus::Filled)
+                    && (po.order.stop_loss.is_some() || po.order.take_profit.is_some());
+                if !is_pending && !has_active_protection {
                     Some(id.clone())
                 } else {
                     None
@@ -167,6 +172,29 @@ impl OrderManager {
             self.remove_client_exchange_mapping(id);
         }
         self.orders.retain(|id, _| !removed.contains(id));
+    }
+
+    /// Net worst-case exposure from orders that may still fill.
+    pub fn pending_signed_exposure(&self) -> f64 {
+        self.orders
+            .values()
+            .filter(|po| {
+                !po.order.reduce_only
+                    && matches!(
+                        po.status,
+                        PendingStatus::Waiting
+                            | PendingStatus::Placed { .. }
+                            | PendingStatus::PartiallyFilled { .. }
+                    )
+            })
+            .map(|po| {
+                let remaining = (po.order.qty - po.filled_qty).max(0.0);
+                match po.order.side {
+                    Side::Buy => remaining,
+                    Side::Sell => -remaining,
+                }
+            })
+            .sum()
     }
 
     /// Remove exchange->client mapping (call when order is fully done).
@@ -411,15 +439,30 @@ mod tests {
     }
 
     #[test]
-    fn cleanup_filled_removes_non_active() {
+    fn cleanup_terminal_preserves_filled_order_with_sl_tp() {
         let mut om = OrderManager::new();
-        let id1 = om.register(buy_order(None, None));
+        let id1 = om.register(buy_order(Some(99.0), None));
         let id2 = om.register(buy_order(None, None));
         om.mark_placed(&id1, "ex1".into());
         om.update_fill(&id1, 1.0, 100.0);
         om.cancel(&id2);
-        om.cleanup_filled();
-        assert_eq!(om.orders.len(), 0);
+        om.cleanup_terminal();
+        assert_eq!(om.orders.len(), 1);
+        assert!(om.get(&id1).is_some());
+    }
+
+    #[test]
+    fn pending_signed_exposure_uses_unfilled_quantity() {
+        let mut om = OrderManager::new();
+        let buy = om.register(buy_order(None, None));
+        let mut sell_order = buy_order(None, None);
+        sell_order.side = Side::Sell;
+        let sell = om.register(sell_order);
+        om.mark_placed(&buy, "buy".into());
+        om.mark_placed(&sell, "sell".into());
+        om.update_fill(&buy, 0.25, 100.0);
+
+        assert!((om.pending_signed_exposure() + 0.25).abs() < 1e-12);
     }
 
     #[test]

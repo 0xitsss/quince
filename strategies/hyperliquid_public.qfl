@@ -1,0 +1,13 @@
+-- SPDX-FileCopyrightText: 2026 0xitsss
+--
+-- SPDX-License-Identifier: LicenseRef-Quince-Commercial
+@exchange hyperliquid
+@network testnet
+
+@using ema:12 ema:48
+
+function on_trade(trade)
+    if trade.price > 0 then
+        quince.log("Hyperliquid trade received")
+    end
+end

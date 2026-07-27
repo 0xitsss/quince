@@ -574,7 +574,13 @@ pub fn deserialize_binarized(data: &[u8]) -> Result<QfrProgram, String> {
             str_data_start = name_off;
         }
         // Decode entry name from UTF-8 bytes
-        let name = String::from_utf8(data[name_off..name_off + name_len].to_vec())
+        let name_end = name_off
+            .checked_add(name_len)
+            .ok_or_else(|| "entry name range overflow".to_string())?;
+        if name_end > data.len() {
+            return Err("entry name is outside file".into());
+        }
+        let name = String::from_utf8(data[name_off..name_end].to_vec())
             .map_err(|e| format!("utf8 entry: {}", e))?;
         entries.push(EntryPoint {
             name,
@@ -1111,6 +1117,21 @@ mod tests {
     #[test]
     fn binarized_invalid_magic_returns_error() {
         assert!(deserialize_binarized(&[0; 64]).is_err());
+    }
+
+    #[test]
+    fn binarized_invalid_entry_name_offset_returns_error() {
+        let mut prog = QfrProgram::new();
+        prog.entries.push(EntryPoint {
+            name: "main".into(),
+            code_offset: 0,
+        });
+        prog.code.push(Instruction::single(Opcode::Ret));
+
+        let mut bytes = serialize_binarized(&prog);
+        bytes[64..68].copy_from_slice(&u32::MAX.to_le_bytes());
+
+        assert!(deserialize_binarized(&bytes).is_err());
     }
 
     #[test]

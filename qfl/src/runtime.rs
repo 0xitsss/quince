@@ -214,13 +214,13 @@ impl QflRuntime {
 
     // Feed a trade event into the runtime.
     // Sets up VM registers (price, qty, side, trade_id, timestamp),
-    // updates last_price and resets position_size to 0,
+    // updates last_price,
     // then calls the user-defined on_trade handler and flushes any pending order.
     pub fn feed_trade(&mut self, trade: Trade) {
         #[cfg(feature = "profiling")]
         puffin::profile_scope!("feed_trade");
+        self.risk_engine.new_cycle();
         self.vm.set_last_price(trade.price);
-        self.vm.set_position_size(0.0);
 
         self.vm.regs[0].f = trade.price;
         self.vm.regs[1].f = trade.qty;
@@ -241,6 +241,7 @@ impl QflRuntime {
     pub fn feed_depth(&mut self, depth: Depth) {
         #[cfg(feature = "profiling")]
         puffin::profile_scope!("feed_depth");
+        self.risk_engine.new_cycle();
         self.vm.set_depth_bids(&depth.bids);
         self.vm.set_depth_asks(&depth.asks);
 
@@ -259,6 +260,7 @@ impl QflRuntime {
     pub fn feed_fill(&mut self, fill: OrderFill) {
         #[cfg(feature = "profiling")]
         puffin::profile_scope!("feed_fill");
+        self.risk_engine.new_cycle();
         self.vm.set_last_price(fill.price);
         self.vm.regs[0].f = fill.price;
         self.vm.regs[1].f = fill.qty;
@@ -282,6 +284,7 @@ impl QflRuntime {
     pub fn feed_eval(&mut self) {
         #[cfg(feature = "profiling")]
         puffin::profile_scope!("feed_eval");
+        self.risk_engine.new_cycle();
         self.vm.call("on_eval");
         self.flush_pending_order();
     }
@@ -328,6 +331,12 @@ impl QflRuntime {
     // Set the current position size exposed to the strategy via quince.position().
     pub fn set_position_size(&mut self, size: f64) {
         self.vm.set_position_size(size);
+        self.risk_engine.current_position = size;
+    }
+
+    /// Replace the runtime risk limits with the limits configured by the engine.
+    pub fn set_risk_limits(&mut self, limits: crate::risk::RiskLimits) {
+        self.risk_engine.limits = limits;
     }
 
     // Set the trading symbol string (used when constructing orders).
@@ -403,7 +412,10 @@ impl QflRuntime {
         };
 
         // Risk check before sending
-        match self.risk_engine.check_order(&order) {
+        match self
+            .risk_engine
+            .check_order_at_price(&order, self.vm.last_price)
+        {
             crate::risk::RiskVerdict::Allowed => {
                 // Record risk-allowed trace if tracer is attached
                 if let Some(ref mut t) = self.vm.cold.tracer {
@@ -423,9 +435,8 @@ impl QflRuntime {
     }
 
     // Unified feed — accepts any Event variant and dispatches to the correct handler.
-    // Starts a new risk cycle (resets per-cycle counters) before dispatching.
+    // Each delegated feed method starts its own risk cycle.
     pub fn feed_event(&mut self, event: Event) {
-        self.risk_engine.new_cycle(); // Reset per-cycle risk counters
         match event {
             Event::Trade(trade) => self.feed_trade(trade),
             Event::Depth(depth) => self.feed_depth(depth),
@@ -627,6 +638,7 @@ function on_trade(trade) end
         let mut rt = QflRuntime::load(&path).unwrap();
         rt.set_position_size(1.5);
         assert!((rt.vm.position_size - 1.5).abs() < 0.001);
+        assert!((rt.risk_engine.current_position - 1.5).abs() < 0.001);
         let _ = std::fs::remove_file(&path);
     }
 
@@ -653,6 +665,7 @@ end
         let (tx, rx) = crossbeam_channel::unbounded();
         rt.set_order_sender(tx);
         rt.set_symbol("BTCUSDT");
+        rt.vm.set_last_price(100.0);
         rt.feed_eval();
 
         let order = rx.try_recv().expect("should have sent order");
@@ -699,6 +712,7 @@ end
         let (tx, rx) = crossbeam_channel::unbounded();
         rt.set_order_sender(tx);
         rt.set_symbol("BTCUSDT");
+        rt.vm.set_last_price(100.0);
         rt.feed_eval();
 
         let order = rx.try_recv().expect("should have sent order");
@@ -975,11 +989,52 @@ end
         let (tx, rx) = crossbeam_channel::unbounded();
         rt.set_order_sender(tx);
         rt.set_symbol("BTCUSDT");
+        rt.vm.set_last_price(100.0);
         rt.feed_eval();
         let order = rx.try_recv().expect("should send order");
         assert_eq!(order.side, quince_core::types::Side::Buy);
         assert_eq!(order.order_type, quince_core::types::OrderType::Market);
         assert!(order.price.is_none());
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn test_float_comparison_condition_sends_order() {
+        let src = "
+function on_trade(trade)
+    if trade.price > 0 then
+        quince.order(0, 1.0, 0)
+    end
+end
+";
+        let path = write_test_strategy("runtime_float_condition_order", src);
+        let mut rt = QflRuntime::load(&path).unwrap();
+        let (tx, rx) = crossbeam_channel::unbounded();
+        rt.set_order_sender(tx);
+        rt.set_symbol("BTCUSDT");
+        rt.feed_trade(make_trade(100.0, 1.0, Side::Buy, 1));
+
+        assert!(rx.try_recv().is_ok());
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn test_false_and_does_not_evaluate_order_rhs() {
+        let src = "
+function on_eval()
+    if false and (quince.order(0, 1.0, 0) == 0) then
+    end
+end
+";
+        let path = write_test_strategy("runtime_short_circuit_and", src);
+        let mut rt = QflRuntime::load(&path).unwrap();
+        let (tx, rx) = crossbeam_channel::unbounded();
+        rt.set_order_sender(tx);
+        rt.set_symbol("BTCUSDT");
+        rt.vm.set_last_price(100.0);
+        rt.feed_eval();
+
+        assert!(rx.try_recv().is_err());
         let _ = std::fs::remove_file(&path);
     }
 
@@ -1058,10 +1113,8 @@ end
         let path = write_test_strategy("runtime_pos_after", src);
         let mut rt = QflRuntime::load(&path).unwrap();
         rt.set_position_size(2.0);
-        // feed_trade sets position to 0 before calling on_trade
         rt.feed_trade(make_trade(100.0, 1.0, Side::Buy, 1));
-        // Position resets to 0 during trade feed
-        assert!((rt.vm.cold.persist[0].float_val - 0.0).abs() < 0.001);
+        assert!((rt.vm.cold.persist[0].float_val - 2.0).abs() < 0.001);
         let _ = std::fs::remove_file(&path);
     }
 
@@ -1456,7 +1509,7 @@ end
     fn test_order_send_buy_market_after_trade() {
         let src = "
 function on_trade(trade)
-    quince.order(0, 1.0, 0)
+    quince.order(0, 0.1, 0)
 end
 ";
         let path = write_test_strategy("ord_buy_trade", src);
@@ -1468,7 +1521,7 @@ end
 
         let order = rx.try_recv().expect("should send order after trade");
         assert_eq!(order.side, quince_core::types::Side::Buy);
-        assert!((order.qty - 1.0).abs() < 0.001);
+        assert!((order.qty - 0.1).abs() < 0.001);
         assert_eq!(order.order_type, quince_core::types::OrderType::Market);
         assert!(order.price.is_none());
         let _ = std::fs::remove_file(&path);
@@ -1506,6 +1559,7 @@ end
         let (tx, rx) = crossbeam_channel::unbounded();
         rt.set_order_sender(tx);
         rt.set_symbol("BTCUSDT");
+        rt.vm.set_last_price(100.0);
 
         rt.feed_eval();
         let o1 = rx.try_recv().expect("first order");
@@ -1532,6 +1586,7 @@ end
         let (tx, rx) = crossbeam_channel::unbounded();
         rt.set_order_sender(tx);
         rt.set_symbol("BTCUSDT");
+        rt.vm.set_last_price(100.0);
         rt.feed_eval();
 
         let order = rx.try_recv().expect("should send order");
@@ -1575,6 +1630,7 @@ end
         let (tx, rx) = crossbeam_channel::unbounded();
         rt.set_order_sender(tx);
         rt.set_symbol("BTCUSDT");
+        rt.vm.set_last_price(100.0);
         rt.feed_eval();
 
         let order = rx.try_recv().expect("should send order");
@@ -1622,12 +1678,12 @@ end
     }
 
     #[test]
-    fn test_feed_trade_updates_position() {
+    fn test_feed_trade_preserves_engine_position() {
         let path = write_test_strategy("ft_position", "function on_trade(trade) end");
         let mut rt = QflRuntime::load(&path).unwrap();
         rt.set_position_size(2.0);
         rt.feed_trade(make_trade(100.0, 1.0, Side::Buy, 1));
-        assert!((rt.vm.position_size - 0.0).abs() < 0.001);
+        assert!((rt.vm.position_size - 2.0).abs() < 0.001);
         let _ = std::fs::remove_file(&path);
     }
 

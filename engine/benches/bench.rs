@@ -88,7 +88,7 @@ fn bench_full_pipeline(c: &mut Criterion) {
 
         let cfg = parse_using(&src);
         if cfg.is_empty() {
-            group.bench_function(&format!("{name} (no indicators)"), |b| {
+            group.bench_function(format!("{name} (no indicators)"), |b| {
                 b.iter(|| {
                     let mut rt = QflRuntime::load(&path).expect("load");
                     for t in &trades {

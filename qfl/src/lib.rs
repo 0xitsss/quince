@@ -34,6 +34,7 @@
 
 pub mod ast;
 pub mod compiler;
+pub mod config;
 pub mod ir;
 pub mod lexer;
 pub mod log_buffer;

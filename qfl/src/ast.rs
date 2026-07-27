@@ -1,4 +1,4 @@
-﻿// SPDX-FileCopyrightText: 2026 0xitsss
+// SPDX-FileCopyrightText: 2026 0xitsss
 //
 // SPDX-License-Identifier: AGPL-3.0-only OR LicenseRef-Quince-Commercial
 //! QFL AST node definitions — expressions, statements, and the program root.
@@ -259,6 +259,14 @@ pub enum Stmt {
         name: String,
         capacity: usize,
     },
+    /// Select the exchange adapter for this strategy (`binance` or `hyperliquid`).
+    Exchange {
+        name: String,
+    },
+    /// Select the exchange network (`mainnet` or `testnet`).
+    Network {
+        name: String,
+    },
     Feature {
         name: String,
         expr: Box<Expr>,
@@ -386,6 +394,8 @@ impl fmt::Display for Stmt {
             Stmt::Window { name, capacity } => {
                 write!(f, "window {} {}", name, capacity)
             }
+            Stmt::Exchange { name } => write!(f, "@exchange {name}"),
+            Stmt::Network { name } => write!(f, "@network {name}"),
             Stmt::Feature { name, expr } => {
                 write!(f, "feature {} = {}", name, expr)
             }

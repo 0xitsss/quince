@@ -1,4 +1,4 @@
-﻿// SPDX-FileCopyrightText: 2026 0xitsss
+// SPDX-FileCopyrightText: 2026 0xitsss
 //
 // SPDX-License-Identifier: AGPL-3.0-only OR LicenseRef-Quince-Commercial
 //! QFL lexer — tokenises source text into 73 token kinds.
@@ -77,9 +77,11 @@ pub enum Token {
     Arrow,      // ->
 
     // Directive tokens — QFL-specific @-prefixed markers
-    AtPersist, // @persist
-    AtUsing,   // @using
-    AtWindow,  // @window
+    AtPersist,  // @persist
+    AtUsing,    // @using
+    AtWindow,   // @window
+    AtExchange, // @exchange
+    AtNetwork,  // @network
 
     // Phase-4h syntactic sugar keywords
     On, // on
@@ -152,6 +154,8 @@ impl fmt::Display for Token {
             Token::AtPersist => write!(f, "@persist"),
             Token::AtUsing => write!(f, "@using"),
             Token::AtWindow => write!(f, "@window"),
+            Token::AtExchange => write!(f, "@exchange"),
+            Token::AtNetwork => write!(f, "@network"),
             Token::On => write!(f, "on"),
             Token::Fn => write!(f, "fn"),
             Token::Comment(c) => write!(f, "--{}", c),
@@ -434,7 +438,7 @@ impl Lexer {
             return Ok(Token::Comment(content));
         }
 
-        // @-prefixed directives: @persist, @using, @window
+        // @-prefixed directives: @persist, @using, @window, @exchange, @network
         // Consume the @ sign, then read alphanumeric/underscore name.
         // If the name matches a known directive, emit the specific token;
         // otherwise fall back to an Ident token with the @ prefix.
@@ -453,6 +457,8 @@ impl Lexer {
                 "persist" => return Ok(Token::AtPersist),
                 "using" => return Ok(Token::AtUsing),
                 "window" => return Ok(Token::AtWindow),
+                "exchange" => return Ok(Token::AtExchange),
+                "network" => return Ok(Token::AtNetwork),
                 _ => return Ok(Token::Ident(format!("@{}", s))),
             }
         }

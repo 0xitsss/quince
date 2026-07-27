@@ -512,6 +512,8 @@ impl TypeChecker {
             // Setup directives — no codegen, no type checking needed
             Using { .. } => { /* setup directive — no codegen */ }
             Window { .. } => { /* setup directive — no codegen */ }
+            Exchange { .. } => { /* runtime setup directive — no codegen */ }
+            Network { .. } => { /* runtime setup directive — no codegen */ }
             // Modern function declaration: params have declared types
             FnDecl {
                 name: _,

@@ -20,6 +20,29 @@ QFL syntax is a minimal Lua-inspired dialect. A strategy consists of **entry fun
 
 ---
 
+## Exchange Directives
+
+Select a venue directly in the strategy source. CLI environment variables
+`QUINCE_EXCHANGE` and `QUINCE_NETWORK` take precedence when supplied.
+
+```
+@exchange binance      -- default
+@network mainnet       -- default
+```
+
+Hyperliquid public data uses the official `trades` and `l2Book` feeds:
+
+```
+@exchange hyperliquid
+@network testnet
+```
+
+Run a directive-selected public strategy with `QUINCE_PUBLIC=1`. Hyperliquid
+authenticated order placement is intentionally unavailable until its EIP-712
+signing adapter is implemented; public adapters reject order submission.
+
+---
+
 ## Entry Functions
 
 The engine calls specific entry points when market data arrives:

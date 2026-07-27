@@ -13,7 +13,7 @@ members = [
 resolver = "2"
 
 [workspace.package]
-version = "0.7.2"
+version = "0.7.4"
 edition = "2021"
 license = "AGPL-3.0-only"
 
@@ -33,3 +33,17 @@ puffin = "0.20"
 puffin_http = "0.17"
 simd-json = "0.14"
 crossbeam-channel = "0.5"
+keyring = "3"
+k256 = "0.13"
+rand = "0.8"
+rpassword = "7"
+sha3 = "0.10"
+
+# The runtime is latency-sensitive. Thin LTO keeps the release build practical
+# while allowing cross-crate optimization; a single codegen unit favors the
+# generated binary over build throughput. Keep unwinding enabled so production
+# failures can still be reported and handled by the launcher.
+[profile.release]
+lto = "thin"
+codegen-units = 1
+incremental = false

@@ -142,6 +142,8 @@ impl Parser {
             }
             Token::AtUsing => self.parse_using(),
             Token::AtWindow => self.parse_window(),
+            Token::AtExchange => self.parse_exchange(),
+            Token::AtNetwork => self.parse_network(),
             Token::On => self.parse_event_handler(),
             Token::Fn => self.parse_fn_decl(),
             Token::Ident(s) if s == "feature" => self.parse_feature(),
@@ -249,6 +251,20 @@ impl Parser {
         Ok(Stmt::Window {
             name,
             capacity: cap,
+        })
+    }
+
+    fn parse_exchange(&mut self) -> Result<Stmt, ParseError> {
+        self.advance();
+        Ok(Stmt::Exchange {
+            name: self.expect_ident()?.to_lowercase(),
+        })
+    }
+
+    fn parse_network(&mut self) -> Result<Stmt, ParseError> {
+        self.advance();
+        Ok(Stmt::Network {
+            name: self.expect_ident()?.to_lowercase(),
         })
     }
 

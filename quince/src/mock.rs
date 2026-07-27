@@ -56,6 +56,7 @@ impl MockExchange {
         }
     }
 
+    #[cfg(test)]
     pub fn new_public() -> Self {
         Self {
             order_counter: AtomicU64::new(1),

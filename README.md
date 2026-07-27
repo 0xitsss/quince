@@ -1,12 +1,14 @@
 # Quince
 
+![Quince — a high-performance language for HFT](docs/assets/quince-hero.png)
+
 [![Build](https://img.shields.io/badge/build-passing-brightgreen?style=for-the-badge)](https://github.com/0xitsss/quince)
-[![Tests](https://img.shields.io/badge/tests-965%20passing-brightgreen?style=for-the-badge)](https://github.com/0xitsss/quince)
+[![Tests](https://img.shields.io/badge/tests-966%20passing-brightgreen?style=for-the-badge)](https://github.com/0xitsss/quince)
 [![Clippy](https://img.shields.io/badge/clippy-0%20warnings-brightgreen?style=for-the-badge)](https://github.com/0xitsss/quince)
 [![License](https://img.shields.io/badge/license-AGPL--3.0%20OR%20Commercial-blue?style=for-the-badge)](https://www.gnu.org/licenses/agpl-3.0)
 [![REUSE](https://img.shields.io/badge/REUSE-compliant-green?style=for-the-badge)](https://reuse.software)
 [![Rust](https://img.shields.io/badge/rust-1.80+-orange?style=for-the-badge&logo=rust)](https://www.rust-lang.org)
-[![Version](https://img.shields.io/badge/version-0.7.2-purple?style=for-the-badge)](https://github.com/0xitsss/quince)
+[![Version](https://img.shields.io/badge/version-0.7.4-purple?style=for-the-badge)](https://github.com/0xitsss/quince)
 [![Docs](https://img.shields.io/badge/docs-mdBook-blue?style=for-the-badge&logo=mdbook)](https://0xitsss.github.io/quince)
 [![Benchmark](https://img.shields.io/badge/bench-Criterion-ff69b4?style=for-the-badge)](https://0xitsss.github.io/quince/dev/bench/)
 [![SonarQube](https://img.shields.io/badge/sonar-passing-brightgreen?style=for-the-badge&logo=sonarcloud)](https://sonarcloud.io/project/overview?id=0xitsss_quince)
@@ -108,6 +110,23 @@ QUINCE_MOCK=1 cargo run
 
 # Public WS mode (real Binance data, no API keys)
 QUINCE_PUBLIC=1 cargo run
+
+# Hyperliquid public market data (strategy directives)
+# @exchange hyperliquid
+# @network testnet
+QUINCE_PUBLIC=1 QUINCE_STRATEGY=strategies/hyperliquid_public.qfl QUINCE_SYMBOL=BTC cargo run
+
+# Create or import a Hyperliquid EVM wallet. Input is hidden and the key is
+# stored in the OS keychain; only its public address is saved locally.
+QUINCE_WALLET_SETUP=1 cargo run
+
+The wizard either creates a fresh EVM wallet or imports a 32-byte hex private
+key. It stores the secret in the operating system credential store and saves
+only the public address in the local Quince profile. Never put a private key
+in `.qfl`, `.env`, shell history, or a repository file.
+
+On a first interactive launch, Quince opens the same wizard automatically.
+Set `QUINCE_SKIP_WALLET_SETUP=1` for an intentional wallet-free session.
 
 # With custom QFL strategy
 QUINCE_MOCK=1 QUINCE_STRATEGY=strategies/scalper.qfl QUINCE_SYMBOL=btcusdt cargo run
@@ -573,6 +592,8 @@ Every file in the repository is REUSE-compliant with a clear, unambiguous licens
 
 | Version | Phase | Changes |
 | ------- | ----- | ------- |
+| v0.7.4 | 8e | Automatic first-run wallet setup using the OS keychain; stricter live-mode and environment validation; read-only Binance public adapter; release Thin LTO; CI quality gates; risk-accounting hardening |
+| v0.7.3 | 8d | Exchange directives (`@exchange`, `@network`); Hyperliquid public trades/L2 Book adapter; market-order notional and position-risk hardening |
 | v0.7.2 | 8c | SIMD-accelerated indicators: 6 AVX2 kernels (sum, weighted_sum, sum_and_sum_xy, sum_abs_diff, min_max, sum_sq_diff) — ~3× speedup on large windows; engine criterion benchmarks (28 benches); ringvec_as_chunks for zero-copy SIMD feeding; clippy clean, 965 tests |
 | v0.7.1 | 8b | Fix vm_jmp off-by-one causing infinite loop in compound conditions; fix AND/OR short-circuit rd init; 944 tests |
 | v0.7.0 | 8a | Docgen rewrite with syn item-level extraction, mdBook GitHub Pages via CI, 29,157 LOC across 47 Rust files |

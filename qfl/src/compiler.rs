@@ -1,4 +1,4 @@
-﻿// SPDX-FileCopyrightText: 2026 0xitsss
+// SPDX-FileCopyrightText: 2026 0xitsss
 //
 // SPDX-License-Identifier: AGPL-3.0-only OR LicenseRef-Quince-Commercial
 //! QFL AST в†’ IR bytecode compiler.
@@ -350,6 +350,9 @@ impl Compiler {
             }
             Stmt::Window { .. } => {
                 // setup directive — no bytecode emitted
+            }
+            Stmt::Exchange { .. } | Stmt::Network { .. } => {
+                // runtime setup directive — no bytecode emitted
             }
             Stmt::FnDecl {
                 name,
@@ -766,23 +769,14 @@ impl Compiler {
         self.emit_at(jz_exit, Instruction::rri(O::Jnz, 0, cmp, jz_off));
     }
 
-    // --- Section: For-In Loop Compilation (Stub) ---
+    // --- Section: For-In Loop Compilation ---
 
-    /// Compile a for-in loop.
-    /// Currently a stub: allocates variables, compiles body once but does not iterate.
-    fn compile_for_in(&mut self, vars: &[String], _exprs: &[Expr], body: &[Stmt]) {
-        // For-in is complex (requires iterator protocol) — not yet implemented.
-        // For now, initialize loop vars to 0 and compile body once.
-        self.push_inner_scope();
-        for v in vars {
-            let r = self.alloc_int();
-            self.emit(Instruction::rri(O::Ldi, r, 0, 0));
-            self.define_var(v, r, false);
-        }
-        for stmt in body {
-            self.compile_stmt(stmt);
-        }
-        self.pop_inner_scope();
+    /// Reject generic iteration until QFL has a complete iterator protocol.
+    /// Compiling the body once is unsafe because it silently changes strategy semantics.
+    fn compile_for_in(&mut self, _vars: &[String], _exprs: &[Expr], _body: &[Stmt]) {
+        self.errors.push(crate::types::TypeError {
+            msg: "generic for-in loops are not implemented".into(),
+        });
     }
 
     // --- Section: Function Declaration Compilation ---
@@ -1051,6 +1045,10 @@ impl Compiler {
     /// For logical AND/OR: uses short-circuit evaluation with conditional jumps.
     /// For float IDiv/Mod: converts to ints, divides, converts back.
     fn compile_binary(&mut self, lhs: &Expr, op: &BinOp, rhs: &Expr) -> (u8, bool) {
+        if matches!(op, BinOp::And | BinOp::Or) {
+            return self.compile_logical_binary(lhs, op, rhs);
+        }
+
         // Compile both operands
         let (left_r, left_float) = self.compile_expr(lhs);
         let (right_r, right_float) = self.compile_expr(rhs);
@@ -1071,9 +1069,17 @@ impl Compiler {
             (left_r, right_r)
         };
 
-        let rd = self.alloc_type(is_float);
+        // Float comparisons consume float operands, but their VM opcodes store
+        // an integer 0/1 result. Keep the result in an integer register so a
+        // condition does not reinterpret that bit pattern as an f64.
+        let result_is_float = is_float
+            && !matches!(
+                op,
+                BinOp::Eq | BinOp::Ne | BinOp::Lt | BinOp::Gt | BinOp::Le | BinOp::Ge
+            );
+        let rd = self.alloc_type(result_is_float);
 
-        // Dispatch to the correct opcode based on operator and floatness
+        // Dispatch to the correct opcode based on operand floatness.
         match (op, is_float) {
             (BinOp::Add, false) => self.emit(Instruction::rrr(O::Add, rd, l_final, r_final)),
             (BinOp::Sub, false) => self.emit(Instruction::rrr(O::Sub, rd, l_final, r_final)),
@@ -1124,61 +1130,53 @@ impl Compiler {
             (BinOp::Gt, true) => self.emit(Instruction::rrr(O::FGt, rd, l_final, r_final)),
             (BinOp::Le, true) => self.emit(Instruction::rrr(O::FLe, rd, l_final, r_final)),
             (BinOp::Ge, true) => self.emit(Instruction::rrr(O::FGe, rd, l_final, r_final)),
-            (BinOp::And, _) => {
-                // Short-circuit AND: if left is falsy, return 0; else return right
-                let check_r = if is_float {
-                    let conv = self.alloc_int();
-                    self.emit(Instruction::rr(O::F2I, conv, l_final));
-                    conv
-                } else {
-                    l_final
-                };
-                // Initialize rd to falsy (0/0.0) for the short-circuit case
-                if is_float {
-                    let zero = self.alloc_int();
-                    self.emit(Instruction::rri(O::Ldi, zero, 0, 0));
-                    self.emit(Instruction::rr(O::I2F, rd, zero));
-                } else {
-                    self.emit(Instruction::rri(O::Ldi, rd, 0, 0));
-                }
-                // If left is truthy, overwrite rd with right value
-                let jz = self.current_offset() as usize;
-                self.emit(Instruction::rri(O::Jz, 0, check_r, 0));
-                self.emit(Instruction::rr(O::Mov, rd, r_final));
-                let after = self.current_offset();
-                let jz_off = after - jz as u32 - 1;
-                self.emit_at(jz, Instruction::rri(O::Jz, 0, check_r, jz_off));
-            }
-            (BinOp::Or, _) => {
-                // Short-circuit OR: if left is truthy, return left; else return right
-                let check_r = if is_float {
-                    let conv = self.alloc_int();
-                    self.emit(Instruction::rr(O::F2I, conv, l_final));
-                    conv
-                } else {
-                    l_final
-                };
-                // Move left into rd first (truthy short-circuit case)
-                if is_float {
-                    self.emit(Instruction::rr(O::Mov, rd, l_final));
-                } else {
-                    self.emit(Instruction::rr(O::Mov, rd, check_r));
-                }
-                // If left is truthy, skip right evaluation (rd already has left)
-                let jnz = self.current_offset() as usize;
-                self.emit(Instruction::rri(O::Jnz, 0, check_r, 0));
-                self.emit(Instruction::rr(O::Mov, rd, r_final));
-                let after = self.current_offset();
-                let jnz_off = after - jnz as u32 - 1;
-                self.emit_at(jnz, Instruction::rri(O::Jnz, 0, check_r, jnz_off));
-            }
             (BinOp::Concat, _) => {
                 // String concatenation: just Mov left into result (stub)
                 self.emit(Instruction::rr(O::Mov, rd, l_final));
             }
+            (BinOp::And | BinOp::Or, _) => {
+                unreachable!("logical operators return before arithmetic dispatch")
+            }
         }
 
-        (rd, is_float)
+        (rd, result_is_float)
+    }
+
+    /// Compile boolean AND/OR with the RHS emitted only on the path that needs it.
+    fn compile_logical_binary(&mut self, lhs: &Expr, op: &BinOp, rhs: &Expr) -> (u8, bool) {
+        let (left_r, left_float) = self.compile_expr(lhs);
+        let check_r = if left_float {
+            let converted = self.alloc_int();
+            self.emit(Instruction::rr(O::F2I, converted, left_r));
+            converted
+        } else {
+            left_r
+        };
+        let rd = self.alloc_int();
+        self.emit(Instruction::rr(O::Mov, rd, check_r));
+
+        let jump = self.current_offset() as usize;
+        let jump_opcode = match op {
+            BinOp::And => O::Jz,
+            BinOp::Or => O::Jnz,
+            _ => unreachable!("logical compiler called for non-logical operator"),
+        };
+        self.emit(Instruction::rri(jump_opcode, 0, check_r, 0));
+
+        let (right_r, right_float) = self.compile_expr(rhs);
+        let right_bool = if right_float {
+            let converted = self.alloc_int();
+            self.emit(Instruction::rr(O::F2I, converted, right_r));
+            converted
+        } else {
+            right_r
+        };
+        self.emit(Instruction::rr(O::Mov, rd, right_bool));
+
+        let after = self.current_offset();
+        let jump_offset = after - jump as u32 - 1;
+        self.emit_at(jump, Instruction::rri(jump_opcode, 0, check_r, jump_offset));
+        (rd, false)
     }
 
     // --- Section: Unary Expression Compilation ---
@@ -2732,5 +2730,15 @@ on eval() {
         let program = parser::parse("local t = {} local x = t[1]").unwrap();
         let result = compile_checked(&program);
         assert!(result.is_err(), "index expression should be rejected");
+    }
+
+    #[test]
+    fn test_for_in_errors_until_iterator_semantics_are_implemented() {
+        let program = parser::parse("function on_eval() for x in 1, 2, 3 do end end").unwrap();
+        let result = compile(&program);
+        assert!(
+            result.is_err(),
+            "for-in must not compile as a one-pass stub"
+        );
     }
 }

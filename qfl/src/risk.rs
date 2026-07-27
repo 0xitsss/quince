@@ -1,4 +1,4 @@
-﻿// SPDX-FileCopyrightText: 2026 0xitsss
+// SPDX-FileCopyrightText: 2026 0xitsss
 //
 // SPDX-License-Identifier: AGPL-3.0-only OR LicenseRef-Quince-Commercial
 //! QFL risk engine — runtime-enforced trading limits.
@@ -61,6 +61,13 @@ impl RiskEngine {
 
     /// Check an order against configured limits.
     pub fn check_order(&mut self, order: &Order) -> RiskVerdict {
+        self.check_order_at_price(order, 0.0)
+    }
+
+    /// Check an order using the most recent market price when it is a market
+    /// order. A missing reference price fails closed: treating it as zero
+    /// would bypass the notional limit altogether.
+    pub fn check_order_at_price(&mut self, order: &Order, reference_price: f64) -> RiskVerdict {
         // Max orders per cycle
         if self.orders_this_cycle >= self.limits.max_orders_per_cycle {
             return RiskVerdict::Rejected(format!(
@@ -70,7 +77,11 @@ impl RiskEngine {
         }
 
         // Max order notional
-        let notional = order.qty * order.price.unwrap_or(0.0);
+        let price = order.price.unwrap_or(reference_price);
+        if !price.is_finite() || price <= 0.0 {
+            return RiskVerdict::Rejected("market order requires a valid reference price".into());
+        }
+        let notional = order.qty * price;
         if notional > self.limits.max_order_notional {
             return RiskVerdict::Rejected(format!(
                 "order notional {:.2} exceeds max {:.2}",
@@ -201,12 +212,21 @@ mod tests {
     }
 
     #[test]
-    fn zero_price_market_order_passes_notional_check() {
+    fn market_order_uses_reference_price_for_notional_check() {
         let mut engine = RiskEngine::new(RiskLimits::default());
-        // Market order with no price, small qty within position limit
         let order = make_order(Side::Buy, 0.5, None);
-        // Notional = 0.5 * 0 = 0, position = 0.5 < 10
-        assert_eq!(engine.check_order(&order), RiskVerdict::Allowed);
+        let result = engine.check_order_at_price(&order, 50_000.0);
+        assert!(matches!(result, RiskVerdict::Rejected(msg) if msg.contains("notional")));
+    }
+
+    #[test]
+    fn market_order_without_reference_price_is_rejected() {
+        let mut engine = RiskEngine::new(RiskLimits::default());
+        let order = make_order(Side::Buy, 0.5, None);
+        assert!(matches!(
+            engine.check_order(&order),
+            RiskVerdict::Rejected(_)
+        ));
     }
 
     #[test]

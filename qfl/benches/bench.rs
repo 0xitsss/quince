@@ -1,9 +1,7 @@
-﻿// SPDX-FileCopyrightText: 2026 0xitsss
+// SPDX-FileCopyrightText: 2026 0xitsss
 //
 // SPDX-License-Identifier: AGPL-3.0-only OR LicenseRef-Quince-Commercial
-use criterion::{
-    black_box, criterion_group, criterion_main, BenchmarkId, Criterion, Throughput,
-};
+use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
 use quince_qfl::*;
 
 // в”Ђв”Ђв”Ђ Constants в”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђ
@@ -74,18 +72,14 @@ fn bench_pipeline(c: &mut Criterion) {
     for name in strategies() {
         let src = std::fs::read_to_string(strategy_path(&name)).expect("read");
         let (_, instrs) = load_and_count(&name);
-        group.bench_with_input(
-            BenchmarkId::new(&name, instrs),
-            &src,
-            |b, src| {
-                b.iter(|| {
-                    let prog = parser::parse(black_box(src)).expect("parse");
-                    let mut qfr = compiler::compile_checked(&prog).expect("compile");
-                    optimize::optimize(&mut qfr);
-                    black_box(qfr.code.len());
-                });
-            },
-        );
+        group.bench_with_input(BenchmarkId::new(&name, instrs), &src, |b, src| {
+            b.iter(|| {
+                let prog = parser::parse(black_box(src)).expect("parse");
+                let mut qfr = compiler::compile_checked(&prog).expect("compile");
+                optimize::optimize(&mut qfr);
+                black_box(qfr.code.len());
+            });
+        });
     }
     group.finish();
 }
@@ -164,8 +158,7 @@ fn bench_runtime(c: &mut Criterion) {
         b.iter_custom(|iters| {
             let mut total = std::time::Duration::ZERO;
             for _ in 0..iters {
-                let mut rt =
-                    runtime::QflRuntime::load(&path).expect("load");
+                let mut rt = runtime::QflRuntime::load(&path).expect("load");
                 let start = Instant::now();
                 for t in &trades {
                     rt.feed_trade(*t);

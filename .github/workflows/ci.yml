@@ -3,6 +3,7 @@ name: CI
 on:
   push:
     branches: [master]
+  pull_request:
 
 env:
   CARGO_TERM_COLOR: always
@@ -29,10 +30,13 @@ jobs:
             ci-
 
       - name: cargo build
-        run: cargo build --workspace
+        run: cargo build --workspace --locked
+
+      - name: cargo fmt
+        run: cargo fmt --all -- --check
 
       - name: cargo test
-        run: cargo test --workspace
+        run: cargo test --workspace --locked
 
       - name: cargo clippy
-        run: cargo clippy --workspace --no-deps -- -D warnings
+        run: cargo clippy --workspace --all-targets --no-deps -- -D warnings
