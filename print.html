@@ -36,10 +36,10 @@
             const path_to_root = "";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-c382a5db.js";
+            window.path_to_searchindex_js = "searchindex-dc37a878.js";
         </script>
         <!-- Start loading toc.js asap -->
-        <script src="toc-2196402e.js"></script>
+        <script src="toc-7bd200e7.js"></script>
     </head>
     <body>
     <div id="mdbook-help-container">
@@ -1797,6 +1797,87 @@ and provides [<code>IndicatorBank</code>] for runtime indicator lifecycle.</p>
 </span>pub fn parse_using(...) { ... }
 <span class="boring">}</span></code></pre>
 <div style="break-before: page; page-break-before: always;"></div>
+<h1 id="module-journal"><a class="header" href="#module-journal">Module: <code>journal</code></a></h1>
+<blockquote>
+<p>Source: <code>journal.rs</code></p>
+</blockquote>
+<p>Durable append-only order journal.</p>
+<p>The journal is deliberately independent from the live order manager.  It
+records the client-order-id lifecycle before the engine attempts a remote
+action, allowing a future startup recovery pass to find orders whose
+submission outcome is unknown.  Each record is one versioned JSON line and
+is synced before [<code>OrderJournal::append</code>] returns.</p>
+<h2 id="structs-17"><a class="header" href="#structs-17">Structs</a></h2>
+<h3 id="pub-struct-journalrecord"><a class="header" href="#pub-struct-journalrecord"><code>pub struct JournalRecord</code></a></h3>
+<pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>pub struct JournalRecord {
+    pub version: u32,
+    pub sequence: u64,
+    pub recorded_at_ms: u64,
+    pub event: JournalEvent,
+};
+<span class="boring">}</span></code></pre>
+<h3 id="pub-struct-orderjournal"><a class="header" href="#pub-struct-orderjournal"><code>pub struct OrderJournal</code></a></h3>
+<pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>pub struct OrderJournal {
+    path: PathBuf,
+    file: File,
+    next_sequence: u64,
+};
+<span class="boring">}</span></code></pre>
+<p>A single-process writer for a durable order lifecycle journal.</p>
+<h2 id="enums-11"><a class="header" href="#enums-11">Enums</a></h2>
+<h3 id="pub-enum-journalevent"><a class="header" href="#pub-enum-journalevent"><code>pub enum JournalEvent</code></a></h3>
+<pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>pub enum JournalEvent {
+    Registered(client_order_id: String,
+    symbol: String,
+    side: String,
+    qty: f64,
+    reduce_only: bool,),
+    Accepted(client_order_id: String,
+    exchange_order_id: String,),
+    SubmissionUnknown(client_order_id: String,
+    error: String,),
+    CancelRequested(client_order_id: String,
+    exchange_order_id: String,),
+    Terminal(client_order_id: String,
+    status: String,),
+}
+<span class="boring">}</span></code></pre>
+<h3 id="pub-enum-journalerror"><a class="header" href="#pub-enum-journalerror"><code>pub enum JournalError</code></a></h3>
+<pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>pub enum JournalError {
+    Io(std :: io :: Error,),
+    Json(line: usize,
+    source: serde_json :: Error,),
+    Serialize(serde_json :: Error,),
+    UnsupportedVersion(line: usize,
+    version: u32,),
+    InvalidSequence(line: usize,
+    expected: u64,
+    actual: u64,),
+    Clock,
+}
+<span class="boring">}</span></code></pre>
+<h2 id="type-aliases-2"><a class="header" href="#type-aliases-2">Type Aliases</a></h2>
+<h3 id="pub-type-result"><a class="header" href="#pub-type-result"><code>pub type Result</code></a></h3>
+<pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>pub type Result = std :: result :: Result &lt; T , JournalError &gt;;
+<span class="boring">}</span></code></pre>
+<h2 id="constants-3"><a class="header" href="#constants-3">Constants</a></h2>
+<h3 id="pub-const-journal_version"><a class="header" href="#pub-const-journal_version"><code>pub const JOURNAL_VERSION</code></a></h3>
+<pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>pub const JOURNAL_VERSION: u32 = ...;
+<span class="boring">}</span></code></pre>
+<p>Current on-disk JSONL schema version.</p>
+<div style="break-before: page; page-break-before: always;"></div>
 <h1 id="module-lib-2"><a class="header" href="#module-lib-2">Module: <code>lib</code></a></h1>
 <blockquote>
 <p>Source: <code>lib.rs</code></p>
@@ -1814,7 +1895,7 @@ coordinates with the exchange connector.</p>
 Drives the [<code>Engine</code>] lifecycle: subscribes to exchange streams, evaluates
 strategy conditions via QFL runtime, manages order placement/tracking,
 applies risk controls, and coordinates all subsystems.</p>
-<h2 id="structs-17"><a class="header" href="#structs-17">Structs</a></h2>
+<h2 id="structs-18"><a class="header" href="#structs-18">Structs</a></h2>
 <h3 id="pub-struct-enginee--exchange"><a class="header" href="#pub-struct-enginee--exchange"><code>pub struct Engine&lt;E : Exchange&gt;</code></a></h3>
 <pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
 </span><span class="boring">fn main() {
@@ -1826,6 +1907,8 @@ applies risk controls, and coordinates all subsystems.</p>
     risk: RiskControls,
     logger: TradeLog,
     order_manager: OrderManager,
+    order_journal: OrderJournal,
+    execution_halted: bool,
     indicators: IndicatorBank,
     last_price: f64,
     daily_pnl: f64,
@@ -1840,7 +1923,7 @@ applies risk controls, and coordinates all subsystems.</p>
     profiling_frame: u64,
 };
 <span class="boring">}</span></code></pre>
-<h2 id="enums-11"><a class="header" href="#enums-11">Enums</a></h2>
+<h2 id="enums-12"><a class="header" href="#enums-12">Enums</a></h2>
 <h3 id="pub-enum-engineerror"><a class="header" href="#pub-enum-engineerror"><code>pub enum EngineError</code></a></h3>
 <pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
 </span><span class="boring">fn main() {
@@ -1849,6 +1932,7 @@ applies risk controls, and coordinates all subsystems.</p>
     Strategy(String,),
     RiskRejected(String,),
     OrderTimeout(String,),
+    Journal(JournalError,),
 }
 <span class="boring">}</span></code></pre>
 <div style="break-before: page; page-break-before: always;"></div>
@@ -1859,7 +1943,7 @@ applies risk controls, and coordinates all subsystems.</p>
 <p>Order lifecycle management.
 Tracks pending orders, active stop-loss/take-profit levels, and order fill
 reconciliation via [<code>OrderManager</code>], [<code>PendingOrder</code>], and [<code>ActiveStop</code>].</p>
-<h2 id="structs-18"><a class="header" href="#structs-18">Structs</a></h2>
+<h2 id="structs-19"><a class="header" href="#structs-19">Structs</a></h2>
 <h3 id="pub-struct-activestop"><a class="header" href="#pub-struct-activestop"><code>pub struct ActiveStop</code></a></h3>
 <pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
 </span><span class="boring">fn main() {
@@ -1894,7 +1978,7 @@ reconciliation via [<code>OrderManager</code>], [<code>PendingOrder</code>], and
     next_id: u64,
 };
 <span class="boring">}</span></code></pre>
-<h2 id="enums-12"><a class="header" href="#enums-12">Enums</a></h2>
+<h2 id="enums-13"><a class="header" href="#enums-13">Enums</a></h2>
 <h3 id="pub-enum-pendingstatus"><a class="header" href="#pub-enum-pendingstatus"><code>pub enum PendingStatus</code></a></h3>
 <pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
 </span><span class="boring">fn main() {
@@ -1903,6 +1987,8 @@ reconciliation via [<code>OrderManager</code>], [<code>PendingOrder</code>], and
     Placed(order_id: String,),
     PartiallyFilled(order_id: String,
     filled_qty: f64,),
+    CancelRequested(order_id: String,),
+    SubmissionUnknown(error: String,),
     Filled,
     Cancelled,
     Failed(String,),
@@ -1924,7 +2010,7 @@ implementations (Binance and Hyperliquid public WebSocket adapters).</p>
 <p>Exchange trait definitions and shared types.
 Defines [<code>Exchange</code>], [<code>ExchangeError</code>], [<code>StreamMsg</code>], [<code>OrderStatus</code>],
 and the [<code>Stream</code>] subscription handle used by all exchange backends.</p>
-<h2 id="structs-19"><a class="header" href="#structs-19">Structs</a></h2>
+<h2 id="structs-20"><a class="header" href="#structs-20">Structs</a></h2>
 <h3 id="pub-struct-stream"><a class="header" href="#pub-struct-stream"><code>pub struct Stream</code></a></h3>
 <pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
 </span><span class="boring">fn main() {
@@ -1932,6 +2018,18 @@ and the [<code>Stream</code>] subscription handle used by all exchange backends.
     pub rx: crossbeam_channel :: Receiver &lt; StreamMsg &gt;,
 };
 <span class="boring">}</span></code></pre>
+<h3 id="pub-struct-orderrequest"><a class="header" href="#pub-struct-orderrequest"><code>pub struct OrderRequest</code></a></h3>
+<pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>pub struct OrderRequest {
+    pub client_order_id: String,
+    pub order: Order,
+};
+<span class="boring">}</span></code></pre>
+<p>An order paired with the caller-generated idempotency key.
+The key is created by the engine before submission and must remain stable
+across transport failures.  Adapters that support native client IDs must
+send it verbatim and expose lookup by it for reconciliation.</p>
 <h3 id="pub-struct-orderstatus"><a class="header" href="#pub-struct-orderstatus"><code>pub struct OrderStatus</code></a></h3>
 <pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
 </span><span class="boring">fn main() {
@@ -1946,7 +2044,7 @@ and the [<code>Stream</code>] subscription handle used by all exchange backends.
     pub status: String,
 };
 <span class="boring">}</span></code></pre>
-<h2 id="enums-13"><a class="header" href="#enums-13">Enums</a></h2>
+<h2 id="enums-14"><a class="header" href="#enums-14">Enums</a></h2>
 <h3 id="pub-enum-exchangeerror"><a class="header" href="#pub-enum-exchangeerror"><code>pub enum ExchangeError</code></a></h3>
 <pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
 </span><span class="boring">fn main() {
@@ -1980,15 +2078,16 @@ and the [<code>Stream</code>] subscription handle used by all exchange backends.
 </span><span class="boring">fn main() {
 </span>pub trait Exchange: Send: Sync {
     async fn subscribe (&amp; self , symbols : &amp; [String]) -&gt; Result &lt; Stream &gt;;
-    async fn place_order (&amp; self , order : Order) -&gt; Result &lt; String &gt;;
+    async fn place_order (&amp; self , request : OrderRequest) -&gt; Result &lt; String &gt;;
     async fn cancel_order (&amp; self , symbol : &amp; str , order_id : &amp; str) -&gt; Result &lt; () &gt;;
     async fn order_status (&amp; self , symbol : &amp; str , order_id : &amp; str) -&gt; Result &lt; OrderStatus &gt;;
+    async fn order_status_by_client_id (&amp; self , _symbol : &amp; str , _client_order_id : &amp; str ,) -&gt; Result &lt; OrderStatus &gt; { ... }
     async fn account_info (&amp; self) -&gt; Result &lt; AccountInfo &gt;;
     async fn current_price (&amp; self , symbol : &amp; str) -&gt; Result &lt; f64 &gt;;
 }
 <span class="boring">}</span></code></pre>
-<h2 id="type-aliases-2"><a class="header" href="#type-aliases-2">Type Aliases</a></h2>
-<h3 id="pub-type-result"><a class="header" href="#pub-type-result"><code>pub type Result</code></a></h3>
+<h2 id="type-aliases-3"><a class="header" href="#type-aliases-3">Type Aliases</a></h2>
+<h3 id="pub-type-result-1"><a class="header" href="#pub-type-result-1"><code>pub type Result</code></a></h3>
 <pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
 </span><span class="boring">fn main() {
 </span>pub type Result = std :: result :: Result &lt; T , ExchangeError &gt;;
@@ -2001,7 +2100,7 @@ and the [<code>Stream</code>] subscription handle used by all exchange backends.
 <p>Authenticated Binance exchange implementation.
 Provides REST order placement, account queries, and WebSocket-backed
 market data streaming via the [<code>Binance</code>] struct.</p>
-<h2 id="structs-20"><a class="header" href="#structs-20">Structs</a></h2>
+<h2 id="structs-21"><a class="header" href="#structs-21">Structs</a></h2>
 <h3 id="pub-struct-binance"><a class="header" href="#pub-struct-binance"><code>pub struct Binance</code></a></h3>
 <pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
 </span><span class="boring">fn main() {
@@ -2020,7 +2119,7 @@ market data streaming via the [<code>Binance</code>] struct.</p>
 <p>Read-only Binance exchange for public market data.
 [<code>BinancePublic</code>] implements the [<code>Exchange</code>] trait without authentication,
 supporting trade/depth subscriptions via combined WebSocket streams.</p>
-<h2 id="structs-21"><a class="header" href="#structs-21">Structs</a></h2>
+<h2 id="structs-22"><a class="header" href="#structs-22">Structs</a></h2>
 <h3 id="pub-struct-binancepublic"><a class="header" href="#pub-struct-binancepublic"><code>pub struct BinancePublic</code></a></h3>
 <pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
 </span><span class="boring">fn main() {
@@ -2046,9 +2145,11 @@ into [<code>StreamMsg</code>] variants using simd-json.</p>
 <p>Source: <code>binance/ws.rs</code></p>
 </blockquote>
 <p>Binance WebSocket client implementation.
-Maintains a persistent WSS connection with automatic reconnection,
+Maintains a persistent WSS connection with request/response routing.
+Reconnection is deliberately owned by the caller: pending order outcomes
+must be reconciled before a new connection can safely retry work.
 request/response routing, and HMAC-SHA256 signed authenticated requests.</p>
-<h2 id="structs-22"><a class="header" href="#structs-22">Structs</a></h2>
+<h2 id="structs-23"><a class="header" href="#structs-23">Structs</a></h2>
 <h3 id="pub-struct-wsclient"><a class="header" href="#pub-struct-wsclient"><code>pub struct WsClient</code></a></h3>
 <pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
 </span><span class="boring">fn main() {
@@ -2075,6 +2176,80 @@ request/response routing, and HMAC-SHA256 signed authenticated requests.</p>
 };
 <span class="boring">}</span></code></pre>
 <div style="break-before: page; page-break-before: always;"></div>
+<h1 id="module-hyperliquidexecution"><a class="header" href="#module-hyperliquidexecution">Module: <code>hyperliquid/execution</code></a></h1>
+<blockquote>
+<p>Source: <code>hyperliquid/execution.rs</code></p>
+</blockquote>
+<p>Safe boundary for authenticated Hyperliquid execution.</p>
+<p>This module deliberately does <strong>not</strong> serialize or submit L1 actions yet.
+Hyperliquid’s action signatures depend on canonical msgpack encoding and a
+protocol-specific EIP-712 payload.  A locally-valid ECDSA signature is not
+sufficient proof that the exchange will recover the intended signer.  Until
+that encoding is covered by official test vectors, every mutating operation
+fails closed.</p>
+<p>The types here are still useful now: they keep private-key ownership out of
+the exchange adapter, bind a signer to an account, validate order intents,
+and provide one place to add a reviewed signing implementation later.</p>
+<h2 id="structs-24"><a class="header" href="#structs-24">Structs</a></h2>
+<h3 id="pub-struct-hyperliquidsignature"><a class="header" href="#pub-struct-hyperliquidsignature"><code>pub struct HyperliquidSignature</code></a></h3>
+<pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>pub struct HyperliquidSignature {
+    pub r: String,
+    pub s: String,
+    pub v: u8,
+};
+<span class="boring">}</span></code></pre>
+<p>A signature produced by an external EIP-712/L1-action signer.
+The adapter never receives a private key.  The signer may be backed by an
+OS keychain, hardware wallet, or a separate signing process.</p>
+<h3 id="pub-struct-validatedorder"><a class="header" href="#pub-struct-validatedorder"><code>pub struct ValidatedOrder</code></a></h3>
+<pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>pub struct ValidatedOrder {
+    pub order: Order,
+    pub network: HyperliquidNetwork,
+    pub account_address: String,
+};
+<span class="boring">}</span></code></pre>
+<p>A checked order intent.  It is intentionally not a wire request.</p>
+<h3 id="pub-struct-hyperliquidexecution"><a class="header" href="#pub-struct-hyperliquidexecution"><code>pub struct HyperliquidExecution</code></a></h3>
+<pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>pub struct HyperliquidExecution {
+    network: HyperliquidNetwork,
+    account_address: String,
+    signer: Arc &lt; dyn HyperliquidSigner &gt;,
+    public: HyperliquidPublic,
+};
+<span class="boring">}</span></code></pre>
+<p>Authenticated adapter shell.
+Public-data methods work through [<code>HyperliquidPublic</code>]. Mutating methods
+reject until canonical action encoding, signing vectors, submission, and
+reconciliation are all implemented together.</p>
+<h2 id="enums-15"><a class="header" href="#enums-15">Enums</a></h2>
+<h3 id="pub-enum-hyperliquidnetwork"><a class="header" href="#pub-enum-hyperliquidnetwork"><code>pub enum HyperliquidNetwork</code></a></h3>
+<pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>pub enum HyperliquidNetwork {
+    Mainnet,
+    Testnet,
+}
+<span class="boring">}</span></code></pre>
+<p>Hyperliquid deployment selected for an authenticated session.</p>
+<h2 id="traits-1"><a class="header" href="#traits-1">Traits</a></h2>
+<h3 id="pub-trait-hyperliquidsigner"><a class="header" href="#pub-trait-hyperliquidsigner"><code>pub trait HyperliquidSigner</code></a></h3>
+<pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>pub trait HyperliquidSigner: Send: Sync {
+    fn address (&amp; self) -&gt; &amp; str;
+    fn sign_l1_action (&amp; self , action_hash : [u8 ; 32] , network : HyperliquidNetwork ,) -&gt; Result &lt; HyperliquidSignature &gt;;
+}
+<span class="boring">}</span></code></pre>
+<p>Boundary for a future, protocol-reviewed Hyperliquid L1 action signer.
+<code>action_hash</code> must be produced by a canonical encoder with official test
+vectors.  This crate intentionally does not manufacture it yet.</p>
+<div style="break-before: page; page-break-before: always;"></div>
 <h1 id="module-hyperliquidmod"><a class="header" href="#module-hyperliquidmod">Module: <code>hyperliquid/mod</code></a></h1>
 <blockquote>
 <p>Source: <code>hyperliquid/mod.rs</code></p>
@@ -2089,7 +2264,7 @@ request/response routing, and HMAC-SHA256 signed authenticated requests.</p>
 <p>Subscribes to the official <code>trades</code> and <code>l2Book</code> WebSocket feeds. Trading
 is deliberately rejected here: Hyperliquid requires EIP-712 action signing,
 which must be implemented as a dedicated authenticated adapter.</p>
-<h2 id="structs-23"><a class="header" href="#structs-23">Structs</a></h2>
+<h2 id="structs-25"><a class="header" href="#structs-25">Structs</a></h2>
 <h3 id="pub-struct-hyperliquidpublic"><a class="header" href="#pub-struct-hyperliquidpublic"><code>pub struct HyperliquidPublic</code></a></h3>
 <pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
 </span><span class="boring">fn main() {
@@ -2105,7 +2280,7 @@ which must be implemented as a dedicated authenticated adapter.</p>
 <p>Money Flow Index (MFI) indicator.
 A volume-weighted momentum oscillator that uses price and volume to identify
 overbought/oversold conditions. [<code>Mfi</code>] tracks positive and negative money flow.</p>
-<h2 id="structs-24"><a class="header" href="#structs-24">Structs</a></h2>
+<h2 id="structs-26"><a class="header" href="#structs-26">Structs</a></h2>
 <h3 id="pub-struct-mfi"><a class="header" href="#pub-struct-mfi"><code>pub struct Mfi</code></a></h3>
 <pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
 </span><span class="boring">fn main() {
@@ -2173,7 +2348,7 @@ overbought/oversold conditions. [<code>Mfi</code>] tracks positive and negative 
 <p>Technical analysis indicators for trading strategies.
 Provides moving averages, oscillators, volatility measures, flow indicators,
 and structure detection — all operating on the shared [<code>Candle</code>] type.</p>
-<h2 id="structs-25"><a class="header" href="#structs-25">Structs</a></h2>
+<h2 id="structs-27"><a class="header" href="#structs-27">Structs</a></h2>
 <h3 id="pub-struct-candle"><a class="header" href="#pub-struct-candle"><code>pub struct Candle</code></a></h3>
 <pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
 </span><span class="boring">fn main() {
@@ -2193,7 +2368,7 @@ and structure detection — all operating on the shared [<code>Candle</code>] ty
 <p>Moving average indicators.
 Provides [<code>Sma</code>] (Simple), [<code>Ema</code>] (Exponential), [<code>Wma</code>] (Weighted),
 and [<code>Hma</code>] (Hull) moving averages with O(1) incremental updates.</p>
-<h2 id="structs-26"><a class="header" href="#structs-26">Structs</a></h2>
+<h2 id="structs-28"><a class="header" href="#structs-28">Structs</a></h2>
 <h3 id="pub-struct-sma"><a class="header" href="#pub-struct-sma"><code>pub struct Sma</code></a></h3>
 <pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
 </span><span class="boring">fn main() {
@@ -2249,7 +2424,7 @@ and [<code>Hma</code>] (Hull) moving averages with O(1) incremental updates.</p>
 <p>Oscillator indicators for momentum and mean-reversion analysis.
 Includes [<code>Rsi</code>] (Relative Strength Index), [<code>Stochastic</code>], [<code>Cci</code>]
 (Commodity Channel Index), and [<code>WilliamsR</code>] (%R).</p>
-<h2 id="structs-27"><a class="header" href="#structs-27">Structs</a></h2>
+<h2 id="structs-29"><a class="header" href="#structs-29">Structs</a></h2>
 <h3 id="pub-struct-rsi"><a class="header" href="#pub-struct-rsi"><code>pub struct Rsi</code></a></h3>
 <pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
 </span><span class="boring">fn main() {
@@ -2352,7 +2527,7 @@ Includes [<code>Rsi</code>] (Relative Strength Index), [<code>Stochastic</code>]
 <p>Market structure indicators.
 Provides [<code>Adx</code>] (Average Directional Index) for trend strength measurement
 and [<code>Psar</code>] (Parabolic SAR) for trend direction and reversal points.</p>
-<h2 id="structs-28"><a class="header" href="#structs-28">Structs</a></h2>
+<h2 id="structs-30"><a class="header" href="#structs-30">Structs</a></h2>
 <h3 id="pub-struct-adx"><a class="header" href="#pub-struct-adx"><code>pub struct Adx</code></a></h3>
 <pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
 </span><span class="boring">fn main() {
@@ -2410,7 +2585,7 @@ and [<code>Psar</code>] (Parabolic SAR) for trend direction and reversal points.
 <p>Volatility indicators.
 Provides [<code>TrueRange</code>], [<code>Atr</code>] (Average True Range), [<code>BollingerBands</code>],
 and [<code>KeltnerChannel</code>] for measuring and visualizing market volatility.</p>
-<h2 id="structs-29"><a class="header" href="#structs-29">Structs</a></h2>
+<h2 id="structs-31"><a class="header" href="#structs-31">Structs</a></h2>
 <h3 id="pub-struct-truerange"><a class="header" href="#pub-struct-truerange"><code>pub struct TrueRange</code></a></h3>
 <pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
 </span><span class="boring">fn main() {
@@ -2473,7 +2648,7 @@ and [<code>KeltnerChannel</code>] for measuring and visualizing market volatilit
 <p>Structured trade logging.
 [<code>TradeLog</code>] writes JSON-formatted fill records to a CSV-compatible
 log file for post-session analysis and reconciliation.</p>
-<h2 id="structs-30"><a class="header" href="#structs-30">Structs</a></h2>
+<h2 id="structs-32"><a class="header" href="#structs-32">Structs</a></h2>
 <h3 id="pub-struct-tradelog"><a class="header" href="#pub-struct-tradelog"><code>pub struct TradeLog</code></a></h3>
 <pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
 </span><span class="boring">fn main() {
@@ -2489,7 +2664,7 @@ log file for post-session analysis and reconciliation.</p>
 <p>Risk control enforcement at runtime.
 [<code>RiskControls</code>] validates orders and positions against configured limits
 (max position size, max drawdown, order frequency, daily loss, cooldown).</p>
-<h2 id="structs-31"><a class="header" href="#structs-31">Structs</a></h2>
+<h2 id="structs-33"><a class="header" href="#structs-33">Structs</a></h2>
 <h3 id="pub-struct-riskcontrols"><a class="header" href="#pub-struct-riskcontrols"><code>pub struct RiskControls</code></a></h3>
 <pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
 </span><span class="boring">fn main() {
@@ -2515,7 +2690,7 @@ log file for post-session analysis and reconciliation.</p>
 <p>Risk management configuration and controls.
 Defines [<code>RiskConfig</code>] for parameterizing position sizing, drawdown limits,
 order frequency, daily loss caps, and cooldown periods.</p>
-<h2 id="structs-32"><a class="header" href="#structs-32">Structs</a></h2>
+<h2 id="structs-34"><a class="header" href="#structs-34">Structs</a></h2>
 <h3 id="pub-struct-riskconfig"><a class="header" href="#pub-struct-riskconfig"><code>pub struct RiskConfig</code></a></h3>
 <pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
 </span><span class="boring">fn main() {
@@ -2552,7 +2727,7 @@ mock/public/live exchange mode, and launches the main engine event loop.</p>
 [<code>MockExchange</code>] simulates order matching, position tracking, and price
 streams without network dependencies — suitable for integration tests
 and strategy dry-runs.</p>
-<h2 id="structs-33"><a class="header" href="#structs-33">Structs</a></h2>
+<h2 id="structs-35"><a class="header" href="#structs-35">Structs</a></h2>
 <h3 id="pub-struct-mockexchange"><a class="header" href="#pub-struct-mockexchange"><code>pub struct MockExchange</code></a></h3>
 <pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
 </span><span class="boring">fn main() {
@@ -2570,7 +2745,7 @@ and strategy dry-runs.</p>
 <p>Local EVM wallet onboarding for Hyperliquid.</p>
 <p>Private keys are stored only in the operating system credential store. The
 local profile contains the public address and no signing secret.</p>
-<h2 id="structs-34"><a class="header" href="#structs-34">Structs</a></h2>
+<h2 id="structs-36"><a class="header" href="#structs-36">Structs</a></h2>
 <h3 id="pub-struct-walletprofile"><a class="header" href="#pub-struct-walletprofile"><code>pub struct WalletProfile</code></a></h3>
 <pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
 </span><span class="boring">fn main() {

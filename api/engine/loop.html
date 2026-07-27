@@ -35,10 +35,10 @@
             const path_to_root = "../../";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../../searchindex-c382a5db.js";
+            window.path_to_searchindex_js = "../../searchindex-dc37a878.js";
         </script>
         <!-- Start loading toc.js asap -->
-        <script src="../../toc-2196402e.js"></script>
+        <script src="../../toc-7bd200e7.js"></script>
     </head>
     <body>
     <div id="mdbook-help-container">
@@ -200,6 +200,8 @@ applies risk controls, and coordinates all subsystems.</p>
     risk: RiskControls,
     logger: TradeLog,
     order_manager: OrderManager,
+    order_journal: OrderJournal,
+    execution_halted: bool,
     indicators: IndicatorBank,
     last_price: f64,
     daily_pnl: f64,
@@ -223,6 +225,7 @@ applies risk controls, and coordinates all subsystems.</p>
     Strategy(String,),
     RiskRejected(String,),
     OrderTimeout(String,),
+    Journal(JournalError,),
 }
 <span class="boring">}</span></code></pre>
 

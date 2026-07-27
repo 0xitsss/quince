@@ -35,10 +35,10 @@
             const path_to_root = "../../";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../../searchindex-c382a5db.js";
+            window.path_to_searchindex_js = "../../searchindex-dc37a878.js";
         </script>
         <!-- Start loading toc.js asap -->
-        <script src="../../toc-2196402e.js"></script>
+        <script src="../../toc-7bd200e7.js"></script>
     </head>
     <body>
     <div id="mdbook-help-container">
@@ -195,6 +195,18 @@ and the [<code>Stream</code>] subscription handle used by all exchange backends.
     pub rx: crossbeam_channel :: Receiver &lt; StreamMsg &gt;,
 };
 <span class="boring">}</span></code></pre>
+<h3 id="pub-struct-orderrequest"><a class="header" href="#pub-struct-orderrequest"><code>pub struct OrderRequest</code></a></h3>
+<pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>pub struct OrderRequest {
+    pub client_order_id: String,
+    pub order: Order,
+};
+<span class="boring">}</span></code></pre>
+<p>An order paired with the caller-generated idempotency key.
+The key is created by the engine before submission and must remain stable
+across transport failures.  Adapters that support native client IDs must
+send it verbatim and expose lookup by it for reconciliation.</p>
 <h3 id="pub-struct-orderstatus"><a class="header" href="#pub-struct-orderstatus"><code>pub struct OrderStatus</code></a></h3>
 <pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
 </span><span class="boring">fn main() {
@@ -243,9 +255,10 @@ and the [<code>Stream</code>] subscription handle used by all exchange backends.
 </span><span class="boring">fn main() {
 </span>pub trait Exchange: Send: Sync {
     async fn subscribe (&amp; self , symbols : &amp; [String]) -&gt; Result &lt; Stream &gt;;
-    async fn place_order (&amp; self , order : Order) -&gt; Result &lt; String &gt;;
+    async fn place_order (&amp; self , request : OrderRequest) -&gt; Result &lt; String &gt;;
     async fn cancel_order (&amp; self , symbol : &amp; str , order_id : &amp; str) -&gt; Result &lt; () &gt;;
     async fn order_status (&amp; self , symbol : &amp; str , order_id : &amp; str) -&gt; Result &lt; OrderStatus &gt;;
+    async fn order_status_by_client_id (&amp; self , _symbol : &amp; str , _client_order_id : &amp; str ,) -&gt; Result &lt; OrderStatus &gt; { ... }
     async fn account_info (&amp; self) -&gt; Result &lt; AccountInfo &gt;;
     async fn current_price (&amp; self , symbol : &amp; str) -&gt; Result &lt; f64 &gt;;
 }
