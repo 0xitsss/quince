@@ -403,7 +403,7 @@ dependencies = [
 
 [[package]]
 name = "docgen"
-version = "0.7.4"
+version = "0.7.5"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -1371,7 +1371,7 @@ dependencies = [
 
 [[package]]
 name = "quince"
-version = "0.7.4"
+version = "0.7.5"
 dependencies = [
  "async-trait",
  "chrono",
@@ -1400,14 +1400,14 @@ dependencies = [
 
 [[package]]
 name = "quince-core"
-version = "0.7.4"
+version = "0.7.5"
 dependencies = [
  "chrono",
 ]
 
 [[package]]
 name = "quince-engine"
-version = "0.7.4"
+version = "0.7.5"
 dependencies = [
  "async-trait",
  "chrono",
@@ -1429,7 +1429,7 @@ dependencies = [
 
 [[package]]
 name = "quince-exchange"
-version = "0.7.4"
+version = "0.7.5"
 dependencies = [
  "async-trait",
  "chrono",
@@ -1450,7 +1450,7 @@ dependencies = [
 
 [[package]]
 name = "quince-indicators"
-version = "0.7.4"
+version = "0.7.5"
 dependencies = [
  "criterion",
  "quince-core",
@@ -1458,7 +1458,7 @@ dependencies = [
 
 [[package]]
 name = "quince-logger"
-version = "0.7.4"
+version = "0.7.5"
 dependencies = [
  "chrono",
  "quince-core",
@@ -1470,7 +1470,7 @@ dependencies = [
 
 [[package]]
 name = "quince-qfl"
-version = "0.7.4"
+version = "0.7.5"
 dependencies = [
  "chrono",
  "criterion",
@@ -1484,7 +1484,7 @@ dependencies = [
 
 [[package]]
 name = "quince-risk"
-version = "0.7.4"
+version = "0.7.5"
 dependencies = [
  "quince-core",
  "tracing",

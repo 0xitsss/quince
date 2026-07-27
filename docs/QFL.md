@@ -38,8 +38,10 @@ Hyperliquid public data uses the official `trades` and `l2Book` feeds:
 ```
 
 Run a directive-selected public strategy with `QUINCE_PUBLIC=1`. Hyperliquid
-authenticated order placement is intentionally unavailable until its EIP-712
-signing adapter is implemented; public adapters reject order submission.
+authenticated execution has a signer/account validation boundary, but order
+placement remains intentionally disabled until its protocol-specific EIP-712
+action encoding, official signing vectors, reconciliation, and testnet
+integration checks are complete. Public adapters reject order submission.
 
 ---
 

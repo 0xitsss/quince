@@ -1,8 +1,10 @@
-﻿// SPDX-FileCopyrightText: 2026 0xitsss
+// SPDX-FileCopyrightText: 2026 0xitsss
 //
 // SPDX-License-Identifier: AGPL-3.0-only OR LicenseRef-Quince-Commercial
 //! Binance WebSocket client implementation.
-//! Maintains a persistent WSS connection with automatic reconnection,
+//! Maintains a persistent WSS connection with request/response routing.
+//! Reconnection is deliberately owned by the caller: pending order outcomes
+//! must be reconciled before a new connection can safely retry work.
 //! request/response routing, and HMAC-SHA256 signed authenticated requests.
 
 use crate::r#trait::{ExchangeError, Result, StreamMsg};
@@ -15,6 +17,8 @@ use tokio::sync::oneshot;
 
 const CHAN_CAP: usize = 64;
 const MAX_PENDING: usize = 32;
+const TESTNET_URL: &str = "wss://testnet.binancefuture.com/ws-fapi/v1";
+const MAINNET_URL: &str = "wss://ws-fapi.binance.com/ws-fapi/v1";
 
 pub struct WsClient {
     pub req_tx: crossbeam_channel::Sender<WsRequest>,
@@ -72,11 +76,7 @@ pub struct BinanceWs {
 
 impl BinanceWs {
     pub fn new(api_key: &str, secret_key: &str, testnet: bool) -> Self {
-        let url = if testnet {
-            "wss://testnet.binancefuture.com/ws-fapi/v1"
-        } else {
-            "wss://ws-fapi.binance.com/ws-fapi/v1"
-        };
+        let url = if testnet { TESTNET_URL } else { MAINNET_URL };
         Self {
             url: url.to_string(),
             api_key: api_key.to_string(),
@@ -162,12 +162,33 @@ impl BinanceWs {
                                     }
                                 }
                             }
+                            Some(Ok(tokio_tungstenite::tungstenite::Message::Close(_))) => {
+                                reader_alive = false;
+                                for (_, sender) in pending.drain() {
+                                    let _ = sender.send(Err(ExchangeError::Disconnected));
+                                }
+                            }
                             Some(Ok(_)) => {}
-                            _ => reader_alive = false,
+                            _ => {
+                                reader_alive = false;
+                                for (_, sender) in pending.drain() {
+                                    let _ = sender.send(Err(ExchangeError::Disconnected));
+                                }
+                            }
                         }
                     }
                     _ = tokio::time::sleep(std::time::Duration::from_millis(10)) => {
+                        if !reader_alive {
+                            while let Ok(req) = req_rx.try_recv() {
+                                let _ = req.response_tx.send(Err(ExchangeError::Disconnected));
+                            }
+                            break;
+                        }
                         while let Ok(req) = req_rx.try_recv() {
+                            if pending.len() >= MAX_PENDING {
+                                let _ = req.response_tx.send(Err(ExchangeError::Timeout));
+                                continue;
+                            }
                             let id = next_id.fetch_add(1, Ordering::Relaxed);
                             let mut params = req.params;
                             sign_params(&api_key, &secret_key, &mut params);
@@ -181,27 +202,17 @@ impl BinanceWs {
                                 tokio_tungstenite::tungstenite::Message::Text(payload),
                             ).await {
                                 let _ = req.response_tx.send(Err(ExchangeError::Ws(e.to_string())));
-                                continue;
+                                reader_alive = false;
+                                break;
                             }
                             pending.insert(id, req.response_tx);
                         }
                         if !reader_alive {
+                            for (_, sender) in pending.drain() {
+                                let _ = sender.send(Err(ExchangeError::Disconnected));
+                            }
                             while let Ok(req) = req_rx.try_recv() {
-                                let id = next_id.fetch_add(1, Ordering::Relaxed);
-                                let mut params = req.params;
-                                sign_params(&api_key, &secret_key, &mut params);
-                                let mut request = Map::new();
-                                request.insert("id".into(), Value::Number(id.into()));
-                                request.insert("method".into(), Value::String(req.method));
-                                request.insert("params".into(), Value::Object(params));
-                                let payload = serde_json::to_string(&request).unwrap();
-                                if let Err(e) = writer.send(
-                                    tokio_tungstenite::tungstenite::Message::Text(payload),
-                                ).await {
-                                    let _ = req.response_tx.send(Err(ExchangeError::Ws(e.to_string())));
-                                    continue;
-                                }
-                                pending.insert(id, req.response_tx);
+                                let _ = req.response_tx.send(Err(ExchangeError::Disconnected));
                             }
                             break;
                         }
@@ -212,7 +223,8 @@ impl BinanceWs {
         });
 
         match tokio::time::timeout(std::time::Duration::from_secs(5), subscribe_resp_rx).await {
-            Ok(Ok(_)) => {}
+            Ok(Ok(Ok(_))) => {}
+            Ok(Ok(Err(error))) => return Err(error),
             Ok(Err(_)) => {
                 return Err(ExchangeError::Ws(
                     "subscribe response channel closed".into(),
@@ -222,5 +234,31 @@ impl BinanceWs {
         }
 
         Ok((WsClient { req_tx }, market_rx))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn uses_official_futures_endpoints() {
+        assert_eq!(BinanceWs::new("key", "secret", true).url, TESTNET_URL);
+        assert_eq!(BinanceWs::new("key", "secret", false).url, MAINNET_URL);
+    }
+
+    #[test]
+    fn signing_adds_required_authentication_fields() {
+        let mut params = Map::new();
+        params.insert("symbol".into(), Value::String("BTCUSDT".into()));
+        sign_params("api-key", "secret", &mut params);
+
+        assert_eq!(params["apiKey"], "api-key");
+        assert!(params["timestamp"]
+            .as_str()
+            .unwrap()
+            .parse::<u128>()
+            .is_ok());
+        assert_eq!(params["signature"].as_str().unwrap().len(), 64);
     }
 }

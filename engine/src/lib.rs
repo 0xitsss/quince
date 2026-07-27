@@ -8,7 +8,9 @@
 //! coordinates with the exchange connector.
 
 pub mod indicators;
+pub mod journal;
 pub mod r#loop;
 pub mod orders;
 
+pub use journal::{JournalEvent, JournalRecord, OrderJournal};
 pub use r#loop::{Engine, EngineError};

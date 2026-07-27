@@ -71,6 +71,11 @@ async fn main() -> Result<(), EngineError> {
             "QUINCE_MOCK and QUINCE_PUBLIC cannot both be enabled".into(),
         ));
     }
+    if live_enabled && (is_mock || is_public) {
+        return Err(EngineError::Strategy(
+            "QUINCE_LIVE cannot be combined with QUINCE_MOCK or QUINCE_PUBLIC".into(),
+        ));
+    }
     let symbol = std::env::var("QUINCE_SYMBOL").unwrap_or_else(|_| "btcusdt".into());
     let strategy =
         std::env::var("QUINCE_STRATEGY").unwrap_or_else(|_| "strategies/test_all.qfl".into());
@@ -144,7 +149,20 @@ async fn main() -> Result<(), EngineError> {
         let mut engine = Engine::new(exchange, &[symbol], &strategy, risk, &log_path)?;
         engine.run().await
     } else if strategy_config.exchange == ExchangeKind::Hyperliquid {
-        let wallet = wallet::run_setup_wizard().map_err(EngineError::Strategy)?;
+        let wallet = wallet::load_profile()
+            .map_err(EngineError::Strategy)?
+            .ok_or_else(|| {
+                EngineError::Strategy(
+                    "Hyperliquid requires a configured wallet; run QUINCE_WALLET_SETUP=1 cargo run first"
+                        .into(),
+                )
+            })?;
+        if !wallet::has_private_key().map_err(EngineError::Strategy)? {
+            return Err(EngineError::Strategy(
+                "Hyperliquid wallet secret is missing from the system keychain; run QUINCE_WALLET_SETUP=1 cargo run"
+                    .into(),
+            ));
+        }
         Err(EngineError::Strategy(
             format!(
                 "wallet {} is configured, but Hyperliquid live trading is not enabled yet; use QUINCE_PUBLIC=1 for market data",
@@ -166,6 +184,12 @@ async fn main() -> Result<(), EngineError> {
         tracing::info!("quince engine starting");
         engine.run().await
     } else {
+        if live_enabled {
+            return Err(EngineError::Strategy(
+                "QUINCE_LIVE=1 requires Binance credentials, or use QUINCE_PUBLIC=1 for market data"
+                    .into(),
+            ));
+        }
         tracing::info!(
             "no BINANCE_API_KEY set — falling back to PUBLIC mode (Binance WS, no keys)"
         );

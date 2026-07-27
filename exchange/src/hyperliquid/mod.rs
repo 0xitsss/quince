@@ -3,4 +3,5 @@
 // SPDX-License-Identifier: AGPL-3.0-only OR LicenseRef-Quince-Commercial
 //! Hyperliquid exchange adapters.
 
+pub mod execution;
 pub mod public;

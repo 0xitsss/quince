@@ -1,4 +1,4 @@
-﻿// SPDX-FileCopyrightText: 2026 0xitsss
+// SPDX-FileCopyrightText: 2026 0xitsss
 //
 // SPDX-License-Identifier: AGPL-3.0-only OR LicenseRef-Quince-Commercial
 //! Authenticated Binance exchange implementation.
@@ -9,11 +9,14 @@ pub mod public;
 pub mod types;
 pub mod ws;
 
-use crate::r#trait::{Exchange, ExchangeError, OrderStatus, Result, Stream};
+use crate::r#trait::{Exchange, ExchangeError, OrderRequest, OrderStatus, Result, Stream};
 use crossbeam_channel;
 use quince_core::types::*;
 use serde_json::{Map, Value};
 use std::sync::OnceLock;
+use std::time::Duration;
+
+const REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
 
 pub struct Binance {
     api_key: String,
@@ -32,86 +35,47 @@ impl Binance {
         }
     }
 
-    fn req_tx(&self) -> Result<crossbeam_channel::Sender<ws::WsRequest>> {
-        self.client
-            .get()
-            .map(|c| c.req_tx.clone())
-            .ok_or(ExchangeError::Disconnected)
+    fn validate_credentials(&self) -> Result<()> {
+        if self.api_key.trim().is_empty() || self.secret_key.trim().is_empty() {
+            return Err(ExchangeError::Auth(
+                "Binance API key and secret key must both be configured".into(),
+            ));
+        }
+        Ok(())
     }
 
-    fn parse_account_info(result: Value) -> Result<AccountInfo> {
-        let mut balances = Vec::with_capacity(result["assets"].as_array().map_or(0, |a| a.len()));
-        if let Some(assets) = result["assets"].as_array() {
-            for a in assets {
-                balances.push(Balance {
-                    asset: a["asset"].as_str().unwrap_or("").to_string(),
-                    wallet: a["walletBalance"]
-                        .as_str()
-                        .unwrap_or("0")
-                        .parse()
-                        .unwrap_or(0.0),
-                    cross_wallet: a["crossWalletBalance"]
-                        .as_str()
-                        .unwrap_or("0")
-                        .parse()
-                        .unwrap_or(0.0),
-                });
-            }
+    async fn request(&self, method: &str, params: Map<String, Value>) -> Result<Value> {
+        let req_tx = self.req_tx()?;
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        req_tx
+            .try_send(ws::WsRequest {
+                method: method.into(),
+                params,
+                response_tx: tx,
+            })
+            .map_err(|error| match error {
+                crossbeam_channel::TrySendError::Full(_) => ExchangeError::Timeout,
+                crossbeam_channel::TrySendError::Disconnected(_) => ExchangeError::Disconnected,
+            })?;
+
+        match tokio::time::timeout(REQUEST_TIMEOUT, rx).await {
+            Ok(Ok(result)) => result,
+            Ok(Err(_)) => Err(ExchangeError::Disconnected),
+            Err(_) => Err(ExchangeError::Timeout),
+        }
+    }
+
+    fn order_params(&self, request: &OrderRequest) -> Result<Map<String, Value>> {
+        let order = &request.order;
+        let symbol = normalize_symbol(&order.symbol)?;
+        if !order.qty.is_finite() || order.qty <= 0.0 {
+            return Err(ExchangeError::Order(
+                "order quantity must be a positive finite number".into(),
+            ));
         }
 
-        let mut positions =
-            Vec::with_capacity(result["positions"].as_array().map_or(0, |a| a.len()));
-        if let Some(poss) = result["positions"].as_array() {
-            for p in poss {
-                let size: f64 = p["positionAmt"]
-                    .as_str()
-                    .unwrap_or("0")
-                    .parse()
-                    .unwrap_or(0.0);
-                let side = if size > 0.0 {
-                    PositionSide::Long
-                } else if size < 0.0 {
-                    PositionSide::Short
-                } else {
-                    PositionSide::None
-                };
-                positions.push(Position {
-                    symbol: p["symbol"].as_str().unwrap_or("").to_string(),
-                    side,
-                    size: size.abs(),
-                    entry_price: p["entryPrice"]
-                        .as_str()
-                        .unwrap_or("0")
-                        .parse()
-                        .unwrap_or(0.0),
-                    unrealized_pnl: p["unrealizedProfit"]
-                        .as_str()
-                        .unwrap_or("0")
-                        .parse()
-                        .unwrap_or(0.0),
-                });
-            }
-        }
-
-        Ok(AccountInfo {
-            balances,
-            positions,
-        })
-    }
-}
-
-#[async_trait::async_trait]
-impl Exchange for Binance {
-    async fn subscribe(&self, symbols: &[String]) -> Result<Stream> {
-        let ws = ws::BinanceWs::new(&self.api_key, &self.secret_key, self.testnet);
-        let (client, rx) = ws.connect(symbols).await?;
-        let _ = self.client.set(client);
-        Ok(Stream { rx })
-    }
-
-    async fn place_order(&self, order: Order) -> Result<String> {
         let mut params = Map::new();
-        params.insert("symbol".into(), Value::String(order.symbol.to_uppercase()));
+        params.insert("symbol".into(), Value::String(symbol));
         params.insert(
             "side".into(),
             Value::String(match order.side {
@@ -126,24 +90,153 @@ impl Exchange for Binance {
                 OrderType::Limit => "LIMIT".into(),
             }),
         );
-        params.insert("quantity".into(), Value::String(format!("{}", order.qty)));
+        params.insert("quantity".into(), Value::String(order.qty.to_string()));
+        let client_order_id = validate_client_order_id(&request.client_order_id)?;
+        params.insert("newClientOrderId".into(), Value::String(client_order_id));
         if order.reduce_only {
             params.insert("reduceOnly".into(), Value::String("true".into()));
         }
-        if let Some(price) = order.price {
-            params.insert("price".into(), Value::String(format!("{}", price)));
+
+        match (order.order_type, order.price) {
+            (OrderType::Market, None) => {}
+            (OrderType::Market, Some(_)) => {
+                return Err(ExchangeError::Order(
+                    "market orders must not include a limit price".into(),
+                ));
+            }
+            (OrderType::Limit, Some(price)) if price.is_finite() && price > 0.0 => {
+                params.insert("price".into(), Value::String(price.to_string()));
+                params.insert("timeInForce".into(), Value::String("GTC".into()));
+            }
+            (OrderType::Limit, _) => {
+                return Err(ExchangeError::Order(
+                    "limit orders require a positive finite price".into(),
+                ));
+            }
+        }
+        Ok(params)
+    }
+
+    fn req_tx(&self) -> Result<crossbeam_channel::Sender<ws::WsRequest>> {
+        self.client
+            .get()
+            .map(|c| c.req_tx.clone())
+            .ok_or(ExchangeError::Disconnected)
+    }
+
+    fn parse_account_info(result: Value) -> Result<AccountInfo> {
+        let assets = result["assets"]
+            .as_array()
+            .ok_or_else(|| ExchangeError::Rest("account response is missing assets".into()))?;
+        let mut balances = Vec::with_capacity(assets.len());
+        for asset in assets {
+            balances.push(Balance {
+                asset: required_text(asset, "asset")?.to_string(),
+                wallet: required_f64(asset, "walletBalance")?,
+                cross_wallet: required_f64(asset, "crossWalletBalance")?,
+            });
         }
 
-        let req_tx = self.req_tx()?;
-        let (tx, rx) = tokio::sync::oneshot::channel();
-        req_tx
-            .try_send(ws::WsRequest {
-                method: "order.place".into(),
-                params,
-                response_tx: tx,
-            })
-            .map_err(|_| ExchangeError::Disconnected)?;
-        let result = rx.await.map_err(|_| ExchangeError::Disconnected)??;
+        let positions_json = result["positions"]
+            .as_array()
+            .ok_or_else(|| ExchangeError::Rest("account response is missing positions".into()))?;
+        let mut positions = Vec::with_capacity(positions_json.len());
+        for position in positions_json {
+            let size = required_f64(position, "positionAmt")?;
+            let side = if size > 0.0 {
+                PositionSide::Long
+            } else if size < 0.0 {
+                PositionSide::Short
+            } else {
+                PositionSide::None
+            };
+            positions.push(Position {
+                symbol: required_text(position, "symbol")?.to_string(),
+                side,
+                size: size.abs(),
+                entry_price: required_f64(position, "entryPrice")?,
+                unrealized_pnl: required_f64(position, "unrealizedProfit")?,
+            });
+        }
+
+        Ok(AccountInfo {
+            balances,
+            positions,
+        })
+    }
+}
+
+fn required_text<'a>(value: &'a Value, field: &str) -> Result<&'a str> {
+    value[field]
+        .as_str()
+        .filter(|text| !text.is_empty())
+        .ok_or_else(|| ExchangeError::Rest(format!("account response is missing {field}")))
+}
+
+fn required_f64(value: &Value, field: &str) -> Result<f64> {
+    let parsed = required_text(value, field)?
+        .parse::<f64>()
+        .map_err(|_| ExchangeError::Rest(format!("account response has invalid {field}")))?;
+    if parsed.is_finite() {
+        Ok(parsed)
+    } else {
+        Err(ExchangeError::Rest(format!(
+            "account response has non-finite {field}"
+        )))
+    }
+}
+
+fn normalize_symbol(symbol: &str) -> Result<String> {
+    let normalized = symbol.trim().to_ascii_uppercase();
+    if !(3..=20).contains(&normalized.len())
+        || !normalized.bytes().all(|byte| byte.is_ascii_alphanumeric())
+    {
+        return Err(ExchangeError::Order(
+            "symbol must contain 3-20 ASCII alphanumeric characters".into(),
+        ));
+    }
+    Ok(normalized)
+}
+
+#[async_trait::async_trait]
+impl Exchange for Binance {
+    async fn subscribe(&self, symbols: &[String]) -> Result<Stream> {
+        self.validate_credentials()?;
+        if symbols.is_empty() {
+            return Err(ExchangeError::Ws("at least one symbol is required".into()));
+        }
+        for symbol in symbols {
+            normalize_symbol(symbol)?;
+        }
+        if self.client.get().is_some() {
+            return Err(ExchangeError::Ws(
+                "Binance adapter is already subscribed; create a new adapter after disconnect"
+                    .into(),
+            ));
+        }
+        let ws = ws::BinanceWs::new(&self.api_key, &self.secret_key, self.testnet);
+        let (client, rx) = ws.connect(symbols).await?;
+        let _ = self.client.set(client);
+        Ok(Stream { rx })
+    }
+
+    async fn place_order(&self, request: OrderRequest) -> Result<String> {
+        let client_order_id = request.client_order_id.clone();
+        let params = self.order_params(&request)?;
+        let result = self
+            .request("order.place", params)
+            .await
+            .map_err(|error| match error {
+                // An order could have reached Binance even if its response was
+                // lost. The client ID is the reconciliation handle; never retry
+                // blindly after this error.
+                ExchangeError::Timeout | ExchangeError::Disconnected => ExchangeError::Order(
+                    format!(
+                        "order outcome is unknown; reconcile newClientOrderId={client_order_id} before retrying"
+                    ),
+                ),
+                other => other,
+            })?;
 
         result["orderId"]
             .as_u64()
@@ -153,35 +246,23 @@ impl Exchange for Binance {
 
     async fn cancel_order(&self, symbol: &str, order_id: &str) -> Result<()> {
         let mut params = Map::new();
-        params.insert("symbol".into(), Value::String(symbol.to_uppercase()));
-        params.insert("orderId".into(), Value::String(order_id.into()));
-        let req_tx = self.req_tx()?;
-        let (tx, rx) = tokio::sync::oneshot::channel();
-        req_tx
-            .try_send(ws::WsRequest {
-                method: "order.cancel".into(),
-                params,
-                response_tx: tx,
-            })
-            .map_err(|_| ExchangeError::Disconnected)?;
-        rx.await.map_err(|_| ExchangeError::Disconnected)??;
+        params.insert("symbol".into(), Value::String(normalize_symbol(symbol)?));
+        params.insert(
+            "orderId".into(),
+            Value::String(validate_order_id(order_id)?),
+        );
+        self.request("order.cancel", params).await?;
         Ok(())
     }
 
     async fn order_status(&self, symbol: &str, order_id: &str) -> Result<OrderStatus> {
         let mut params = Map::new();
-        params.insert("symbol".into(), Value::String(symbol.to_uppercase()));
-        params.insert("orderId".into(), Value::String(order_id.into()));
-        let req_tx = self.req_tx()?;
-        let (tx, rx) = tokio::sync::oneshot::channel();
-        req_tx
-            .try_send(ws::WsRequest {
-                method: "order.status".into(),
-                params,
-                response_tx: tx,
-            })
-            .map_err(|_| ExchangeError::Disconnected)?;
-        let result = rx.await.map_err(|_| ExchangeError::Disconnected)??;
+        params.insert("symbol".into(), Value::String(normalize_symbol(symbol)?));
+        params.insert(
+            "orderId".into(),
+            Value::String(validate_order_id(order_id)?),
+        );
+        let result = self.request("order.status", params).await?;
 
         Ok(OrderStatus {
             order_id: result["orderId"]
@@ -214,37 +295,167 @@ impl Exchange for Binance {
         })
     }
 
+    async fn order_status_by_client_id(
+        &self,
+        symbol: &str,
+        client_order_id: &str,
+    ) -> Result<OrderStatus> {
+        let mut params = Map::new();
+        params.insert("symbol".into(), Value::String(normalize_symbol(symbol)?));
+        params.insert(
+            "origClientOrderId".into(),
+            Value::String(validate_client_order_id(client_order_id)?),
+        );
+        let result = self.request("order.status", params).await?;
+        Ok(OrderStatus {
+            order_id: result["orderId"]
+                .as_u64()
+                .map(|v| v.to_string())
+                .ok_or_else(|| ExchangeError::Order("missing orderId in order status".into()))?,
+            symbol: result["symbol"]
+                .as_str()
+                .ok_or_else(|| ExchangeError::Order("missing symbol in order status".into()))?
+                .to_string(),
+            side: Side::from_taker(result["side"].as_str().unwrap_or("")),
+            qty: result["origQty"]
+                .as_str()
+                .unwrap_or("0")
+                .parse()
+                .map_err(|_| ExchangeError::Order("invalid origQty in order status".into()))?,
+            filled_qty: result["executedQty"]
+                .as_str()
+                .unwrap_or("0")
+                .parse()
+                .map_err(|_| ExchangeError::Order("invalid executedQty in order status".into()))?,
+            price: result["price"]
+                .as_str()
+                .unwrap_or("0")
+                .parse()
+                .map_err(|_| ExchangeError::Order("invalid price in order status".into()))?,
+            avg_price: result["avgPrice"]
+                .as_str()
+                .unwrap_or("0")
+                .parse()
+                .map_err(|_| ExchangeError::Order("invalid avgPrice in order status".into()))?,
+            status: result["status"]
+                .as_str()
+                .ok_or_else(|| ExchangeError::Order("missing status in order status".into()))?
+                .to_string(),
+        })
+    }
+
     async fn account_info(&self) -> Result<AccountInfo> {
-        let req_tx = self.req_tx()?;
-        let (tx, rx) = tokio::sync::oneshot::channel();
-        req_tx
-            .try_send(ws::WsRequest {
-                method: "account.info".into(),
-                params: Map::new(),
-                response_tx: tx,
-            })
-            .map_err(|_| ExchangeError::Disconnected)?;
-        let result = rx.await.map_err(|_| ExchangeError::Disconnected)??;
+        let result = self.request("account.info", Map::new()).await?;
         Self::parse_account_info(result)
     }
 
     async fn current_price(&self, symbol: &str) -> Result<f64> {
         let mut params = Map::new();
-        params.insert("symbol".into(), Value::String(symbol.to_uppercase()));
-        let req_tx = self.req_tx()?;
-        let (tx, rx) = tokio::sync::oneshot::channel();
-        req_tx
-            .try_send(ws::WsRequest {
-                method: "ticker.price".into(),
-                params,
-                response_tx: tx,
-            })
-            .map_err(|_| ExchangeError::Disconnected)?;
-        let result = rx.await.map_err(|_| ExchangeError::Disconnected)??;
+        params.insert("symbol".into(), Value::String(normalize_symbol(symbol)?));
+        let result = self.request("ticker.price", params).await?;
         result["price"]
             .as_str()
             .unwrap_or("0")
             .parse()
             .map_err(|_| ExchangeError::Rest("parse error".into()))
+    }
+}
+
+fn validate_order_id(order_id: &str) -> Result<String> {
+    let order_id = order_id.trim();
+    if order_id.is_empty() || order_id.len() > 36 || !order_id.is_ascii() {
+        return Err(ExchangeError::Order(
+            "order ID must be a non-empty ASCII value up to 36 characters".into(),
+        ));
+    }
+    Ok(order_id.into())
+}
+
+fn validate_client_order_id(order_id: &str) -> Result<String> {
+    let order_id = order_id.trim();
+    if order_id.is_empty()
+        || order_id.len() > 36
+        || !order_id
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-'))
+    {
+        return Err(ExchangeError::Order(
+            "client order ID must be 1-36 ASCII alphanumeric, underscore, or hyphen characters"
+                .into(),
+        ));
+    }
+    Ok(order_id.into())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn order(order_type: OrderType, price: Option<f64>) -> OrderRequest {
+        OrderRequest {
+            client_order_id: "qc_0123456789abcdef_0000000000000001".into(),
+            order: Order {
+                symbol: "btcusdt".into(),
+                side: Side::Buy,
+                qty: 0.25,
+                price,
+                order_type,
+                reduce_only: false,
+                stop_loss: None,
+                take_profit: None,
+            },
+        }
+    }
+
+    #[test]
+    fn limit_order_has_required_time_in_force_and_client_id() {
+        let binance = Binance::new("key", "secret", true);
+        let request = order(OrderType::Limit, Some(100.0));
+        let params = binance.order_params(&request).unwrap();
+        assert_eq!(params["symbol"], "BTCUSDT");
+        assert_eq!(params["timeInForce"], "GTC");
+        assert_eq!(params["newClientOrderId"], request.client_order_id);
+    }
+
+    #[test]
+    fn invalid_order_inputs_fail_before_network_io() {
+        let binance = Binance::new("key", "secret", true);
+        assert!(binance
+            .order_params(&order(OrderType::Market, Some(1.0)))
+            .is_err());
+        assert!(binance
+            .order_params(&order(OrderType::Limit, None))
+            .is_err());
+        let mut invalid_qty = order(OrderType::Market, None);
+        invalid_qty.order.qty = f64::NAN;
+        assert!(binance.order_params(&invalid_qty).is_err());
+        assert!(normalize_symbol("BTC-USDT").is_err());
+        assert!(validate_order_id(" ").is_err());
+        assert!(validate_client_order_id("client id with spaces").is_err());
+    }
+
+    #[test]
+    fn credentials_are_required_before_connection() {
+        let binance = Binance::new("", "secret", true);
+        assert!(matches!(
+            binance.validate_credentials(),
+            Err(ExchangeError::Auth(_))
+        ));
+    }
+
+    #[test]
+    fn malformed_account_snapshot_is_rejected_instead_of_zeroed() {
+        let snapshot = serde_json::json!({
+            "assets": [{
+                "asset": "USDT",
+                "walletBalance": "not-a-number",
+                "crossWalletBalance": "1"
+            }],
+            "positions": []
+        });
+        assert!(matches!(
+            Binance::parse_account_info(snapshot),
+            Err(ExchangeError::Rest(_))
+        ));
     }
 }

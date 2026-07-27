@@ -91,7 +91,8 @@ impl Exchange for MockExchange {
         Ok(Stream { rx })
     }
 
-    async fn place_order(&self, order: Order) -> Result<String> {
+    async fn place_order(&self, request: quince_exchange::r#trait::OrderRequest) -> Result<String> {
+        let order = request.order;
         let id = format!("int_{}", self.order_counter.fetch_add(1, Ordering::Relaxed));
         let state = self.state.lock().unwrap();
         let fill = OrderFill {
@@ -172,18 +173,22 @@ fn risk_config() -> RiskControls {
 async fn run_engine_for_ticks(strategy_path: &str) {
     let exchange = MockExchange::new();
     let risk = risk_config();
+    let log_path = format!("{strategy_path}.trades.log");
     let mut engine = Engine::new(
         exchange,
         &["BTCUSDT".into()],
         strategy_path,
         risk,
-        "test_trades.log",
+        &log_path,
     )
     .expect("engine should start");
     // Run for ~50ms to process some ticks
     tokio::time::timeout(Duration::from_millis(200), engine.run())
         .await
         .ok();
+    drop(engine);
+    let _ = std::fs::remove_file(&log_path);
+    let _ = std::fs::remove_file(std::path::Path::new(&log_path).with_extension("orders.jsonl"));
 }
 
 // в”Ђв”Ђ Integration tests в”Ђв”Ђ
@@ -610,12 +615,16 @@ end
         &["BTCUSDT".into()],
         &path,
         risk,
-        "test_trades.log",
+        &format!("{path}.trades.log"),
     )
     .expect("engine should start");
     tokio::time::timeout(Duration::from_millis(100), engine.run())
         .await
         .ok();
+    drop(engine);
+    let log_path = format!("{path}.trades.log");
+    let _ = std::fs::remove_file(&log_path);
+    let _ = std::fs::remove_file(std::path::Path::new(&log_path).with_extension("orders.jsonl"));
     let _ = std::fs::remove_file(&path);
 }
 

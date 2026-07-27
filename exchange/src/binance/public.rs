@@ -5,7 +5,7 @@
 //! [`BinancePublic`] implements the [`Exchange`] trait without authentication,
 //! supporting trade/depth subscriptions via combined WebSocket streams.
 
-use crate::r#trait::{Exchange, ExchangeError, OrderStatus, Result, Stream};
+use crate::r#trait::{Exchange, ExchangeError, OrderRequest, OrderStatus, Result, Stream};
 use futures_util::StreamExt;
 use quince_core::types::*;
 
@@ -63,7 +63,7 @@ impl Exchange for BinancePublic {
         Ok(Stream { rx })
     }
 
-    async fn place_order(&self, _order: Order) -> Result<String> {
+    async fn place_order(&self, _request: OrderRequest) -> Result<String> {
         Err(ExchangeError::Order(
             "Binance public adapter is read-only; configure API credentials for trading".into(),
         ))
@@ -143,7 +143,13 @@ mod tests {
             stop_loss: None,
             take_profit: None,
         };
-        assert!(ex.place_order(order).await.is_err());
+        assert!(ex
+            .place_order(OrderRequest {
+                client_order_id: "test-order".into(),
+                order,
+            })
+            .await
+            .is_err());
     }
 
     #[tokio::test]

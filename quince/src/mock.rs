@@ -1,4 +1,4 @@
-﻿// SPDX-FileCopyrightText: 2026 0xitsss
+// SPDX-FileCopyrightText: 2026 0xitsss
 //
 // SPDX-License-Identifier: AGPL-3.0-only OR LicenseRef-Quince-Commercial
 //! Mock exchange for local strategy testing.
@@ -156,7 +156,11 @@ impl Exchange for MockExchange {
         Ok(Stream { rx })
     }
 
-    async fn place_order(&self, order: Order) -> Result<String> {
+    async fn place_order(
+        &self,
+        request: quince::exchange::r#trait::OrderRequest,
+    ) -> Result<String> {
+        let order = request.order;
         let id = format!(
             "mock_{}",
             self.order_counter.fetch_add(1, Ordering::Relaxed)
@@ -357,7 +361,13 @@ mod tests {
             stop_loss: None,
             take_profit: None,
         };
-        let id = ex.place_order(order).await.unwrap();
+        let id = ex
+            .place_order(quince::exchange::r#trait::OrderRequest {
+                client_order_id: "mock-test-1".into(),
+                order,
+            })
+            .await
+            .unwrap();
         assert!(id.starts_with("mock_"));
 
         let order2 = Order {
@@ -370,7 +380,13 @@ mod tests {
             stop_loss: None,
             take_profit: None,
         };
-        let id2 = ex.place_order(order2).await.unwrap();
+        let id2 = ex
+            .place_order(quince::exchange::r#trait::OrderRequest {
+                client_order_id: "mock-test-2".into(),
+                order: order2,
+            })
+            .await
+            .unwrap();
         assert_ne!(id, id2);
     }
 

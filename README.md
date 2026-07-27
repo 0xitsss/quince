@@ -3,12 +3,12 @@
 ![Quince — a high-performance language for HFT](docs/assets/quince-hero.png)
 
 [![Build](https://img.shields.io/badge/build-passing-brightgreen?style=for-the-badge)](https://github.com/0xitsss/quince)
-[![Tests](https://img.shields.io/badge/tests-966%20passing-brightgreen?style=for-the-badge)](https://github.com/0xitsss/quince)
+[![Tests](https://img.shields.io/badge/tests-990%20passing-brightgreen?style=for-the-badge)](https://github.com/0xitsss/quince)
 [![Clippy](https://img.shields.io/badge/clippy-0%20warnings-brightgreen?style=for-the-badge)](https://github.com/0xitsss/quince)
 [![License](https://img.shields.io/badge/license-AGPL--3.0%20OR%20Commercial-blue?style=for-the-badge)](https://www.gnu.org/licenses/agpl-3.0)
 [![REUSE](https://img.shields.io/badge/REUSE-compliant-green?style=for-the-badge)](https://reuse.software)
 [![Rust](https://img.shields.io/badge/rust-1.80+-orange?style=for-the-badge&logo=rust)](https://www.rust-lang.org)
-[![Version](https://img.shields.io/badge/version-0.7.4-purple?style=for-the-badge)](https://github.com/0xitsss/quince)
+[![Version](https://img.shields.io/badge/version-0.7.5-purple?style=for-the-badge)](https://github.com/0xitsss/quince)
 [![Docs](https://img.shields.io/badge/docs-mdBook-blue?style=for-the-badge&logo=mdbook)](https://0xitsss.github.io/quince)
 [![Benchmark](https://img.shields.io/badge/bench-Criterion-ff69b4?style=for-the-badge)](https://0xitsss.github.io/quince/dev/bench/)
 [![SonarQube](https://img.shields.io/badge/sonar-passing-brightgreen?style=for-the-badge&logo=sonarcloud)](https://sonarcloud.io/project/overview?id=0xitsss_quince)
@@ -135,7 +135,7 @@ QUINCE_MOCK=1 QUINCE_STRATEGY=strategies/scalper.qfl QUINCE_SYMBOL=btcusdt cargo
 BINANCE_API_KEY=xxx BINANCE_SECRET_KEY=xxx QUINCE_TESTNET=1 cargo run
 
 # Live mode (real Binance credentials)
-BINANCE_API_KEY=xxx BINANCE_SECRET_KEY=xxx cargo run
+BINANCE_API_KEY=xxx BINANCE_SECRET_KEY=xxx QUINCE_LIVE=1 cargo run
 
 # With profiling (http://127.0.0.1:29012)
 cargo run --features profiling
@@ -143,7 +143,7 @@ cargo run --features profiling
 # Dump compiled QFL bytecode as assembly
 cargo run --bin dump_qfl -- strategies/ema_cross.qfl
 
-# Run all tests (965)
+# Run all tests (990)
 cargo test
 
 # Run benchmarks
@@ -569,6 +569,7 @@ Tick speed benchmarks per strategy:
 - **[mdBook](https://0xitsss.github.io/quince)** — Full documentation site (51 pages, auto-generated from doc comments, CI/CD)
 - **[`docs/QUINCE.md`](docs/QUINCE.md)** — Architecture, performance benchmarks, crate breakdown
 - **[`docs/QFL.md`](docs/QFL.md)** — Quince-Flavored Language syntax, types, indicators, example strategies
+- **[`docs/EXECUTION_SAFETY.md`](docs/EXECUTION_SAFETY.md)** — execution lifecycle, client-order reconciliation, testnet and live-safety boundaries
 - **[Criterion Benchmarks](https://0xitsss.github.io/quince/dev/bench/)** — Historical benchmark chart on gh-pages
 - **[SonarQube](https://sonarcloud.io/project/overview?id=0xitsss_quince)** — Static analysis dashboard
 
@@ -592,6 +593,7 @@ Every file in the repository is REUSE-compliant with a clear, unambiguous licens
 
 | Version | Phase | Changes |
 | ------- | ----- | ------- |
+| v0.7.5 | 8f | Durable order journal with crash-safe recovery; engine-generated idempotency keys and Binance client-ID reconciliation; hardened Binance request lifecycle; Hyperliquid authenticated execution boundary remains fail-closed pending verified signing vectors |
 | v0.7.4 | 8e | Automatic first-run wallet setup using the OS keychain; stricter live-mode and environment validation; read-only Binance public adapter; release Thin LTO; CI quality gates; risk-accounting hardening |
 | v0.7.3 | 8d | Exchange directives (`@exchange`, `@network`); Hyperliquid public trades/L2 Book adapter; market-order notional and position-risk hardening |
 | v0.7.2 | 8c | SIMD-accelerated indicators: 6 AVX2 kernels (sum, weighted_sum, sum_and_sum_xy, sum_abs_diff, min_max, sum_sq_diff) — ~3× speedup on large windows; engine criterion benchmarks (28 benches); ringvec_as_chunks for zero-copy SIMD feeding; clippy clean, 965 tests |

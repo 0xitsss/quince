@@ -7,9 +7,10 @@
 //! applies risk controls, and coordinates all subsystems.
 
 use crate::indicators::{parse_using, IndicatorBank};
-use crate::orders::{OrderManager, PendingStatus};
+use crate::journal::{JournalError, JournalEvent, OrderJournal};
+use crate::orders::OrderManager;
 use quince_core::types::*;
-use quince_exchange::r#trait::{Exchange, ExchangeError, StreamMsg};
+use quince_exchange::r#trait::{Exchange, ExchangeError, OrderRequest, StreamMsg};
 use quince_logger::TradeLog;
 use quince_qfl::risk::RiskLimits;
 use quince_qfl::runtime::QflRuntime;
@@ -30,9 +31,12 @@ pub enum EngineError {
     RiskRejected(String),
     #[error("Order timeout: {0}")]
     OrderTimeout(String),
+    #[error("Order journal error: {0}")]
+    Journal(#[from] JournalError),
 }
 
 const ORDER_TIMEOUT: Duration = Duration::from_secs(30);
+const CANCEL_RETRY_INTERVAL: Duration = Duration::from_secs(1);
 const EVAL_INTERVAL: Duration = Duration::from_secs(1);
 const ACCOUNT_SYNC_INTERVAL: Duration = Duration::from_secs(10);
 
@@ -48,6 +52,8 @@ pub struct Engine<E: Exchange> {
     logger: TradeLog,
 
     order_manager: OrderManager,
+    order_journal: OrderJournal,
+    execution_halted: bool,
     indicators: IndicatorBank,
 
     last_price: f64,
@@ -208,6 +214,17 @@ impl<E: Exchange> Engine<E> {
         );
 
         let logger = TradeLog::new(log_path);
+        let journal_path = std::path::Path::new(log_path).with_extension("orders.jsonl");
+        let previous_records = OrderJournal::recover(&journal_path)?;
+        let unresolved = OrderJournal::unresolved_client_order_ids(&previous_records);
+        if !unresolved.is_empty() {
+            return Err(EngineError::Strategy(format!(
+                "order journal {} contains unresolved orders ({}) — reconcile them before starting a new session",
+                journal_path.display(),
+                unresolved.join(", ")
+            )));
+        }
+        let order_journal = OrderJournal::open(&journal_path)?;
 
         Ok(Self {
             exchange,
@@ -217,6 +234,8 @@ impl<E: Exchange> Engine<E> {
             risk,
             logger,
             order_manager: OrderManager::new(),
+            order_journal,
+            execution_halted: false,
             indicators,
             last_price: 0.0,
             daily_pnl: 0.0,
@@ -356,7 +375,16 @@ impl<E: Exchange> Engine<E> {
                     .find_client_by_exchange_id(&fill.order_id);
                 if let Some(cid) = cid {
                     let cid = cid.to_string();
-                    self.order_manager.update_fill(&cid, fill.qty, fill.price);
+                    let became_filled = self.order_manager.update_fill(&cid, fill.qty, fill.price);
+                    if became_filled {
+                        if let Err(error) = self.order_journal.append(JournalEvent::Terminal {
+                            client_order_id: cid.clone(),
+                            status: "FILLED".into(),
+                        }) {
+                            self.execution_halted = true;
+                            tracing::error!(client_id = %cid, %error, "filled order was not journaled; execution halted");
+                        }
+                    }
                     self.logger.log_fill(&fill);
                     let mut realized_pnl = -fill.fee;
                     if let Some(pos) = self.position.as_ref() {
@@ -424,6 +452,10 @@ impl<E: Exchange> Engine<E> {
     }
 
     async fn on_strategy_order(&mut self, order: Order) {
+        if self.execution_halted {
+            tracing::error!("refusing order: execution is halted after an order-journal failure");
+            return;
+        }
         let current_position = self.position.as_ref().map_or(0.0, |pos| match pos.side {
             PositionSide::Long => pos.size,
             PositionSide::Short => -pos.size,
@@ -438,14 +470,76 @@ impl<E: Exchange> Engine<E> {
         }
 
         let client_id = self.order_manager.register(order);
+        let Some(pending) = self.order_manager.get(&client_id) else {
+            tracing::error!(
+                client_id,
+                "freshly registered order disappeared before journaling"
+            );
+            return;
+        };
+        if let Err(error) = self.order_journal.append(JournalEvent::Registered {
+            client_order_id: client_id.clone(),
+            symbol: pending.order.symbol.to_string(),
+            side: format!("{:?}", pending.order.side).to_ascii_lowercase(),
+            qty: pending.order.qty,
+            reduce_only: pending.order.reduce_only,
+        }) {
+            self.order_manager
+                .mark_failed(&client_id, error.to_string());
+            self.execution_halted = true;
+            tracing::error!(client_id, %error, "refusing order because its journal registration was not durable; execution halted");
+            return;
+        }
         if let Some(po) = self.order_manager.get(&client_id) {
-            match self.exchange.place_order(po.order.clone()).await {
+            let request = OrderRequest {
+                client_order_id: client_id.clone(),
+                order: po.order.clone(),
+            };
+            match self.exchange.place_order(request).await {
                 Ok(order_id) => {
                     self.order_manager.mark_placed(&client_id, order_id);
+                    if let Some(order_id) = self.order_manager.exchange_order_id(&client_id) {
+                        if let Err(error) = self.order_journal.append(JournalEvent::Accepted {
+                            client_order_id: client_id.clone(),
+                            exchange_order_id: order_id.to_string(),
+                        }) {
+                            self.execution_halted = true;
+                            tracing::error!(client_id, %error, "accepted order was not journaled; execution halted");
+                        }
+                    }
                     self.risk.record_trade();
                 }
                 Err(e) => {
-                    self.order_manager.mark_failed(&client_id, e.to_string());
+                    // Only explicit exchange-side validation/authentication
+                    // failures are safe to treat as terminal.  A transport
+                    // failure may have happened after the exchange accepted
+                    // the request, so keep its possible exposure visible.
+                    match e {
+                        ExchangeError::Order(_) | ExchangeError::Auth(_) => {
+                            self.order_manager.mark_failed(&client_id, e.to_string());
+                        }
+                        ExchangeError::Ws(_)
+                        | ExchangeError::Rest(_)
+                        | ExchangeError::Timeout
+                        | ExchangeError::Disconnected => {
+                            self.order_manager
+                                .mark_submission_unknown(&client_id, e.to_string());
+                            if let Err(error) =
+                                self.order_journal.append(JournalEvent::SubmissionUnknown {
+                                    client_order_id: client_id.clone(),
+                                    error: e.to_string(),
+                                })
+                            {
+                                self.execution_halted = true;
+                                tracing::error!(client_id, %error, "unknown submission was not journaled; execution halted");
+                            }
+                            tracing::error!(
+                                client_id,
+                                error = %e,
+                                "order submission outcome is unknown; refusing automatic retry"
+                            );
+                        }
+                    }
                 }
             }
         }
@@ -505,6 +599,7 @@ impl<E: Exchange> Engine<E> {
             .filter(|cid| {
                 if let Some(po) = self.order_manager.get(cid) {
                     now.duration_since(po.placed_at) > ORDER_TIMEOUT
+                        && now.duration_since(po.last_update) > CANCEL_RETRY_INTERVAL
                 } else {
                     false
                 }
@@ -512,13 +607,103 @@ impl<E: Exchange> Engine<E> {
             .collect();
 
         for cid in timed_out {
-            if let Some(po) = self.order_manager.get(&cid) {
-                let symbol = po.order.symbol.as_ref();
-                if let PendingStatus::Placed { order_id } = &po.status {
-                    let _ = self.exchange.cancel_order(symbol, order_id).await;
+            let Some(po) = self.order_manager.get(&cid) else {
+                continue;
+            };
+            let symbol = po.order.symbol.to_string();
+            let order_id = match self
+                .order_manager
+                .exchange_order_id(&cid)
+                .map(str::to_owned)
+            {
+                Some(order_id) => order_id,
+                None => match self.exchange.order_status_by_client_id(&symbol, &cid).await {
+                    Ok(status) => {
+                        if let Err(error) = self.order_manager.reconcile_client_order(
+                            &cid,
+                            &status.order_id,
+                            &status.status,
+                            status.filled_qty,
+                            status.avg_price,
+                        ) {
+                            tracing::warn!(client_id = %cid, %error, "client-order-id reconciliation failed");
+                            continue;
+                        }
+                        match self.order_manager.exchange_order_id(&cid) {
+                            Some(order_id) => order_id.to_owned(),
+                            None => {
+                                if let Err(error) =
+                                    self.order_journal.append(JournalEvent::Terminal {
+                                        client_order_id: cid.clone(),
+                                        status: status.status,
+                                    })
+                                {
+                                    self.execution_halted = true;
+                                    tracing::error!(client_id = %cid, %error, "reconciled terminal order was not journaled; execution halted");
+                                }
+                                continue;
+                            }
+                        }
+                    }
+                    Err(error) => {
+                        // The order remains risk-visible. Adapters without a
+                        // native client-ID lookup must be reconciled manually.
+                        tracing::error!(client_id = %cid, %error, "unresolved order submission requires client-id reconciliation");
+                        continue;
+                    }
+                },
+            };
+
+            match self.exchange.order_status(&symbol, &order_id).await {
+                Ok(status) => {
+                    if let Err(error) = self.order_manager.reconcile_status(
+                        &cid,
+                        &status.status,
+                        status.filled_qty,
+                        status.avg_price,
+                    ) {
+                        tracing::warn!(client_id = %cid, order_id = %order_id, %error, "invalid order status reconciliation");
+                        continue;
+                    }
+                    if self.order_manager.exchange_order_id(&cid).is_none() {
+                        if let Err(error) = self.order_journal.append(JournalEvent::Terminal {
+                            client_order_id: cid.clone(),
+                            status: status.status.clone(),
+                        }) {
+                            self.execution_halted = true;
+                            tracing::error!(client_id = %cid, %error, "terminal order was not journaled; execution halted");
+                        }
+                    }
                 }
-                self.order_manager.cancel(&cid);
-                tracing::warn!("order timed out: {}", cid);
+                Err(error) => {
+                    tracing::warn!(client_id = %cid, order_id = %order_id, %error, "order status reconciliation failed");
+                    continue;
+                }
+            }
+
+            // Status could have transitioned to a terminal value.
+            let Some(order_id) = self
+                .order_manager
+                .exchange_order_id(&cid)
+                .map(str::to_owned)
+            else {
+                continue;
+            };
+            match self.exchange.cancel_order(&symbol, &order_id).await {
+                Ok(()) => {
+                    self.order_manager.mark_cancel_requested(&cid);
+                    if let Err(error) = self.order_journal.append(JournalEvent::CancelRequested {
+                        client_order_id: cid.clone(),
+                        exchange_order_id: order_id.clone(),
+                    }) {
+                        self.execution_halted = true;
+                        tracing::error!(client_id = %cid, %error, "cancel request was not journaled; execution halted");
+                    }
+                    tracing::warn!(client_id = %cid, order_id = %order_id, "order timeout: cancellation requested, awaiting confirmation");
+                }
+                Err(error) => {
+                    tracing::warn!(client_id = %cid, order_id = %order_id, %error, "timed-out order cancellation failed; keeping exposure active")
+                }
             }
         }
 
@@ -578,12 +763,55 @@ impl<E: Exchange> Engine<E> {
                 stop_loss: None,
                 take_profit: None,
             };
-            match self.exchange.place_order(close).await {
+            let close_client_id = self.order_manager.register(close);
+            let Some(close_pending) = self.order_manager.get(&close_client_id) else {
+                tracing::error!(client_id = %close_client_id, "freshly registered stop-loss/take-profit close order disappeared");
+                continue;
+            };
+            if let Err(error) = self.order_journal.append(JournalEvent::Registered {
+                client_order_id: close_client_id.clone(),
+                symbol: close_pending.order.symbol.to_string(),
+                side: format!("{:?}", close_pending.order.side).to_ascii_lowercase(),
+                qty: close_pending.order.qty,
+                reduce_only: true,
+            }) {
+                self.order_manager
+                    .mark_failed(&close_client_id, error.to_string());
+                self.execution_halted = true;
+                tracing::error!(client_id = %close_client_id, %error, "refusing protective close because journal registration failed; execution halted");
+                continue;
+            }
+            let request = self
+                .order_manager
+                .get(&close_client_id)
+                .map(|pending| OrderRequest {
+                    client_order_id: close_client_id.clone(),
+                    order: pending.order.clone(),
+                })
+                .expect("freshly registered close order must exist");
+            match self.exchange.place_order(request).await {
                 Ok(id) => {
+                    self.order_manager.mark_placed(&close_client_id, id.clone());
+                    if let Err(error) = self.order_journal.append(JournalEvent::Accepted {
+                        client_order_id: close_client_id.clone(),
+                        exchange_order_id: id.clone(),
+                    }) {
+                        self.execution_halted = true;
+                        tracing::error!(client_id = %close_client_id, %error, "accepted protective close was not journaled; execution halted");
+                    }
                     self.order_manager.deactivate_sl_tp(&cid);
                     tracing::info!("SL/TP triggered for {cid}: close {side:?} {qty} order={id}");
                 }
                 Err(e) => {
+                    self.order_manager
+                        .mark_submission_unknown(&close_client_id, e.to_string());
+                    if let Err(error) = self.order_journal.append(JournalEvent::SubmissionUnknown {
+                        client_order_id: close_client_id.clone(),
+                        error: e.to_string(),
+                    }) {
+                        self.execution_halted = true;
+                        tracing::error!(client_id = %close_client_id, %error, "unknown protective close was not journaled; execution halted");
+                    }
                     tracing::warn!("SL/TP close order failed for {cid}: {e}");
                 }
             }

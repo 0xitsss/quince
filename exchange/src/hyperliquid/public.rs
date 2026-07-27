@@ -7,7 +7,9 @@
 //! is deliberately rejected here: Hyperliquid requires EIP-712 action signing,
 //! which must be implemented as a dedicated authenticated adapter.
 
-use crate::r#trait::{Exchange, ExchangeError, OrderStatus, Result, Stream, StreamMsg};
+use crate::r#trait::{
+    Exchange, ExchangeError, OrderRequest, OrderStatus, Result, Stream, StreamMsg,
+};
 use futures_util::{SinkExt, StreamExt};
 use quince_core::types::*;
 
@@ -76,7 +78,7 @@ impl Exchange for HyperliquidPublic {
         Ok(Stream { rx })
     }
 
-    async fn place_order(&self, _order: Order) -> Result<String> {
+    async fn place_order(&self, _request: OrderRequest) -> Result<String> {
         Err(ExchangeError::Order(
             "Hyperliquid public adapter is read-only; authenticated signing is required".into(),
         ))
