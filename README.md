@@ -625,5 +625,5 @@ QFL strategy files (*.qfl) and QFR compiled bytecode (*.qfr) are proprietary for
 
 For commercial licensing, questions, or collaboration:
 
-- **Email**: js2302247@gmail.com
+- **Email**: root@notafraud.xyz
 - **Telegram**: [@its_unknow](https://t.me/its_unknow)
