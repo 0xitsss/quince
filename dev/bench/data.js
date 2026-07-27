@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1785167902261,
+  "lastUpdate": 1785168199328,
   "repoUrl": "https://github.com/0xitsss/quince",
   "entries": {
     "QFL Criterion Benchmarks": [
@@ -2843,6 +2843,234 @@ window.BENCHMARK_DATA = {
             "name": "runtime_feed/heavy_test_10k",
             "value": 2274630,
             "range": "± 5909",
+            "unit": "ns/iter"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "js2302247@gmail.com",
+            "name": "0xItsss",
+            "username": "0xitsss"
+          },
+          "committer": {
+            "email": "js2302247@gmail.com",
+            "name": "0xItsss",
+            "username": "0xitsss"
+          },
+          "distinct": true,
+          "id": "e10fec3091e48681417ebd65c720eba45a9a98cb",
+          "message": "docs: remove public benchmark and execution material",
+          "timestamp": "2026-07-27T11:57:37-04:00",
+          "tree_id": "64353e87db5606678c9e3eebac549eeab844b5c5",
+          "url": "https://github.com/0xitsss/quince/commit/e10fec3091e48681417ebd65c720eba45a9a98cb"
+        },
+        "date": 1785168197265,
+        "tool": "cargo",
+        "benches": [
+          {
+            "name": "pipeline/atr_trail/46",
+            "value": 61356,
+            "range": "± 617",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "pipeline/bb_bounce/112",
+            "value": 120985,
+            "range": "± 830",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "pipeline/ema_cross/63",
+            "value": 69679,
+            "range": "± 309",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "pipeline/grid_trade/88",
+            "value": 83992,
+            "range": "± 3709",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "pipeline/heavy_test/175",
+            "value": 206367,
+            "range": "± 8505",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "pipeline/hyperliquid_public/9",
+            "value": 16635,
+            "range": "± 28",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "pipeline/macd_cross/56",
+            "value": 61582,
+            "range": "± 282",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "pipeline/momentum/114",
+            "value": 111883,
+            "range": "± 185",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "pipeline/rare_signal/141",
+            "value": 152566,
+            "range": "± 4449",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "pipeline/rsi_reversion/111",
+            "value": 110483,
+            "range": "± 353",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "pipeline/scalper/77",
+            "value": 92731,
+            "range": "± 305",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "pipeline/simple_test/14",
+            "value": 15618,
+            "range": "± 47",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "pipeline/sma_cross/56",
+            "value": 61163,
+            "range": "± 557",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "pipeline/test_all/50",
+            "value": 56789,
+            "range": "± 111",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "pipeline/test_data_passing/142",
+            "value": 146011,
+            "range": "± 615",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "vm_tick/atr_trail/46",
+            "value": 556001,
+            "range": "± 1972",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "vm_tick/bb_bounce/112",
+            "value": 666208,
+            "range": "± 588",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "vm_tick/ema_cross/63",
+            "value": 371158,
+            "range": "± 3178",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "vm_tick/grid_trade/88",
+            "value": 708539,
+            "range": "± 550",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "vm_tick/heavy_test/175",
+            "value": 2214826,
+            "range": "± 106914",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "vm_tick/hyperliquid_public/9",
+            "value": 232917,
+            "range": "± 280",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "vm_tick/macd_cross/56",
+            "value": 370982,
+            "range": "± 535",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "vm_tick/momentum/114",
+            "value": 841987,
+            "range": "± 568",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "vm_tick/rare_signal/141",
+            "value": 1573774,
+            "range": "± 3865",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "vm_tick/rsi_reversion/111",
+            "value": 1423424,
+            "range": "± 4999",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "vm_tick/scalper/77",
+            "value": 708736,
+            "range": "± 871",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "vm_tick/simple_test/14",
+            "value": 378635,
+            "range": "± 65154",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "vm_tick/sma_cross/56",
+            "value": 369926,
+            "range": "± 335",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "vm_tick/test_all/50",
+            "value": 444305,
+            "range": "± 549",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "vm_tick/test_data_passing/142",
+            "value": 1479779,
+            "range": "± 4072",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "vm_scale/heavy_test/175_instrs_1000iters",
+            "value": 201431,
+            "range": "± 487",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "vm_scale/heavy_test/175_instrs_10000iters",
+            "value": 2051184,
+            "range": "± 12743",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "vm_scale/heavy_test/175_instrs_100000iters",
+            "value": 20867838,
+            "range": "± 207564",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "runtime_feed/heavy_test_10k",
+            "value": 2279966,
+            "range": "± 5184",
             "unit": "ns/iter"
           }
         ]
