@@ -559,10 +559,9 @@ Criterion benchmarks (ubuntu-latest, x86_64) — 4 groups, 14 strategies:
 | | 100k iters | 1,550 ops/ms |
 | **Runtime feed** (heavy_test) | 10k trades | 420 ops/ms |
 
-The historical Criterion values above isolate smaller units of work. For a
-current, full per-tick VM hot-path baseline (indicator update + slot writes +
-`on_trade` dispatch), see [`docs/BENCHMARKS.md`](docs/BENCHMARKS.md). It reports
-throughput and p50/p95/p99 latency with the exact methodology and host scope.
+The historical Criterion values above isolate smaller units of work. Use the
+local `strategy_bench` command from Quick Start when comparing a full per-tick
+VM hot path (indicator update + slot writes + `on_trade` dispatch).
 Float sanitizer uses branchless SSE (`_mm_cmpunord_sd` + `_mm_andnot_pd`) — no branch mispredictions on NaN/Inf paths.
 
 SIMD-accelerated indicator kernels (AVX2, f64):
@@ -589,9 +588,6 @@ full hot-path matrix above):
 - **[mdBook](https://0xitsss.github.io/quince)** — Full documentation site (51 pages, auto-generated from doc comments, CI/CD)
 - **[`docs/QUINCE.md`](docs/QUINCE.md)** — Architecture, performance benchmarks, crate breakdown
 - **[`docs/QFL.md`](docs/QFL.md)** — Quince-Flavored Language syntax, types, indicators, example strategies
-- **[`docs/EXECUTION_SAFETY.md`](docs/EXECUTION_SAFETY.md)** — execution lifecycle, client-order reconciliation, testnet and live-safety boundaries
-- **[`docs/HYPERLIQUID_EXECUTION.md`](docs/HYPERLIQUID_EXECUTION.md)** — verified signing, test-vector, testnet, and reconciliation acceptance criteria before enabling Hyperliquid orders
-- **[`docs/BENCHMARKS.md`](docs/BENCHMARKS.md)** — reproducible three-strategy VM latency/throughput matrix with p50/p95/p99 graphs
 - **Operator dashboard** — `QUINCE_DASHBOARD=1` starts loopback-only Axum UI; it reads the durable journal via a bounded crossbeam bridge and exposes no mutation endpoints
 - **[Criterion Benchmarks](https://0xitsss.github.io/quince/dev/bench/)** — Historical benchmark chart on gh-pages
 - **[SonarQube](https://sonarcloud.io/project/overview?id=0xitsss_quince)** — Static analysis dashboard
