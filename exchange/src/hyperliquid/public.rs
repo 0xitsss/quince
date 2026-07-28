@@ -13,6 +13,37 @@ use crate::r#trait::{
 use futures_util::{SinkExt, StreamExt};
 use quince_core::types::*;
 
+/// Keep one slot available for an integrity signal when market data bursts.
+/// A full queue is not a harmless telemetry condition: consumers must discard
+/// their assumptions and refresh authoritative state before trading again.
+const STREAM_CHANNEL_CAPACITY: usize = 1024;
+
+fn stream_integrity_event(reason: impl Into<String>) -> StreamMsg {
+    StreamMsg::ReconcileRequired {
+        source: "hyperliquid-public",
+        reason: reason.into(),
+    }
+}
+
+/// Returns whether the market-data event reached the engine.  The final slot
+/// is deliberately reserved for `ReconcileRequired`, preventing an overflow
+/// from being silently indistinguishable from a healthy stream.
+fn relay_market_data(tx: &crossbeam_channel::Sender<StreamMsg>, event: StreamMsg) -> bool {
+    if tx.len() >= STREAM_CHANNEL_CAPACITY - 1 {
+        let _ = tx.try_send(stream_integrity_event("market-data queue overflow"));
+        return false;
+    }
+
+    match tx.try_send(event) {
+        Ok(()) => true,
+        Err(crossbeam_channel::TrySendError::Full(_)) => {
+            let _ = tx.try_send(stream_integrity_event("market-data queue overflow"));
+            false
+        }
+        Err(crossbeam_channel::TrySendError::Disconnected(_)) => false,
+    }
+}
+
 #[derive(Debug, Clone, Copy)]
 pub struct HyperliquidPublic {
     testnet: bool,
@@ -89,14 +120,28 @@ impl Exchange for HyperliquidPublic {
             }
         }
 
-        let (tx, rx) = crossbeam_channel::bounded(1024);
+        let (tx, rx) = crossbeam_channel::bounded(STREAM_CHANNEL_CAPACITY);
         tokio::spawn(async move {
-            while let Some(Ok(message)) = reader.next().await {
-                if let tokio_tungstenite::tungstenite::Message::Text(text) = message {
-                    if let Some(event) = parse_ws_msg(&text) {
-                        let _ = tx.try_send(event);
+            let terminal_reason = loop {
+                match reader.next().await {
+                    Some(Ok(tokio_tungstenite::tungstenite::Message::Text(text))) => {
+                        if let Some(event) = parse_ws_msg(&text) {
+                            relay_market_data(&tx, event);
+                        }
                     }
+                    Some(Ok(tokio_tungstenite::tungstenite::Message::Close(frame))) => {
+                        break format!("websocket closed: {frame:?}");
+                    }
+                    Some(Ok(_)) => {}
+                    Some(Err(error)) => break format!("websocket receive error: {error}"),
+                    None => break "websocket closed without a close frame".into(),
                 }
+            };
+            if tx
+                .try_send(stream_integrity_event(terminal_reason))
+                .is_err()
+            {
+                tracing::error!("Hyperliquid market-data stream ended while its queue was full");
             }
         });
         Ok(Stream { rx })
@@ -324,5 +369,37 @@ mod tests {
         ] {
             assert!(parse_account_info(&snapshot).is_err());
         }
+    }
+
+    #[test]
+    fn websocket_close_is_reported_as_an_integrity_boundary() {
+        let event = stream_integrity_event("websocket closed");
+        assert!(
+            matches!(event, StreamMsg::ReconcileRequired { source: "hyperliquid-public", reason } if reason == "websocket closed")
+        );
+    }
+
+    #[test]
+    fn queue_overflow_reserves_room_for_a_reconciliation_signal() {
+        let (tx, rx) = crossbeam_channel::bounded(STREAM_CHANNEL_CAPACITY);
+        for _ in 0..STREAM_CHANNEL_CAPACITY - 1 {
+            tx.try_send(StreamMsg::OpenInterest {
+                qty: 1.0,
+                time: chrono::Utc::now(),
+            })
+            .unwrap();
+        }
+
+        assert!(!relay_market_data(
+            &tx,
+            StreamMsg::OpenInterest {
+                qty: 2.0,
+                time: chrono::Utc::now(),
+            },
+        ));
+        assert!(matches!(
+            rx.try_iter().last(),
+            Some(StreamMsg::ReconcileRequired { source: "hyperliquid-public", reason }) if reason.contains("overflow")
+        ));
     }
 }

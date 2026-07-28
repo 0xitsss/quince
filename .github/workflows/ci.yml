@@ -47,6 +47,9 @@ jobs:
       - name: public surface policy
         run: bash tools/verify_public_surface.sh
 
+      - name: release metadata policy
+        run: bash tools/verify_release_metadata.sh
+
       - name: cargo +nightly fmt
         run: cargo +nightly fmt --all -- --check
 
