@@ -35,7 +35,7 @@
             const path_to_root = "../../../";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../../../searchindex-cd1ba18e.js";
+            window.path_to_searchindex_js = "../../../searchindex-ae923043.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="../../../toc-13eb2a3e.js"></script>
@@ -198,6 +198,12 @@ protocol test vector before it becomes usable by an adapter.</p>
 This intentionally supports only an IOC, non-reduce-only order with no
 client ID or builder. Broader action variants must add their own vectors,
 rather than sharing a permissive serializer with different semantics.</p>
+<h3 id="pub-fn-cancel_connection_id"><a class="header" href="#pub-fn-cancel_connection_id"><code>pub fn cancel_connection_id</code></a></h3>
+<pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>pub fn cancel_connection_id(...) { ... }
+<span class="boring">}</span></code></pre>
+<p>Hashes the exact single-order cancel action accepted by Hyperliquid.</p>
 <h3 id="pub-fn-l1_action_signing_digest"><a class="header" href="#pub-fn-l1_action_signing_digest"><code>pub fn l1_action_signing_digest</code></a></h3>
 <pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
 </span><span class="boring">fn main() {
