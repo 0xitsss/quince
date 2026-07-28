@@ -14,12 +14,12 @@
 //! the exchange adapter, bind a signer to an account, validate order intents,
 //! and provide one place to add a reviewed signing implementation later.
 
-use super::public::HyperliquidPublic;
 use super::user_data;
+use super::{public::HyperliquidPublic, signing};
 use crate::r#trait::{
     Exchange, ExchangeError, OrderRequest, OrderStatus, Result, Stream, StreamMsg,
 };
-use quince_core::types::{AccountInfo, Order, OrderType};
+use quince_core::types::{AccountInfo, Order, OrderType, Side};
 use std::collections::HashMap;
 use std::sync::{
     atomic::{AtomicU64, Ordering},
@@ -61,7 +61,7 @@ impl HyperliquidNetwork {
 ///
 /// The adapter never receives a private key.  The signer may be backed by an
 /// OS keychain, hardware wallet, or a separate signing process.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
 pub struct HyperliquidSignature {
     pub r: String,
     pub s: String,
@@ -106,6 +106,16 @@ pub struct HyperliquidPerpMeta {
 pub struct PerpAsset {
     pub index: u32,
     pub size_decimals: u8,
+}
+
+/// Fully prepared, signed exchange payload. It is intentionally separate from
+/// transport so callers can journal the immutable idempotency context before
+/// any network side effect occurs.
+#[derive(Debug, Clone)]
+pub struct PreparedHyperliquidOrder {
+    pub client_order_id: String,
+    pub nonce: u64,
+    pub payload: serde_json::Value,
 }
 
 impl HyperliquidPerpMeta {
@@ -268,6 +278,48 @@ impl HyperliquidExecution {
         HyperliquidPerpMeta::parse(&value)
     }
 
+    /// Creates a signed, IOC limit-order payload from a fresh authoritative
+    /// metadata snapshot. Submission remains a distinct testnet-only step.
+    pub fn prepare_limit_order(
+        &self,
+        request: OrderRequest,
+        meta: &HyperliquidPerpMeta,
+    ) -> Result<PreparedHyperliquidOrder> {
+        self.validate_order(request.order.clone())?;
+        if request.client_order_id.trim().is_empty() {
+            return Err(ExchangeError::Order("missing client order id".into()));
+        }
+        if request.order.order_type != OrderType::Limit || request.order.reduce_only {
+            return Err(ExchangeError::Order(
+                "Hyperliquid initial execution supports IOC non-reduce-only limit orders only"
+                    .into(),
+            ));
+        }
+        let asset = meta.asset(&request.order.symbol)?;
+        let price = format_wire_number(request.order.price.unwrap())?;
+        let size = meta.format_size(&request.order.symbol, request.order.qty)?;
+        let nonce = self.next_nonce();
+        let connection_id = signing::limit_order_connection_id(
+            asset.index,
+            matches!(request.order.side, Side::Buy),
+            &price,
+            &size,
+            nonce,
+        )
+        .map_err(ExchangeError::Order)?;
+        let signature = self.signer.sign_l1_action(connection_id, self.network)?;
+        Ok(PreparedHyperliquidOrder {
+            client_order_id: request.client_order_id,
+            nonce,
+            payload: serde_json::json!({
+                "action": {"type": "order", "orders": [{"a": asset.index, "b": matches!(request.order.side, Side::Buy), "p": price, "s": size, "r": false, "t": {"limit": {"tif": "Ioc"}}}], "grouping": "na"},
+                "signature": signature,
+                "nonce": nonce,
+                "vaultAddress": serde_json::Value::Null,
+            }),
+        })
+    }
+
     /// Validates an intent before it can enter a future signing queue.
     ///
     /// Validation is purposefully strict: unsupported stop-loss/take-profit
@@ -294,6 +346,27 @@ fn unix_time_ms() -> u64 {
         .duration_since(UNIX_EPOCH)
         .map(|duration| duration.as_millis().try_into().unwrap_or(u64::MAX))
         .unwrap_or(0)
+}
+
+fn format_wire_number(value: f64) -> Result<String> {
+    if !value.is_finite() || value <= 0.0 {
+        return Err(ExchangeError::Order(
+            "invalid Hyperliquid wire number".into(),
+        ));
+    }
+    let formatted = format!("{value:.8}");
+    let parsed: f64 = formatted
+        .parse()
+        .map_err(|_| ExchangeError::Order("format Hyperliquid wire number".into()))?;
+    if (parsed - value).abs() > value.abs().max(1.0) * 1e-12 {
+        return Err(ExchangeError::Order(
+            "Hyperliquid price exceeds 8-decimal wire precision".into(),
+        ));
+    }
+    Ok(formatted
+        .trim_end_matches('0')
+        .trim_end_matches('.')
+        .to_owned())
 }
 
 fn validate_order(order: &Order) -> Result<()> {
@@ -424,7 +497,11 @@ mod tests {
             _action_hash: [u8; 32],
             _network: HyperliquidNetwork,
         ) -> Result<HyperliquidSignature> {
-            panic!("the disabled execution path must never request a signature")
+            Ok(HyperliquidSignature {
+                r: "0x01".into(),
+                s: "0x02".into(),
+                v: 27,
+            })
         }
     }
 
@@ -523,6 +600,27 @@ mod tests {
         assert!(meta.asset("SOL").is_err());
         assert_eq!(meta.format_size("BTC", 0.12345).unwrap(), "0.12345");
         assert!(meta.format_size("BTC", 0.123456).is_err());
+    }
+
+    #[test]
+    fn prepared_order_binds_meta_nonce_and_signature_before_transport() {
+        let execution = adapter(HyperliquidNetwork::Testnet);
+        let meta = HyperliquidPerpMeta::parse(&serde_json::json!({
+            "universe": [{"name": "BTC", "szDecimals": 5}]
+        }))
+        .unwrap();
+        let prepared = execution
+            .prepare_limit_order(
+                OrderRequest {
+                    client_order_id: "018f1c10-5c11-7000-8000-000000000001".into(),
+                    order: limit_order(),
+                },
+                &meta,
+            )
+            .unwrap();
+        assert_eq!(prepared.payload["action"]["orders"][0]["a"], 0);
+        assert_eq!(prepared.payload["signature"]["v"], 27);
+        assert_eq!(prepared.payload["nonce"], prepared.nonce);
     }
 
     #[tokio::test]
