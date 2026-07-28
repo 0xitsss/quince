@@ -20,7 +20,11 @@ use crate::r#trait::{
     Exchange, ExchangeError, OrderRequest, OrderStatus, Result, Stream, StreamMsg,
 };
 use quince_core::types::{AccountInfo, Order, OrderType};
-use std::sync::Arc;
+use std::sync::{
+    atomic::{AtomicU64, Ordering},
+    Arc,
+};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 const MAINNET_EXCHANGE_URL: &str = "https://api.hyperliquid.xyz/exchange";
 const TESTNET_EXCHANGE_URL: &str = "https://api.hyperliquid-testnet.xyz/exchange";
@@ -93,6 +97,7 @@ pub struct HyperliquidExecution {
     account_address: String,
     signer: Arc<dyn HyperliquidSigner>,
     public: HyperliquidPublic,
+    nonce: AtomicU64,
 }
 
 impl HyperliquidExecution {
@@ -118,6 +123,7 @@ impl HyperliquidExecution {
             account_address,
             signer,
             public: HyperliquidPublic::new(network.is_testnet()),
+            nonce: AtomicU64::new(unix_time_ms()),
         })
     }
 
@@ -131,6 +137,25 @@ impl HyperliquidExecution {
 
     pub const fn exchange_url(&self) -> &'static str {
         self.network.exchange_url()
+    }
+
+    /// Returns an exchange nonce that is monotonic even when multiple tasks
+    /// prepare actions in the same millisecond or the wall clock moves back.
+    /// A nonce is allocated only during final action preparation, never retried
+    /// after an ambiguous network submission.
+    pub fn next_nonce(&self) -> u64 {
+        let now = unix_time_ms();
+        loop {
+            let current = self.nonce.load(Ordering::Relaxed);
+            let next = current.max(now).saturating_add(1);
+            if self
+                .nonce
+                .compare_exchange_weak(current, next, Ordering::Relaxed, Ordering::Relaxed)
+                .is_ok()
+            {
+                return next;
+            }
+        }
     }
 
     /// Validates an intent before it can enter a future signing queue.
@@ -152,6 +177,13 @@ impl HyperliquidExecution {
             "Hyperliquid live execution is disabled: canonical L1 action encoding, official signing test vectors, submission, and reconciliation must be implemented before orders can be sent".into(),
         )
     }
+}
+
+fn unix_time_ms() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_millis().try_into().unwrap_or(u64::MAX))
+        .unwrap_or(0)
 }
 
 fn validate_order(order: &Order) -> Result<()> {
@@ -355,6 +387,14 @@ mod tests {
         let mut order = limit_order();
         order.stop_loss = Some(90_000.0);
         assert!(execution.validate_order(order).is_err());
+    }
+
+    #[test]
+    fn nonces_are_strictly_monotonic() {
+        let execution = adapter(HyperliquidNetwork::Testnet);
+        let first = execution.next_nonce();
+        let second = execution.next_nonce();
+        assert!(second > first);
     }
 
     #[tokio::test]
