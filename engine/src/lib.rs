@@ -11,6 +11,10 @@ pub mod indicators;
 pub mod journal;
 pub mod r#loop;
 pub mod orders;
+pub mod strategy_lifecycle;
 
 pub use journal::{JournalEvent, JournalRecord, OrderJournal};
 pub use r#loop::{Engine, EngineError};
+pub use strategy_lifecycle::{
+    DeploymentMode, StrategyLifecycle, StrategyLifecycleError, StrategyRevision, StrategySlot,
+};

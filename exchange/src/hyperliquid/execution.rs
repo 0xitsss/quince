@@ -22,6 +22,7 @@ use crate::r#trait::{
 use chrono::{DateTime, Duration, Utc};
 use quince_core::types::{AccountInfo, Order, OrderType, Side};
 use std::collections::HashMap;
+use std::collections::HashSet;
 use std::sync::{
     atomic::{AtomicU64, Ordering},
     Arc,
@@ -125,6 +126,20 @@ pub struct PreparedHyperliquidOrder {
 pub struct ExecutionPreflight {
     pub market_observed_at: DateTime<Utc>,
     pub max_market_age: Duration,
+}
+
+/// Result of comparing journal-tracked active exchange IDs to the
+/// authoritative `openOrders` snapshot. Missing IDs are ambiguous until a
+/// terminal fill/cancel record is independently observed.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OpenOrderReconciliation {
+    pub missing_expected_ids: Vec<String>,
+}
+
+impl OpenOrderReconciliation {
+    pub fn requires_pause(&self) -> bool {
+        !self.missing_expected_ids.is_empty()
+    }
 }
 
 impl ExecutionPreflight {
@@ -539,6 +554,22 @@ fn parse_open_order_ids(value: &serde_json::Value) -> Result<Vec<String>> {
     Ok(ids)
 }
 
+pub fn reconcile_open_orders(
+    expected_active_ids: impl IntoIterator<Item = String>,
+    authoritative_open_ids: impl IntoIterator<Item = String>,
+) -> OpenOrderReconciliation {
+    let observed: HashSet<String> = authoritative_open_ids.into_iter().collect();
+    let mut missing_expected_ids: Vec<String> = expected_active_ids
+        .into_iter()
+        .filter(|id| !observed.contains(id))
+        .collect();
+    missing_expected_ids.sort_unstable();
+    missing_expected_ids.dedup();
+    OpenOrderReconciliation {
+        missing_expected_ids,
+    }
+}
+
 fn validate_order(order: &Order) -> Result<()> {
     let symbol = order.symbol.trim();
     if symbol.is_empty() || symbol.len() > 64 || !symbol.bytes().all(|b| b.is_ascii_alphanumeric())
@@ -851,6 +882,13 @@ mod tests {
             ["42", "7"]
         );
         assert!(parse_open_order_ids(&serde_json::json!([{"oid": 0}])).is_err());
+    }
+
+    #[test]
+    fn reconciliation_pauses_for_a_journal_order_missing_from_open_orders() {
+        let result = reconcile_open_orders(["42".to_owned(), "7".to_owned()], ["42".to_owned()]);
+        assert!(result.requires_pause());
+        assert_eq!(result.missing_expected_ids, ["7"]);
     }
 
     #[tokio::test]

@@ -4,6 +4,7 @@
 //! Hyperliquid exchange adapters.
 
 pub mod execution;
+pub mod preflight;
 pub mod public;
 pub mod signing;
 pub mod user_data;
