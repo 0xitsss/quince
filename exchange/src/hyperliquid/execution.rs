@@ -15,7 +15,10 @@
 //! and provide one place to add a reviewed signing implementation later.
 
 use super::public::HyperliquidPublic;
-use crate::r#trait::{Exchange, ExchangeError, OrderRequest, OrderStatus, Result, Stream};
+use super::user_data;
+use crate::r#trait::{
+    Exchange, ExchangeError, OrderRequest, OrderStatus, Result, Stream, StreamMsg,
+};
 use quince_core::types::{AccountInfo, Order, OrderType};
 use std::sync::Arc;
 
@@ -202,7 +205,32 @@ fn normalize_evm_address(address: &str) -> Result<String> {
 #[async_trait::async_trait]
 impl Exchange for HyperliquidExecution {
     async fn subscribe(&self, symbols: &[String]) -> Result<Stream> {
-        self.public.subscribe(symbols).await
+        let public_stream = self.public.subscribe(symbols).await?;
+        let (tx, rx) = crossbeam_channel::bounded(1024);
+        let public_tx = tx.clone();
+        let integrity_rx = rx.clone();
+        tokio::task::spawn_blocking(move || {
+            while let Ok(event) = public_stream.rx.recv() {
+                if public_tx.try_send(event).is_ok() {
+                    continue;
+                }
+                // A full merged ingress invalidates the ordering/freshness of
+                // both feeds. Replace exactly one stale event with a durable
+                // reconciliation signal rather than silently dropping data.
+                let _ = integrity_rx.try_recv();
+                let _ = public_tx.try_send(StreamMsg::ReconcileRequired {
+                    source: "hyperliquid-execution",
+                    reason: "merged public/private ingress overflow".into(),
+                });
+            }
+        });
+        user_data::start_user_data_stream(
+            self.account_address.clone(),
+            self.network.is_testnet(),
+            tx,
+        )
+        .await?;
+        Ok(Stream { rx })
     }
 
     async fn place_order(&self, request: OrderRequest) -> Result<String> {

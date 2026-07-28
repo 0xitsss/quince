@@ -39,6 +39,7 @@ rand = "0.8"
 rpassword = "7"
 sha3 = "0.10"
 axum = "0.7"
+uuid = { version = "1", features = ["v4"] }
 
 # The runtime is latency-sensitive. Thin LTO keeps the release build practical
 # while allowing cross-crate optimization; a single codegen unit favors the

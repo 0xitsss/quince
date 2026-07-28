@@ -7,7 +7,7 @@
 
 use quince_core::types::*;
 use std::collections::HashMap;
-use std::time::{Instant, SystemTime, UNIX_EPOCH};
+use std::time::Instant;
 
 #[derive(Debug, Clone)]
 pub struct ActiveStop {
@@ -61,7 +61,6 @@ pub struct PendingOrder {
 pub struct OrderManager {
     pub orders: HashMap<String, PendingOrder>,
     pub exchange_to_client: HashMap<String, String>,
-    next_id: u64,
 }
 
 impl OrderManager {
@@ -69,20 +68,14 @@ impl OrderManager {
         Self {
             orders: HashMap::new(),
             exchange_to_client: HashMap::new(),
-            next_id: 0,
         }
     }
 
     pub fn register(&mut self, order: Order) -> String {
-        // This is a local correlation ID, not an exchange idempotency key.  A
-        // process-unique timestamp prevents collisions in logs/restarts while
-        // the Exchange trait is unable to carry a client order ID upstream.
-        let epoch_nanos = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .map(|duration| duration.as_nanos())
-            .unwrap_or_default();
-        let client_id = format!("qc_{epoch_nanos}_{:016x}", self.next_id);
-        self.next_id += 1;
+        // A canonical UUID is accepted by Binance and maps directly to
+        // Hyperliquid's 128-bit `cloid`. It is persisted before submission,
+        // so a retry/reconciliation path always uses this exact value.
+        let client_id = uuid::Uuid::new_v4().to_string();
         let now = Instant::now();
         let po = PendingOrder {
             client_id: client_id.clone(),
@@ -815,5 +808,16 @@ mod tests {
             om.get(&id).unwrap().status,
             PendingStatus::Placed { .. }
         ));
+    }
+
+    #[test]
+    fn generated_client_ids_are_canonical_uuids() {
+        let mut manager = OrderManager::new();
+        let first = manager.register(buy_order(None, None));
+        let second = manager.register(buy_order(None, None));
+
+        assert!(uuid::Uuid::parse_str(&first).is_ok());
+        assert!(uuid::Uuid::parse_str(&second).is_ok());
+        assert_ne!(first, second);
     }
 }

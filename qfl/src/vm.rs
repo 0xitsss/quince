@@ -55,6 +55,9 @@ pub const MAX_WINDOWS: usize = 64; // Max number of rolling windows
 pub const WINDOW_ARENA_SIZE: usize = 65536; // Total ring-buffer elements across all windows
 pub const MAX_DEPTH_LEVELS: usize = 64; // Max order-book depth levels per side
 pub const MAX_EMA_STATES: usize = 256; // Max number of EMA state slots
+/// Maximum bytecode instructions one event handler may execute by default.
+/// This bounds strategy latency even when a source loop fails to make progress.
+pub const DEFAULT_INSTRUCTION_BUDGET: u32 = 100_000;
 
 // --- SendOrder register convention ---
 // When issuing a SEND_ORDER instruction, the VM reads these fixed registers:
@@ -331,6 +334,10 @@ pub struct Vm {
     pub running: bool,                       // True while dispatch loop should continue
     pub call_stack: [usize; MAX_CALL_DEPTH], // Return addresses for CALL/RET
     pub call_depth: u8,                      // Current call depth
+    instruction_budget: u32,                 // Maximum instructions per event handler
+    instructions_remaining: u32,             // Decremented before every dispatch
+    last_event_instruction_count: u32,       // Instructions executed by the last event
+    instruction_budget_exhausted: bool,      // True when the last event hit its limit
 
     // Code + constants — raw pointers into owned backing in ColdVm
     // Used in lieu of Vec indexing to avoid bounds checks in hot path.
@@ -385,6 +392,10 @@ impl Vm {
             running: false,
             call_stack: [0; MAX_CALL_DEPTH],
             call_depth: 0,
+            instruction_budget: DEFAULT_INSTRUCTION_BUDGET,
+            instructions_remaining: DEFAULT_INSTRUCTION_BUDGET,
+            last_event_instruction_count: 0,
+            instruction_budget_exhausted: false,
             code_ptr,
             code_len,
             consts_ptr,
@@ -575,6 +586,9 @@ impl Vm {
         self.pc = offset;
         self.running = true;
         self.call_depth = 0;
+        self.instructions_remaining = self.instruction_budget;
+        self.last_event_instruction_count = 0;
+        self.instruction_budget_exhausted = false;
         #[cfg(feature = "profiling")]
         match entry_name {
             "on_trade" => {
@@ -616,6 +630,35 @@ impl Vm {
             }
         }
         None
+    }
+
+    /// Set the instruction limit applied independently to every event handler.
+    /// A zero budget is normalized to one instruction so execution always remains
+    /// bounded and callers cannot accidentally disable the safety limit.
+    pub fn set_instruction_budget(&mut self, budget: u32) {
+        self.instruction_budget = budget.max(1);
+    }
+
+    /// Number of bytecode instructions executed by the most recent event handler.
+    pub fn last_event_instruction_count(&self) -> u32 {
+        self.last_event_instruction_count
+    }
+
+    /// Whether the most recent event handler was halted by its instruction budget.
+    pub fn instruction_budget_exhausted(&self) -> bool {
+        self.instruction_budget_exhausted
+    }
+
+    #[inline(always)]
+    fn consume_instruction(&mut self) -> bool {
+        if unlikely(self.instructions_remaining == 0) {
+            self.running = false;
+            self.instruction_budget_exhausted = true;
+            return false;
+        }
+        self.instructions_remaining -= 1;
+        self.last_event_instruction_count += 1;
+        true
     }
 
     // в”Ђв”Ђ OS Core Isolation + Memory Pinning в”Ђв”Ђ
@@ -790,7 +833,7 @@ const DISPATCH_TABLE: [Handler; 256] = {
 /// Tail-call helper: advance PC, fetch next instruction, dispatch.
 /// Every normal handler ends with `become dispatch_next(vm, instr)`.
 /// Control-flow handlers (jmp, jz, jnz, call, ret) set `vm.pc` directly,
-/// then fetch + `become DISPATCH_TABLE[...]` inline.
+/// then tail-call [`dispatch_current`] to charge and dispatch the target.
 ///
 /// # Safety
 /// - `vm.code_ptr` must point to valid bytecode with at least `vm.pc + 1` instructions.
@@ -799,8 +842,23 @@ const DISPATCH_TABLE: [Handler; 256] = {
 pub unsafe fn dispatch_next(vm: &mut Vm, instr: u64) {
     vm.trace_exec(instr);
     vm.pc = vm.pc.wrapping_add(1);
-    let next = *vm.code_ptr.add(vm.pc);
-    become DISPATCH_TABLE[(next & 0xFF) as usize](vm, next);
+    become dispatch_current(vm, instr);
+}
+
+/// Dispatch the instruction at the current PC after charging it to the active
+/// event handler's budget.
+///
+/// # Safety
+///
+/// `vm.code_ptr` must point to valid bytecode at `vm.pc`; callers must only
+/// dispatch a VM initialized from a valid [`QfrProgram`].
+#[inline(never)]
+pub unsafe fn dispatch_current(vm: &mut Vm, _previous: u64) {
+    if !vm.consume_instruction() {
+        return;
+    }
+    let current = *vm.code_ptr.add(vm.pc);
+    become DISPATCH_TABLE[(current & 0xFF) as usize](vm, current);
 }
 
 impl Vm {
@@ -810,8 +868,7 @@ impl Vm {
     #[inline(always)]
     fn run(&mut self) {
         unsafe {
-            let first = *self.code_ptr.add(self.pc);
-            DISPATCH_TABLE[(first & 0xFF) as usize](self, first);
+            dispatch_current(self, 0);
         }
     }
 
@@ -1503,8 +1560,7 @@ pub unsafe fn $name(vm: &mut Vm, instr: u64) {
             return;
         }
         vm.pc = target;
-        let next = *vm.code_ptr.add(vm.pc);
-        become DISPATCH_TABLE[(next & 0xFF) as usize](vm, next);
+        become dispatch_current(vm, instr);
     }
 
     // Conditional jump: PC += imm if rs1 == 0
@@ -1559,8 +1615,7 @@ pub unsafe fn $name(vm: &mut Vm, instr: u64) {
             return;
         }
         vm.pc = target;
-        let next = *vm.code_ptr.add(vm.pc);
-        become DISPATCH_TABLE[(next & 0xFF) as usize](vm, next);
+        become dispatch_current(vm, instr);
     }
 
     // Return from subroutine: pop return address from call_stack; if depth 0, halt.
@@ -1575,8 +1630,7 @@ pub unsafe fn $name(vm: &mut Vm, instr: u64) {
         }
         vm.call_depth -= 1;
         vm.pc = *vm.call_stack.get_unchecked(vm.call_depth as usize);
-        let next = *vm.code_ptr.add(vm.pc);
-        become DISPATCH_TABLE[(next & 0xFF) as usize](vm, next);
+        become dispatch_current(vm, instr);
     }
 
     // в”Ђв”Ђ Data movement в”Ђв”Ђ
@@ -2125,5 +2179,57 @@ pub unsafe fn $name(vm: &mut Vm, instr: u64) {
         let b = vm.regs.get_unchecked(rs2(instr) as usize).f;
         vm.regs.get_unchecked_mut(r).f = sanitize_f(a.powf(b));
         become dispatch_next(vm, instr);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::ir::EntryPoint;
+    use crate::opcodes::Opcode;
+
+    #[test]
+    fn instruction_budget_stops_a_runaway_event_handler() {
+        let mut program = QfrProgram::new();
+        program.entries.push(EntryPoint {
+            name: "on_eval".into(),
+            code_offset: 0,
+        });
+        // `jmp -1` targets itself forever without a per-event instruction budget.
+        program
+            .code
+            .push(Instruction::rri(Opcode::Jmp, 0, 0, (-1_i32) as u32));
+
+        let mut vm = Vm::new(program);
+        vm.set_instruction_budget(4);
+        vm.call("on_eval");
+
+        assert!(!vm.running);
+        assert!(vm.instruction_budget_exhausted());
+        assert_eq!(vm.last_event_instruction_count(), 4);
+    }
+
+    #[test]
+    fn instruction_budget_is_reset_for_each_event_and_never_disabled() {
+        let mut program = QfrProgram::new();
+        program.entries.push(EntryPoint {
+            name: "on_eval".into(),
+            code_offset: 0,
+        });
+        program
+            .code
+            .push(Instruction::rri(Opcode::Jmp, 0, 0, (-1_i32) as u32));
+
+        let mut vm = Vm::new(program);
+        vm.set_instruction_budget(0);
+        assert_eq!(vm.instruction_budget, 1);
+
+        vm.call("on_eval");
+        assert_eq!(vm.last_event_instruction_count(), 1);
+        assert!(vm.instruction_budget_exhausted());
+
+        vm.call("on_eval");
+        assert_eq!(vm.last_event_instruction_count(), 1);
+        assert!(vm.instruction_budget_exhausted());
     }
 }

@@ -5,9 +5,53 @@
 //! [`BinancePublic`] implements the [`Exchange`] trait without authentication,
 //! supporting trade/depth subscriptions via combined WebSocket streams.
 
-use crate::r#trait::{Exchange, ExchangeError, OrderRequest, OrderStatus, Result, Stream};
+use crate::r#trait::{
+    Exchange, ExchangeError, OrderRequest, OrderStatus, Result, Stream, StreamMsg,
+};
 use futures_util::StreamExt;
 use quince_core::types::*;
+
+const PUBLIC_STREAM_SOURCE: &str = "binance-public-data";
+
+/// Replaces one stale market-data event when necessary so integrity loss is
+/// never silently hidden behind a full bounded ingress queue.
+fn signal_integrity(
+    tx: &crossbeam_channel::Sender<StreamMsg>,
+    rx: &crossbeam_channel::Receiver<StreamMsg>,
+    reason: impl Into<String>,
+) {
+    let event = StreamMsg::ReconcileRequired {
+        source: PUBLIC_STREAM_SOURCE,
+        reason: reason.into(),
+    };
+    match tx.try_send(event) {
+        Ok(()) | Err(crossbeam_channel::TrySendError::Disconnected(_)) => {}
+        Err(crossbeam_channel::TrySendError::Full(event)) => {
+            // The queued market data is stale after an integrity failure. Drop
+            // exactly one item to reserve capacity for the fail-closed signal.
+            let _ = rx.try_recv();
+            let _ = tx.try_send(event);
+        }
+    }
+}
+
+/// Publishes market data without blocking the socket. Overflow is an
+/// integrity failure, not a best-effort drop: consumers are told to refresh
+/// their authoritative market state before continuing.
+fn publish_market_data(
+    tx: &crossbeam_channel::Sender<StreamMsg>,
+    rx: &crossbeam_channel::Receiver<StreamMsg>,
+    event: StreamMsg,
+) -> bool {
+    match tx.try_send(event) {
+        Ok(()) => true,
+        Err(crossbeam_channel::TrySendError::Full(_)) => {
+            signal_integrity(tx, rx, "public market-data ingress overflow");
+            false
+        }
+        Err(crossbeam_channel::TrySendError::Disconnected(_)) => false,
+    }
+}
 
 #[derive(Default)]
 pub struct BinancePublic;
@@ -44,18 +88,39 @@ impl Exchange for BinancePublic {
 
         let (_, mut reader) = ws_stream.split();
         let (tx, rx) = crossbeam_channel::bounded(1024);
+        let integrity_rx = rx.clone();
 
         tokio::spawn(async move {
             loop {
-                tokio::select! {
-                    Some(Ok(msg)) = reader.next() => {
-                        if let tokio_tungstenite::tungstenite::Message::Text(text) = msg {
-                            if let Some(stream_msg) = super::types::parse_ws_msg(text) {
-                                let _ = tx.try_send(stream_msg);
+                match reader.next().await {
+                    Some(Ok(tokio_tungstenite::tungstenite::Message::Text(text))) => {
+                        if let Some(stream_msg) = super::types::parse_ws_msg(text) {
+                            if !publish_market_data(&tx, &integrity_rx, stream_msg) {
+                                tracing::warn!("Binance public market-data ingress overflow");
                             }
                         }
                     }
-                    else => break,
+                    Some(Ok(tokio_tungstenite::tungstenite::Message::Close(frame))) => {
+                        signal_integrity(
+                            &tx,
+                            &integrity_rx,
+                            format!("public WebSocket closed: {frame:?}"),
+                        );
+                        break;
+                    }
+                    Some(Err(error)) => {
+                        signal_integrity(
+                            &tx,
+                            &integrity_rx,
+                            format!("public WebSocket error: {error}"),
+                        );
+                        break;
+                    }
+                    None => {
+                        signal_integrity(&tx, &integrity_rx, "public WebSocket EOF");
+                        break;
+                    }
+                    _ => {}
                 }
             }
         });
@@ -128,6 +193,47 @@ mod tests {
     fn new_creates_exchange() {
         let ex = BinancePublic::new();
         assert_eq!(std::mem::size_of_val(&ex), 0);
+    }
+
+    #[test]
+    fn queue_overflow_replaces_stale_market_data_with_integrity_signal() {
+        let (tx, rx) = crossbeam_channel::bounded(1);
+        tx.try_send(StreamMsg::Trade(Trade {
+            price: 100_000.0,
+            qty: 1.0,
+            time: chrono::Utc::now(),
+            side: Side::Buy,
+            trade_id: 1,
+        }))
+        .unwrap();
+
+        assert!(!publish_market_data(
+            &tx,
+            &rx,
+            StreamMsg::Depth(Depth {
+                bids: vec![],
+                asks: vec![],
+            }),
+        ));
+
+        let StreamMsg::ReconcileRequired { source, reason } = rx.recv().unwrap() else {
+            panic!("queue overflow must be made visible to the consumer");
+        };
+        assert_eq!(source, "binance-public-data");
+        assert!(reason.contains("ingress overflow"));
+    }
+
+    #[test]
+    fn socket_gap_emits_integrity_signal() {
+        let (tx, rx) = crossbeam_channel::bounded(1);
+
+        signal_integrity(&tx, &rx, "WebSocket closed");
+
+        let StreamMsg::ReconcileRequired { source, reason } = rx.recv().unwrap() else {
+            panic!("socket gap must be made visible to the consumer");
+        };
+        assert_eq!(source, "binance-public-data");
+        assert_eq!(reason, "WebSocket closed");
     }
 
     #[tokio::test]
