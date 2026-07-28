@@ -36,7 +36,7 @@
             const path_to_root = "";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-b4c90a5a.js";
+            window.path_to_searchindex_js = "searchindex-ec6909d7.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="toc-13eb2a3e.js"></script>
@@ -2351,6 +2351,7 @@ OS keychain, hardware wallet, or a separate signing process.</p>
     account_address: String,
     signer: Arc &lt; dyn HyperliquidSigner &gt;,
     public: HyperliquidPublic,
+    nonce: AtomicU64,
 };
 <span class="boring">}</span></code></pre>
 <p>Authenticated adapter shell.
