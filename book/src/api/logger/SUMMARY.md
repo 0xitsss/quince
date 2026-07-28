@@ -1,3 +1,0 @@
-# logger
-
-- [lib](index.md)
