@@ -525,6 +525,14 @@ impl<E: Exchange> Engine<E> {
                     match e {
                         ExchangeError::Order(_) | ExchangeError::Auth(_) => {
                             self.order_manager.mark_failed(&client_id, e.to_string());
+                            if let Err(error) = self.order_journal.append(JournalEvent::Terminal {
+                                client_order_id: client_id.clone(),
+                                status: "REJECTED".into(),
+                            }) {
+                                self.execution_halted = true;
+                                tracing::error!(client_id, %error, "explicitly rejected order was not journaled; execution halted");
+                            }
+                            tracing::warn!(client_id, error = %e, "exchange explicitly rejected order");
                         }
                         ExchangeError::Ws(_)
                         | ExchangeError::Rest(_)
@@ -870,16 +878,41 @@ impl<E: Exchange> Engine<E> {
                     tracing::info!("SL/TP triggered for {cid}: close {side:?} {qty} order={id}");
                 }
                 Err(e) => {
-                    self.order_manager
-                        .mark_submission_unknown(&close_client_id, e.to_string());
-                    if let Err(error) = self.order_journal.append(JournalEvent::SubmissionUnknown {
-                        client_order_id: close_client_id.clone(),
-                        error: e.to_string(),
-                    }) {
-                        self.execution_halted = true;
-                        tracing::error!(client_id = %close_client_id, %error, "unknown protective close was not journaled; execution halted");
+                    match e {
+                        // Explicit exchange-side rejections are terminal and
+                        // must close the durable lifecycle as well. Leaving a
+                        // registered close order unresolved would block a
+                        // safe restart even though no remote order exists.
+                        ExchangeError::Order(_) | ExchangeError::Auth(_) => {
+                            self.order_manager
+                                .mark_failed(&close_client_id, e.to_string());
+                            if let Err(error) = self.order_journal.append(JournalEvent::Terminal {
+                                client_order_id: close_client_id.clone(),
+                                status: "REJECTED".into(),
+                            }) {
+                                self.execution_halted = true;
+                                tracing::error!(client_id = %close_client_id, %error, "rejected protective close was not journaled; execution halted");
+                            }
+                            tracing::warn!(client_id = %close_client_id, error = %e, "exchange explicitly rejected protective close");
+                        }
+                        ExchangeError::Ws(_)
+                        | ExchangeError::Rest(_)
+                        | ExchangeError::Timeout
+                        | ExchangeError::Disconnected => {
+                            self.order_manager
+                                .mark_submission_unknown(&close_client_id, e.to_string());
+                            if let Err(error) =
+                                self.order_journal.append(JournalEvent::SubmissionUnknown {
+                                    client_order_id: close_client_id.clone(),
+                                    error: e.to_string(),
+                                })
+                            {
+                                self.execution_halted = true;
+                                tracing::error!(client_id = %close_client_id, %error, "unknown protective close was not journaled; execution halted");
+                            }
+                            tracing::warn!(client_id = %close_client_id, error = %e, "protective close submission outcome is unknown");
+                        }
                     }
-                    tracing::warn!("SL/TP close order failed for {cid}: {e}");
                 }
             }
         }

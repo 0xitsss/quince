@@ -701,6 +701,29 @@ impl Compiler {
         step: &Option<Box<Expr>>,
         body: &[Stmt],
     ) {
+        // A literal zero step can never make progress and would otherwise emit an
+        // unbounded back-edge in the VM. Reject it before allocating registers or
+        // generating any partial bytecode.
+        let step_is_zero = |expr: &Expr| match expr {
+            Expr::Literal(Literal::I64(value)) => *value == 0,
+            Expr::Literal(Literal::F64(value)) => *value == 0.0,
+            Expr::Unary {
+                op: UnaryOp::Neg,
+                expr: inner,
+            } => match inner.as_ref() {
+                Expr::Literal(Literal::I64(value)) => *value == 0,
+                Expr::Literal(Literal::F64(value)) => *value == 0.0,
+                _ => false,
+            },
+            _ => false,
+        };
+        if step.as_deref().is_some_and(step_is_zero) {
+            self.errors.push(crate::types::TypeError {
+                msg: "numeric for-loop step must not be zero".into(),
+            });
+            return;
+        }
+
         // Evaluate from, to, step expressions
         let (from_r, _) = self.compile_expr(from);
         let (to_r, _) = self.compile_expr(to);
@@ -1719,6 +1742,15 @@ end
             "for negative step must emit Lt (exit when i < to)"
         );
         assert!(instructions.contains(&O::Jnz), "for must emit Jnz");
+    }
+
+    #[test]
+    fn test_for_num_rejects_zero_literal_step() {
+        let program = parser::parse("for i = 1, 10, 0 do end").unwrap();
+        let errors = compile(&program).expect_err("zero-step loop must be rejected");
+        assert!(errors
+            .iter()
+            .any(|error| error.msg.contains("step must not be zero")));
     }
 
     #[test]

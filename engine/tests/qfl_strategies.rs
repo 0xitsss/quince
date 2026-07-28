@@ -7,8 +7,8 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use async_trait::async_trait;
 use quince_core::types::*;
-use quince_engine::Engine;
-use quince_exchange::r#trait::{Exchange, OrderStatus, Result, Stream, StreamMsg};
+use quince_engine::{Engine, OrderJournal};
+use quince_exchange::r#trait::{Exchange, ExchangeError, OrderStatus, Result, Stream, StreamMsg};
 use quince_risk::{RiskConfig, RiskControls};
 
 // в”Ђв”Ђ Mock exchange for integration tests в”Ђв”Ђ
@@ -21,6 +21,7 @@ struct MockState {
 pub struct MockExchange {
     order_counter: AtomicU64,
     state: Arc<Mutex<MockState>>,
+    reject_orders: bool,
 }
 
 impl MockExchange {
@@ -31,6 +32,14 @@ impl MockExchange {
                 stream_tx: None,
                 last_price: 100.0,
             })),
+            reject_orders: false,
+        }
+    }
+
+    fn rejecting_orders() -> Self {
+        Self {
+            reject_orders: true,
+            ..Self::new()
         }
     }
 }
@@ -92,6 +101,9 @@ impl Exchange for MockExchange {
     }
 
     async fn place_order(&self, request: quince_exchange::r#trait::OrderRequest) -> Result<String> {
+        if self.reject_orders {
+            return Err(ExchangeError::Order("exchange rejected order".into()));
+        }
         let order = request.order;
         let id = format!("int_{}", self.order_counter.fetch_add(1, Ordering::Relaxed));
         let state = self.state.lock().unwrap();
@@ -626,6 +638,46 @@ end
     let _ = std::fs::remove_file(&log_path);
     let _ = std::fs::remove_file(std::path::Path::new(&log_path).with_extension("orders.jsonl"));
     let _ = std::fs::remove_file(&path);
+}
+
+#[tokio::test]
+async fn intg_explicit_order_rejection_is_terminal_in_journal() {
+    let src = "
+function on_trade(trade)
+    quince.order(0, 0.1, 0)
+end
+";
+    let nonce = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("system clock should be after Unix epoch")
+        .as_nanos();
+    let path = write_strategy(&format!("intg_order_rejection_journal_{nonce}"), src);
+    let log_path = format!("{path}.trades.log");
+    let mut engine = Engine::new(
+        MockExchange::rejecting_orders(),
+        &["BTCUSDT".into()],
+        &path,
+        risk_config(),
+        &log_path,
+    )
+    .expect("engine should start");
+
+    tokio::time::timeout(Duration::from_millis(100), engine.run())
+        .await
+        .ok();
+    drop(engine);
+
+    let journal_path = std::path::Path::new(&log_path).with_extension("orders.jsonl");
+    let records = OrderJournal::recover(&journal_path).expect("journal should be recoverable");
+    assert!(
+        OrderJournal::unresolved_client_order_ids(&records).is_empty(),
+        "explicit exchange rejection must not block a restart"
+    );
+
+    let _ = std::fs::remove_file(&log_path);
+    let _ = std::fs::remove_file(&journal_path);
+    let _ = std::fs::remove_file(&path);
+    let _ = std::fs::remove_file(path.replace(".qfl", ".qfr"));
 }
 
 #[tokio::test]

@@ -1,4 +1,4 @@
-﻿// SPDX-FileCopyrightText: 2026 0xitsss
+// SPDX-FileCopyrightText: 2026 0xitsss
 //
 // SPDX-License-Identifier: AGPL-3.0-only OR LicenseRef-Quince-Commercial
 //! Risk control enforcement at runtime.
@@ -21,6 +21,8 @@ pub struct RiskControls {
     pub(super) peak_equity: f64,
     pub(super) in_cooldown: bool,
     pub(super) cooldown_end: Instant,
+    paused: bool,
+    pause_reason: Option<String>,
 }
 
 impl RiskControls {
@@ -37,7 +39,34 @@ impl RiskControls {
             peak_equity: 0.0,
             in_cooldown: false,
             cooldown_end: Instant::now(),
+            paused: false,
+            pause_reason: None,
         }
+    }
+
+    /// Stop new orders until an operator explicitly resumes execution.
+    ///
+    /// This is intentionally sticky: a transient recovery in an account or
+    /// price feed must not silently re-enable trading after a safety trip.
+    pub fn pause(&mut self, reason: impl Into<String>) {
+        self.paused = true;
+        self.pause_reason = Some(reason.into());
+    }
+
+    /// Explicit operator acknowledgement for a previously paused strategy.
+    pub fn resume(&mut self) {
+        self.paused = false;
+        self.pause_reason = None;
+    }
+
+    pub fn is_paused(&self) -> bool {
+        self.paused
+    }
+
+    fn reject_and_pause(&mut self, reason: impl Into<String>) -> Result<(), String> {
+        let reason = reason.into();
+        self.pause(reason.clone());
+        Err(reason)
     }
 
     pub fn check_order(
@@ -46,6 +75,15 @@ impl RiskControls {
         current_equity: f64,
         current_position: f64,
     ) -> Result<(), String> {
+        if self.paused {
+            return Err(format!(
+                "risk execution is paused: {}",
+                self.pause_reason
+                    .as_deref()
+                    .unwrap_or("operator action required")
+            ));
+        }
+
         if self.in_cooldown {
             if Instant::now() < self.cooldown_end {
                 return Err("in cooldown after loss".into());
@@ -56,8 +94,11 @@ impl RiskControls {
         if !order.qty.is_finite() || order.qty <= 0.0 {
             return Err("order qty must be finite and positive".into());
         }
+        if !current_equity.is_finite() {
+            return self.reject_and_pause("current equity must be finite");
+        }
         if !current_position.is_finite() {
-            return Err("current position must be finite".into());
+            return self.reject_and_pause("current position must be finite");
         }
         let signed_qty = match order.side {
             Side::Buy => order.qty,
@@ -82,7 +123,7 @@ impl RiskControls {
         if self.peak_equity > 0.0 {
             let drawdown = (self.peak_equity - current_equity) / self.peak_equity;
             if drawdown > self.max_drawdown {
-                return Err(format!(
+                return self.reject_and_pause(format!(
                     "drawdown {:.2}% exceeds limit {:.2}%",
                     drawdown * 100.0,
                     self.max_drawdown * 100.0
@@ -90,8 +131,8 @@ impl RiskControls {
             }
         }
 
-        if self.daily_loss > self.max_daily_loss {
-            return Err(format!(
+        if self.daily_loss >= self.max_daily_loss {
+            return self.reject_and_pause(format!(
                 "daily loss {:.2} exceeds limit {:.2}",
                 self.daily_loss, self.max_daily_loss
             ));
@@ -291,5 +332,58 @@ mod tests {
         assert_eq!(r.order_count, 0);
         r.record_trade();
         assert_eq!(r.order_count, 1);
+    }
+
+    #[test]
+    fn manual_pause_rejects_orders_until_explicitly_resumed() {
+        let mut r = risk();
+        r.pause("operator intervention");
+
+        let error = r
+            .check_order(&make_order(1.0), 10_000.0, 0.0)
+            .expect_err("paused execution must fail closed");
+        assert!(error.contains("operator intervention"));
+        assert!(r.is_paused());
+
+        r.resume();
+        assert!(r.check_order(&make_order(1.0), 10_000.0, 0.0).is_ok());
+    }
+
+    #[test]
+    fn drawdown_breach_latches_kill_switch_until_resumed() {
+        let mut r = risk();
+        assert!(r.check_order(&make_order(1.0), 10_000.0, 0.0).is_ok());
+
+        let error = r
+            .check_order(&make_order(1.0), 8_000.0, 0.0)
+            .expect_err("drawdown must stop new risk");
+        assert!(error.contains("drawdown"));
+        assert!(r.is_paused());
+
+        let error = r
+            .check_order(&make_order(1.0), 10_000.0, 0.0)
+            .expect_err("a recovered price must not silently re-enable trading");
+        assert!(error.contains("drawdown"));
+    }
+
+    #[test]
+    fn non_finite_equity_pauses_execution() {
+        let mut r = risk();
+        let error = r
+            .check_order(&make_order(1.0), f64::NAN, 0.0)
+            .expect_err("unknown equity must fail closed");
+        assert!(error.contains("equity"));
+        assert!(r.is_paused());
+    }
+
+    #[test]
+    fn daily_loss_limit_is_inclusive_and_latched() {
+        let mut r = risk();
+        r.record_loss(1_000.0);
+        let error = r
+            .check_order(&make_order(1.0), 10_000.0, 0.0)
+            .expect_err("loss at the configured ceiling must stop trading");
+        assert!(error.contains("daily loss"));
+        assert!(r.is_paused());
     }
 }
