@@ -8,7 +8,7 @@
 [![License](https://img.shields.io/badge/license-AGPL--3.0%20OR%20Commercial-blue?style=for-the-badge)](https://www.gnu.org/licenses/agpl-3.0)
 [![REUSE](https://img.shields.io/badge/REUSE-compliant-green?style=for-the-badge)](https://reuse.software)
 [![Rust](https://img.shields.io/badge/rust-1.80+-orange?style=for-the-badge&logo=rust)](https://www.rust-lang.org)
-[![Version](https://img.shields.io/badge/version-0.7.5-purple?style=for-the-badge)](https://github.com/0xitsss/quince)
+[![Version](https://img.shields.io/badge/version-0.7.6-purple?style=for-the-badge)](https://github.com/0xitsss/quince)
 [![Docs](https://img.shields.io/badge/docs-mdBook-blue?style=for-the-badge&logo=mdbook)](https://0xitsss.github.io/quince)
 [![SonarQube](https://img.shields.io/badge/sonar-passing-brightgreen?style=for-the-badge&logo=sonarcloud)](https://sonarcloud.io/project/overview?id=0xitsss_quince)
 
@@ -611,6 +611,7 @@ Every file in the repository is REUSE-compliant with a clear, unambiguous licens
 | Version | Phase | Changes |
 | ------- | ----- | ------- |
 | v0.7.5 | 8f | Durable order journal with crash-safe recovery; engine-generated idempotency keys and Binance client-ID reconciliation; hardened Binance request lifecycle; Hyperliquid authenticated execution boundary remains fail-closed pending verified signing vectors |
+| v0.7.6 | Current | Verified Hyperliquid testnet execution primitives and strict preflight/reconciliation boundaries; strategy lifecycle with Shadow mode; Axum readiness/metrics; public-data DOM scalping signal strategy |
 | v0.7.4 | 8e | Automatic first-run wallet setup using the OS keychain; stricter live-mode and environment validation; read-only Binance public adapter; release Thin LTO; CI quality gates; risk-accounting hardening |
 | v0.7.3 | 8d | Exchange directives (`@exchange`, `@network`); Hyperliquid public trades/L2 Book adapter; market-order notional and position-risk hardening |
 | v0.7.2 | 8c | SIMD-accelerated indicators: 6 AVX2 kernels (sum, weighted_sum, sum_and_sum_xy, sum_abs_diff, min_max, sum_sq_diff) — ~3× speedup on large windows; engine criterion benchmarks (28 benches); ringvec_as_chunks for zero-copy SIMD feeding; clippy clean, 965 tests |
