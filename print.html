@@ -36,10 +36,10 @@
             const path_to_root = "";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-2c6efe2f.js";
+            window.path_to_searchindex_js = "searchindex-2a9ee84f.js";
         </script>
         <!-- Start loading toc.js asap -->
-        <script src="toc-13eb2a3e.js"></script>
+        <script src="toc-bc13bf75.js"></script>
     </head>
     <body>
     <div id="mdbook-help-container">
@@ -2015,6 +2015,69 @@ reconciliation via [<code>OrderManager</code>], [<code>PendingOrder</code>], and
 }
 <span class="boring">}</span></code></pre>
 <div style="break-before: page; page-break-before: always;"></div>
+<h1 id="module-strategy_lifecycle"><a class="header" href="#module-strategy_lifecycle">Module: <code>strategy_lifecycle</code></a></h1>
+<blockquote>
+<p>Source: <code>strategy_lifecycle.rs</code></p>
+</blockquote>
+<p>Versioned, rollback-safe strategy deployment state.</p>
+<p>This module deliberately contains no VM or exchange code.  A caller must
+compile and validate a candidate before calling [<code>StrategyLifecycle::deploy</code>];
+deployment then changes the active slot atomically from the caller’s point
+of view.  The previous slot retains its own opaque runtime state, so a
+rollback can never run state created by a different strategy version.</p>
+<h2 id="structs-20"><a class="header" href="#structs-20">Structs</a></h2>
+<h3 id="pub-struct-strategyrevision"><a class="header" href="#pub-struct-strategyrevision"><code>pub struct StrategyRevision</code></a></h3>
+<pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>pub struct StrategyRevision {
+    pub version: u64,
+    pub artifact_digest: [u8 ; 32],
+    pub mode: DeploymentMode,
+};
+<span class="boring">}</span></code></pre>
+<p>Immutable identity of compiled strategy code.</p>
+<h3 id="pub-struct-strategyslot"><a class="header" href="#pub-struct-strategyslot"><code>pub struct StrategySlot</code></a></h3>
+<pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>pub struct StrategySlot {
+    pub revision: StrategyRevision,
+    pub runtime_state: Vec &lt; u8 &gt;,
+};
+<span class="boring">}</span></code></pre>
+<p>A revision plus only the state generated while that exact revision was active.</p>
+<h3 id="pub-struct-strategylifecycle"><a class="header" href="#pub-struct-strategylifecycle"><code>pub struct StrategyLifecycle</code></a></h3>
+<pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>pub struct StrategyLifecycle {
+    active: Option &lt; StrategySlot &gt;,
+    previous: Option &lt; StrategySlot &gt;,
+};
+<span class="boring">}</span></code></pre>
+<p>Two-slot deployment register.
+At most one live revision and one known-good rollback target are retained.
+<code>deploy</code> validates all invariants before mutating either slot.</p>
+<h2 id="enums-14"><a class="header" href="#enums-14">Enums</a></h2>
+<h3 id="pub-enum-deploymentmode"><a class="header" href="#pub-enum-deploymentmode"><code>pub enum DeploymentMode</code></a></h3>
+<pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>pub enum DeploymentMode {
+    Shadow,
+    Live,
+}
+<span class="boring">}</span></code></pre>
+<p>Whether a deployed strategy may emit orders.</p>
+<h3 id="pub-enum-strategylifecycleerror"><a class="header" href="#pub-enum-strategylifecycleerror"><code>pub enum StrategyLifecycleError</code></a></h3>
+<pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>pub enum StrategyLifecycleError {
+    ZeroVersion,
+    NonMonotonicVersion(candidate: u64,
+    active: u64,),
+    NoRollbackTarget,
+    NoActiveRevision,
+}
+<span class="boring">}</span></code></pre>
+<div style="break-before: page; page-break-before: always;"></div>
 <h1 id="module-binstrategy_bench"><a class="header" href="#module-binstrategy_bench">Module: <code>bin/strategy_bench</code></a></h1>
 <blockquote>
 <p>Source: <code>bin/strategy_bench.rs</code></p>
@@ -2039,7 +2102,7 @@ implementations (Binance and Hyperliquid public WebSocket adapters).</p>
 <p>Exchange trait definitions and shared types.
 Defines [<code>Exchange</code>], [<code>ExchangeError</code>], [<code>StreamMsg</code>], [<code>OrderStatus</code>],
 and the [<code>Stream</code>] subscription handle used by all exchange backends.</p>
-<h2 id="structs-20"><a class="header" href="#structs-20">Structs</a></h2>
+<h2 id="structs-21"><a class="header" href="#structs-21">Structs</a></h2>
 <h3 id="pub-struct-stream"><a class="header" href="#pub-struct-stream"><code>pub struct Stream</code></a></h3>
 <pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
 </span><span class="boring">fn main() {
@@ -2073,7 +2136,7 @@ send it verbatim and expose lookup by it for reconciliation.</p>
     pub status: String,
 };
 <span class="boring">}</span></code></pre>
-<h2 id="enums-14"><a class="header" href="#enums-14">Enums</a></h2>
+<h2 id="enums-15"><a class="header" href="#enums-15">Enums</a></h2>
 <h3 id="pub-enum-exchangeerror"><a class="header" href="#pub-enum-exchangeerror"><code>pub enum ExchangeError</code></a></h3>
 <pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
 </span><span class="boring">fn main() {
@@ -2139,7 +2202,7 @@ response unchanged.</p>
 filter convention.  Price and quantity normalization floors toward zero to
 the permitted increment: normalization never increases an order’s price or
 exposure. Callers must submit the returned values, not the original input.</p>
-<h2 id="structs-21"><a class="header" href="#structs-21">Structs</a></h2>
+<h2 id="structs-22"><a class="header" href="#structs-22">Structs</a></h2>
 <h3 id="pub-struct-normalizedlimitorder"><a class="header" href="#pub-struct-normalizedlimitorder"><code>pub struct NormalizedLimitOrder</code></a></h3>
 <pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
 </span><span class="boring">fn main() {
@@ -2181,7 +2244,7 @@ exposure. Callers must submit the returned values, not the original input.</p>
 <p>Authenticated Binance exchange implementation.
 Provides REST order placement, account queries, and WebSocket-backed
 market data streaming via the [<code>Binance</code>] struct.</p>
-<h2 id="structs-22"><a class="header" href="#structs-22">Structs</a></h2>
+<h2 id="structs-23"><a class="header" href="#structs-23">Structs</a></h2>
 <h3 id="pub-struct-binance"><a class="header" href="#pub-struct-binance"><code>pub struct Binance</code></a></h3>
 <pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
 </span><span class="boring">fn main() {
@@ -2201,7 +2264,7 @@ market data streaming via the [<code>Binance</code>] struct.</p>
 <p>Read-only Binance exchange for public market data.
 [<code>BinancePublic</code>] implements the [<code>Exchange</code>] trait without authentication,
 supporting trade/depth subscriptions via combined WebSocket streams.</p>
-<h2 id="structs-23"><a class="header" href="#structs-23">Structs</a></h2>
+<h2 id="structs-24"><a class="header" href="#structs-24">Structs</a></h2>
 <h3 id="pub-struct-binancepublic"><a class="header" href="#pub-struct-binancepublic"><code>pub struct BinancePublic</code></a></h3>
 <pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
 </span><span class="boring">fn main() {
@@ -2229,7 +2292,7 @@ into [<code>StreamMsg</code>] variants using simd-json.</p>
 <p>Strict parser for Binance USDⓈ-M Futures user-data events.</p>
 <p>It owns the listen-key lifecycle as well as strict payload decoding. Socket
 producers use a bounded crossbeam ingress and never wait for the engine.</p>
-<h2 id="enums-15"><a class="header" href="#enums-15">Enums</a></h2>
+<h2 id="enums-16"><a class="header" href="#enums-16">Enums</a></h2>
 <h3 id="pub-enum-userdataparseerror"><a class="header" href="#pub-enum-userdataparseerror"><code>pub enum UserDataParseError</code></a></h3>
 <pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
 </span><span class="boring">fn main() {
@@ -2278,7 +2341,7 @@ Maintains a persistent WSS connection with request/response routing.
 Reconnection is deliberately owned by the caller: pending order outcomes
 must be reconciled before a new connection can safely retry work.
 request/response routing, and HMAC-SHA256 signed authenticated requests.</p>
-<h2 id="structs-24"><a class="header" href="#structs-24">Structs</a></h2>
+<h2 id="structs-25"><a class="header" href="#structs-25">Structs</a></h2>
 <h3 id="pub-struct-wsclient"><a class="header" href="#pub-struct-wsclient"><code>pub struct WsClient</code></a></h3>
 <pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
 </span><span class="boring">fn main() {
@@ -2320,7 +2383,7 @@ fails closed.</p>
 <p>The types here are still useful now: they keep private-key ownership out of
 the exchange adapter, bind a signer to an account, validate order intents,
 and provide one place to add a reviewed signing implementation later.</p>
-<h2 id="structs-25"><a class="header" href="#structs-25">Structs</a></h2>
+<h2 id="structs-26"><a class="header" href="#structs-26">Structs</a></h2>
 <h3 id="pub-struct-hyperliquidsignature"><a class="header" href="#pub-struct-hyperliquidsignature"><code>pub struct HyperliquidSignature</code></a></h3>
 <pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
 </span><span class="boring">fn main() {
@@ -2382,6 +2445,16 @@ any network side effect occurs.</p>
 <span class="boring">}</span></code></pre>
 <p>Inputs captured immediately before signing. An absent or stale market view
 is a hard execution failure, never a reason to reuse a last known quote.</p>
+<h3 id="pub-struct-openorderreconciliation"><a class="header" href="#pub-struct-openorderreconciliation"><code>pub struct OpenOrderReconciliation</code></a></h3>
+<pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>pub struct OpenOrderReconciliation {
+    pub missing_expected_ids: Vec &lt; String &gt;,
+};
+<span class="boring">}</span></code></pre>
+<p>Result of comparing journal-tracked active exchange IDs to the
+authoritative <code>openOrders</code> snapshot. Missing IDs are ambiguous until a
+terminal fill/cancel record is independently observed.</p>
 <h3 id="pub-struct-hyperliquidexecution"><a class="header" href="#pub-struct-hyperliquidexecution"><code>pub struct HyperliquidExecution</code></a></h3>
 <pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
 </span><span class="boring">fn main() {
@@ -2397,7 +2470,7 @@ is a hard execution failure, never a reason to reuse a last known quote.</p>
 Public-data methods work through [<code>HyperliquidPublic</code>]. Mutating methods
 reject until canonical action encoding, signing vectors, submission, and
 reconciliation are all implemented together.</p>
-<h2 id="enums-16"><a class="header" href="#enums-16">Enums</a></h2>
+<h2 id="enums-17"><a class="header" href="#enums-17">Enums</a></h2>
 <h3 id="pub-enum-hyperliquidnetwork"><a class="header" href="#pub-enum-hyperliquidnetwork"><code>pub enum HyperliquidNetwork</code></a></h3>
 <pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
 </span><span class="boring">fn main() {
@@ -2419,12 +2492,47 @@ reconciliation are all implemented together.</p>
 <p>Boundary for a future, protocol-reviewed Hyperliquid L1 action signer.
 <code>action_hash</code> must be produced by a canonical encoder with official test
 vectors.  This crate intentionally does not manufacture it yet.</p>
+<h2 id="functions-13"><a class="header" href="#functions-13">Functions</a></h2>
+<h3 id="pub-fn-reconcile_open_orders"><a class="header" href="#pub-fn-reconcile_open_orders"><code>pub fn reconcile_open_orders</code></a></h3>
+<pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>pub fn reconcile_open_orders(...) { ... }
+<span class="boring">}</span></code></pre>
 <div style="break-before: page; page-break-before: always;"></div>
 <h1 id="module-hyperliquidmod"><a class="header" href="#module-hyperliquidmod">Module: <code>hyperliquid/mod</code></a></h1>
 <blockquote>
 <p>Source: <code>hyperliquid/mod.rs</code></p>
 </blockquote>
 <p>Hyperliquid exchange adapters.</p>
+<div style="break-before: page; page-break-before: always;"></div>
+<h1 id="module-hyperliquidpreflight"><a class="header" href="#module-hyperliquidpreflight">Module: <code>hyperliquid/preflight</code></a></h1>
+<blockquote>
+<p>Source: <code>hyperliquid/preflight.rs</code></p>
+</blockquote>
+<p>Fail-closed market-context checks for authenticated execution.</p>
+<p>This module is deliberately transport-free: a caller must bind an order to
+a specific, fresh, finite market observation before it is signed.  A wall
+clock timestamp alone is not evidence that a quote is usable for an order.</p>
+<h2 id="structs-27"><a class="header" href="#structs-27">Structs</a></h2>
+<h3 id="pub-struct-marketsnapshot"><a class="header" href="#pub-struct-marketsnapshot"><code>pub struct MarketSnapshot</code></a></h3>
+<pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>pub struct MarketSnapshot {
+    pub symbol: String,
+    pub observed_at: DateTime &lt; Utc &gt;,
+    pub reference_price: f64,
+};
+<span class="boring">}</span></code></pre>
+<p>Immutable quote evidence captured at the decision boundary.</p>
+<h3 id="pub-struct-marketcontextpolicy"><a class="header" href="#pub-struct-marketcontextpolicy"><code>pub struct MarketContextPolicy</code></a></h3>
+<pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>pub struct MarketContextPolicy {
+    pub max_age: Duration,
+    pub max_limit_deviation_bps: u32,
+};
+<span class="boring">}</span></code></pre>
+<p>Explicit bounds for accepting a market observation for execution.</p>
 <div style="break-before: page; page-break-before: always;"></div>
 <h1 id="module-hyperliquidpublic"><a class="header" href="#module-hyperliquidpublic">Module: <code>hyperliquid/public</code></a></h1>
 <blockquote>
@@ -2434,7 +2542,7 @@ vectors.  This crate intentionally does not manufacture it yet.</p>
 <p>Subscribes to the official <code>trades</code> and <code>l2Book</code> WebSocket feeds. Trading
 is deliberately rejected here: Hyperliquid requires EIP-712 action signing,
 which must be implemented as a dedicated authenticated adapter.</p>
-<h2 id="structs-26"><a class="header" href="#structs-26">Structs</a></h2>
+<h2 id="structs-28"><a class="header" href="#structs-28">Structs</a></h2>
 <h3 id="pub-struct-hyperliquidpublic"><a class="header" href="#pub-struct-hyperliquidpublic"><code>pub struct HyperliquidPublic</code></a></h3>
 <pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
 </span><span class="boring">fn main() {
@@ -2451,7 +2559,7 @@ which must be implemented as a dedicated authenticated adapter.</p>
 <p>This covers the EIP-712 envelope and the narrow limit-order action shape
 needed by the first execution path. Each wire representation is fixed by a
 protocol test vector before it becomes usable by an adapter.</p>
-<h2 id="functions-13"><a class="header" href="#functions-13">Functions</a></h2>
+<h2 id="functions-14"><a class="header" href="#functions-14">Functions</a></h2>
 <h3 id="pub-fn-limit_order_connection_id"><a class="header" href="#pub-fn-limit_order_connection_id"><code>pub fn limit_order_connection_id</code></a></h3>
 <pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
 </span><span class="boring">fn main() {
@@ -2490,7 +2598,7 @@ shape. <code>v</code> is normalized to 27 or 28 for the exchange API.</p>
 <p>The WebSocket subscriptions are read-only, but their payloads are part of
 the execution integrity boundary. A malformed event, disconnect, or full
 ingress queue therefore emits <code>ReconcileRequired</code> before reconnecting.</p>
-<h2 id="enums-17"><a class="header" href="#enums-17">Enums</a></h2>
+<h2 id="enums-18"><a class="header" href="#enums-18">Enums</a></h2>
 <h3 id="pub-enum-userdataparseerror-1"><a class="header" href="#pub-enum-userdataparseerror-1"><code>pub enum UserDataParseError</code></a></h3>
 <pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
 </span><span class="boring">fn main() {
@@ -2499,7 +2607,7 @@ ingress queue therefore emits <code>ReconcileRequired</code> before reconnecting
     Invalid(&amp; 'static str,),
 }
 <span class="boring">}</span></code></pre>
-<h2 id="functions-14"><a class="header" href="#functions-14">Functions</a></h2>
+<h2 id="functions-15"><a class="header" href="#functions-15">Functions</a></h2>
 <h3 id="pub-fn-start_user_data_stream-1"><a class="header" href="#pub-fn-start_user_data_stream-1"><code>pub fn start_user_data_stream</code></a></h3>
 <pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
 </span><span class="boring">fn main() {
@@ -2530,7 +2638,7 @@ silently understate fee and position accounting.</p>
 <p>Money Flow Index (MFI) indicator.
 A volume-weighted momentum oscillator that uses price and volume to identify
 overbought/oversold conditions. [<code>Mfi</code>] tracks positive and negative money flow.</p>
-<h2 id="structs-27"><a class="header" href="#structs-27">Structs</a></h2>
+<h2 id="structs-29"><a class="header" href="#structs-29">Structs</a></h2>
 <h3 id="pub-struct-mfi"><a class="header" href="#pub-struct-mfi"><code>pub struct Mfi</code></a></h3>
 <pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
 </span><span class="boring">fn main() {
@@ -2598,7 +2706,7 @@ overbought/oversold conditions. [<code>Mfi</code>] tracks positive and negative 
 <p>Technical analysis indicators for trading strategies.
 Provides moving averages, oscillators, volatility measures, flow indicators,
 and structure detection — all operating on the shared [<code>Candle</code>] type.</p>
-<h2 id="structs-28"><a class="header" href="#structs-28">Structs</a></h2>
+<h2 id="structs-30"><a class="header" href="#structs-30">Structs</a></h2>
 <h3 id="pub-struct-candle"><a class="header" href="#pub-struct-candle"><code>pub struct Candle</code></a></h3>
 <pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
 </span><span class="boring">fn main() {
@@ -2618,7 +2726,7 @@ and structure detection — all operating on the shared [<code>Candle</code>] ty
 <p>Moving average indicators.
 Provides [<code>Sma</code>] (Simple), [<code>Ema</code>] (Exponential), [<code>Wma</code>] (Weighted),
 and [<code>Hma</code>] (Hull) moving averages with O(1) incremental updates.</p>
-<h2 id="structs-29"><a class="header" href="#structs-29">Structs</a></h2>
+<h2 id="structs-31"><a class="header" href="#structs-31">Structs</a></h2>
 <h3 id="pub-struct-sma"><a class="header" href="#pub-struct-sma"><code>pub struct Sma</code></a></h3>
 <pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
 </span><span class="boring">fn main() {
@@ -2674,7 +2782,7 @@ and [<code>Hma</code>] (Hull) moving averages with O(1) incremental updates.</p>
 <p>Oscillator indicators for momentum and mean-reversion analysis.
 Includes [<code>Rsi</code>] (Relative Strength Index), [<code>Stochastic</code>], [<code>Cci</code>]
 (Commodity Channel Index), and [<code>WilliamsR</code>] (%R).</p>
-<h2 id="structs-30"><a class="header" href="#structs-30">Structs</a></h2>
+<h2 id="structs-32"><a class="header" href="#structs-32">Structs</a></h2>
 <h3 id="pub-struct-rsi"><a class="header" href="#pub-struct-rsi"><code>pub struct Rsi</code></a></h3>
 <pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
 </span><span class="boring">fn main() {
@@ -2738,7 +2846,7 @@ Includes [<code>Rsi</code>] (Relative Strength Index), [<code>Stochastic</code>]
 <p>Source: <code>simd.rs</code></p>
 </blockquote>
 <p><em>No module documentation.</em></p>
-<h2 id="functions-15"><a class="header" href="#functions-15">Functions</a></h2>
+<h2 id="functions-16"><a class="header" href="#functions-16">Functions</a></h2>
 <h3 id="pub-fn-sum"><a class="header" href="#pub-fn-sum"><code>pub fn sum</code></a></h3>
 <pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
 </span><span class="boring">fn main() {
@@ -2777,7 +2885,7 @@ Includes [<code>Rsi</code>] (Relative Strength Index), [<code>Stochastic</code>]
 <p>Market structure indicators.
 Provides [<code>Adx</code>] (Average Directional Index) for trend strength measurement
 and [<code>Psar</code>] (Parabolic SAR) for trend direction and reversal points.</p>
-<h2 id="structs-31"><a class="header" href="#structs-31">Structs</a></h2>
+<h2 id="structs-33"><a class="header" href="#structs-33">Structs</a></h2>
 <h3 id="pub-struct-adx"><a class="header" href="#pub-struct-adx"><code>pub struct Adx</code></a></h3>
 <pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
 </span><span class="boring">fn main() {
@@ -2835,7 +2943,7 @@ and [<code>Psar</code>] (Parabolic SAR) for trend direction and reversal points.
 <p>Volatility indicators.
 Provides [<code>TrueRange</code>], [<code>Atr</code>] (Average True Range), [<code>BollingerBands</code>],
 and [<code>KeltnerChannel</code>] for measuring and visualizing market volatility.</p>
-<h2 id="structs-32"><a class="header" href="#structs-32">Structs</a></h2>
+<h2 id="structs-34"><a class="header" href="#structs-34">Structs</a></h2>
 <h3 id="pub-struct-truerange"><a class="header" href="#pub-struct-truerange"><code>pub struct TrueRange</code></a></h3>
 <pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
 </span><span class="boring">fn main() {
@@ -2898,7 +3006,7 @@ and [<code>KeltnerChannel</code>] for measuring and visualizing market volatilit
 <p>Structured trade logging.
 [<code>TradeLog</code>] writes JSON-formatted fill records to a CSV-compatible
 log file for post-session analysis and reconciliation.</p>
-<h2 id="structs-33"><a class="header" href="#structs-33">Structs</a></h2>
+<h2 id="structs-35"><a class="header" href="#structs-35">Structs</a></h2>
 <h3 id="pub-struct-tradelog"><a class="header" href="#pub-struct-tradelog"><code>pub struct TradeLog</code></a></h3>
 <pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
 </span><span class="boring">fn main() {
@@ -2914,7 +3022,7 @@ log file for post-session analysis and reconciliation.</p>
 <p>Risk control enforcement at runtime.
 [<code>RiskControls</code>] validates orders and positions against configured limits
 (max position size, max drawdown, order frequency, daily loss, cooldown).</p>
-<h2 id="structs-34"><a class="header" href="#structs-34">Structs</a></h2>
+<h2 id="structs-36"><a class="header" href="#structs-36">Structs</a></h2>
 <h3 id="pub-struct-riskcontrols"><a class="header" href="#pub-struct-riskcontrols"><code>pub struct RiskControls</code></a></h3>
 <pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
 </span><span class="boring">fn main() {
@@ -2944,7 +3052,7 @@ log file for post-session analysis and reconciliation.</p>
 <p>Risk management configuration and controls.
 Defines [<code>RiskConfig</code>] for parameterizing position sizing, drawdown limits,
 order frequency, daily loss caps, and cooldown periods.</p>
-<h2 id="structs-35"><a class="header" href="#structs-35">Structs</a></h2>
+<h2 id="structs-37"><a class="header" href="#structs-37">Structs</a></h2>
 <h3 id="pub-struct-riskconfig"><a class="header" href="#pub-struct-riskconfig"><code>pub struct RiskConfig</code></a></h3>
 <pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
 </span><span class="boring">fn main() {
@@ -2966,7 +3074,7 @@ order frequency, daily loss caps, and cooldown periods.</p>
 worker reads the durable journal and delivers snapshots through a bounded
 crossbeam channel; the engine’s latency-sensitive loop never waits on HTTP,
 a mutex, or a dashboard client.</p>
-<h2 id="functions-16"><a class="header" href="#functions-16">Functions</a></h2>
+<h2 id="functions-17"><a class="header" href="#functions-17">Functions</a></h2>
 <h3 id="pub-fn-start"><a class="header" href="#pub-fn-start"><code>pub fn start</code></a></h3>
 <pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
 </span><span class="boring">fn main() {
@@ -2997,7 +3105,7 @@ mock/public/live exchange mode, and launches the main engine event loop.</p>
 [<code>MockExchange</code>] simulates order matching, position tracking, and price
 streams without network dependencies — suitable for integration tests
 and strategy dry-runs.</p>
-<h2 id="structs-36"><a class="header" href="#structs-36">Structs</a></h2>
+<h2 id="structs-38"><a class="header" href="#structs-38">Structs</a></h2>
 <h3 id="pub-struct-mockexchange"><a class="header" href="#pub-struct-mockexchange"><code>pub struct MockExchange</code></a></h3>
 <pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
 </span><span class="boring">fn main() {
@@ -3015,7 +3123,7 @@ and strategy dry-runs.</p>
 <p>Local EVM wallet onboarding for Hyperliquid.</p>
 <p>Private keys are stored only in the operating system credential store. The
 local profile contains the public address and no signing secret.</p>
-<h2 id="structs-37"><a class="header" href="#structs-37">Structs</a></h2>
+<h2 id="structs-39"><a class="header" href="#structs-39">Structs</a></h2>
 <h3 id="pub-struct-walletprofile"><a class="header" href="#pub-struct-walletprofile"><code>pub struct WalletProfile</code></a></h3>
 <pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
 </span><span class="boring">fn main() {
@@ -3033,7 +3141,7 @@ local profile contains the public address and no signing secret.</p>
 <span class="boring">}</span></code></pre>
 <p>Signer backed by the OS credential store. It retains only the public address
 between calls; the secret is loaded and zeroized for each signature.</p>
-<h2 id="functions-17"><a class="header" href="#functions-17">Functions</a></h2>
+<h2 id="functions-18"><a class="header" href="#functions-18">Functions</a></h2>
 <h3 id="pub-fn-load_profile"><a class="header" href="#pub-fn-load_profile"><code>pub fn load_profile</code></a></h3>
 <pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
 </span><span class="boring">fn main() {
