@@ -20,6 +20,7 @@ use crate::r#trait::{
     Exchange, ExchangeError, OrderRequest, OrderStatus, Result, Stream, StreamMsg,
 };
 use quince_core::types::{AccountInfo, Order, OrderType};
+use std::collections::HashMap;
 use std::sync::{
     atomic::{AtomicU64, Ordering},
     Arc,
@@ -85,6 +86,65 @@ pub struct ValidatedOrder {
     pub order: Order,
     pub network: HyperliquidNetwork,
     pub account_address: String,
+}
+
+/// Authoritative perp asset metadata used to bind a user coin to its protocol
+/// asset index and permitted size precision.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HyperliquidPerpMeta {
+    assets: HashMap<String, PerpAsset>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PerpAsset {
+    pub index: u32,
+    pub size_decimals: u8,
+}
+
+impl HyperliquidPerpMeta {
+    pub fn parse(value: &serde_json::Value) -> Result<Self> {
+        let universe = value
+            .get("universe")
+            .and_then(serde_json::Value::as_array)
+            .ok_or_else(|| ExchangeError::Rest("missing Hyperliquid meta universe".into()))?;
+        let mut assets = HashMap::with_capacity(universe.len());
+        for (index, asset) in universe.iter().enumerate() {
+            let name = asset
+                .get("name")
+                .and_then(serde_json::Value::as_str)
+                .filter(|name| {
+                    !name.is_empty() && name.bytes().all(|byte| byte.is_ascii_alphanumeric())
+                })
+                .ok_or_else(|| ExchangeError::Rest("invalid Hyperliquid meta asset name".into()))?;
+            let size_decimals = asset
+                .get("szDecimals")
+                .and_then(serde_json::Value::as_u64)
+                .filter(|value| *value <= 8)
+                .ok_or_else(|| ExchangeError::Rest("invalid Hyperliquid meta szDecimals".into()))?
+                as u8;
+            if assets
+                .insert(
+                    name.to_ascii_uppercase(),
+                    PerpAsset {
+                        index: index as u32,
+                        size_decimals,
+                    },
+                )
+                .is_some()
+            {
+                return Err(ExchangeError::Rest(
+                    "duplicate Hyperliquid meta asset".into(),
+                ));
+            }
+        }
+        Ok(Self { assets })
+    }
+
+    pub fn asset(&self, coin: &str) -> Result<&PerpAsset> {
+        self.assets
+            .get(&coin.to_ascii_uppercase())
+            .ok_or_else(|| ExchangeError::Order(format!("unknown Hyperliquid perp asset {coin}")))
+    }
 }
 
 /// Authenticated adapter shell.
@@ -395,6 +455,22 @@ mod tests {
         let first = execution.next_nonce();
         let second = execution.next_nonce();
         assert!(second > first);
+    }
+
+    #[test]
+    fn meta_binds_coin_to_its_authoritative_protocol_index() {
+        let meta = HyperliquidPerpMeta::parse(&serde_json::json!({
+            "universe": [{"name": "BTC", "szDecimals": 5}, {"name": "ETH", "szDecimals": 4}]
+        }))
+        .unwrap();
+        assert_eq!(
+            meta.asset("btc").unwrap(),
+            &PerpAsset {
+                index: 0,
+                size_decimals: 5
+            }
+        );
+        assert!(meta.asset("SOL").is_err());
     }
 
     #[tokio::test]
