@@ -19,6 +19,7 @@ use super::{public::HyperliquidPublic, signing};
 use crate::r#trait::{
     Exchange, ExchangeError, OrderRequest, OrderStatus, Result, Stream, StreamMsg,
 };
+use chrono::{DateTime, Duration, Utc};
 use quince_core::types::{AccountInfo, Order, OrderType, Side};
 use std::collections::HashMap;
 use std::sync::{
@@ -116,6 +117,29 @@ pub struct PreparedHyperliquidOrder {
     pub client_order_id: String,
     pub nonce: u64,
     pub payload: serde_json::Value,
+}
+
+/// Inputs captured immediately before signing. An absent or stale market view
+/// is a hard execution failure, never a reason to reuse a last known quote.
+#[derive(Debug, Clone)]
+pub struct ExecutionPreflight {
+    pub market_observed_at: DateTime<Utc>,
+    pub max_market_age: Duration,
+}
+
+impl ExecutionPreflight {
+    pub fn check(&self, now: DateTime<Utc>) -> Result<()> {
+        if self.max_market_age <= Duration::zero() {
+            return Err(ExchangeError::Order("invalid market-data TTL".into()));
+        }
+        let age = now.signed_duration_since(self.market_observed_at);
+        if age < Duration::zero() || age > self.max_market_age {
+            return Err(ExchangeError::Order(
+                "Hyperliquid execution blocked: market data is stale or clock-skewed".into(),
+            ));
+        }
+        Ok(())
+    }
 }
 
 impl HyperliquidPerpMeta {
@@ -284,7 +308,9 @@ impl HyperliquidExecution {
         &self,
         request: OrderRequest,
         meta: &HyperliquidPerpMeta,
+        market: &ExecutionPreflight,
     ) -> Result<PreparedHyperliquidOrder> {
+        self.check_preflight(&request.order, meta, market)?;
         self.validate_order(request.order.clone())?;
         if request.client_order_id.trim().is_empty() {
             return Err(ExchangeError::Order("missing client order id".into()));
@@ -318,6 +344,22 @@ impl HyperliquidExecution {
                 "vaultAddress": serde_json::Value::Null,
             }),
         })
+    }
+
+    /// Validates market freshness, intent and exchange metadata together.
+    /// Callers with a market-data timestamp must use this immediately before
+    /// creating a signed action.
+    pub fn check_preflight(
+        &self,
+        order: &Order,
+        meta: &HyperliquidPerpMeta,
+        market: &ExecutionPreflight,
+    ) -> Result<()> {
+        market.check(Utc::now())?;
+        validate_order(order)?;
+        meta.asset(&order.symbol)?;
+        meta.format_size(&order.symbol, order.qty)?;
+        Ok(())
     }
 
     /// Submits a previously journaled payload to Hyperliquid testnet only.
@@ -705,6 +747,10 @@ mod tests {
                     order: limit_order(),
                 },
                 &meta,
+                &ExecutionPreflight {
+                    market_observed_at: Utc::now(),
+                    max_market_age: Duration::seconds(1),
+                },
             )
             .unwrap();
         assert_eq!(prepared.payload["action"]["orders"][0]["a"], 0);
@@ -725,6 +771,23 @@ mod tests {
         assert!(execution
             .prepare_cancel("BTC", "not-an-oid", &meta)
             .is_err());
+    }
+
+    #[test]
+    fn preflight_rejects_stale_and_clock_skewed_market_data() {
+        let now = Utc::now();
+        assert!(ExecutionPreflight {
+            market_observed_at: now - Duration::seconds(2),
+            max_market_age: Duration::seconds(1),
+        }
+        .check(now)
+        .is_err());
+        assert!(ExecutionPreflight {
+            market_observed_at: now + Duration::seconds(1),
+            max_market_age: Duration::seconds(1),
+        }
+        .check(now)
+        .is_err());
     }
 
     #[test]
