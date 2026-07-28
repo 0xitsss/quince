@@ -9,6 +9,7 @@
 use crate::indicators::{parse_using, IndicatorBank};
 use crate::journal::{JournalError, JournalEvent, OrderJournal};
 use crate::orders::OrderManager;
+use crate::strategy_lifecycle::{DeploymentMode, StrategyLifecycle, StrategyRevision};
 use quince_core::types::*;
 use quince_exchange::r#trait::{Exchange, ExchangeError, OrderRequest, StreamMsg};
 use quince_logger::TradeLog;
@@ -54,6 +55,7 @@ pub struct Engine<E: Exchange> {
     order_manager: OrderManager,
     order_journal: OrderJournal,
     execution_halted: bool,
+    strategy_lifecycle: StrategyLifecycle,
     indicators: IndicatorBank,
 
     last_price: f64,
@@ -225,6 +227,12 @@ impl<E: Exchange> Engine<E> {
             )));
         }
         let order_journal = OrderJournal::open(&journal_path)?;
+        let mut strategy_lifecycle = StrategyLifecycle::default();
+        strategy_lifecycle
+            .deploy(StrategyRevision::new(1, [0_u8; 32], DeploymentMode::Live))
+            .map_err(|error| {
+                EngineError::Strategy(format!("initialize strategy lifecycle: {error}"))
+            })?;
 
         Ok(Self {
             exchange,
@@ -236,6 +244,7 @@ impl<E: Exchange> Engine<E> {
             order_manager: OrderManager::new(),
             order_journal,
             execution_halted: false,
+            strategy_lifecycle,
             indicators,
             last_price: 0.0,
             daily_pnl: 0.0,
@@ -250,6 +259,17 @@ impl<E: Exchange> Engine<E> {
             #[cfg(feature = "profiling")]
             profiling_frame: 0,
         })
+    }
+
+    /// Atomically activates a prevalidated strategy revision. Shadow revisions
+    /// continue evaluation but are denied at every exchange dispatch point.
+    pub fn deploy_strategy_revision(
+        &mut self,
+        revision: StrategyRevision,
+    ) -> Result<(), EngineError> {
+        self.strategy_lifecycle
+            .deploy(revision)
+            .map_err(|error| EngineError::Strategy(error.to_string()))
     }
 
     pub async fn run(&mut self) -> Result<(), EngineError> {
@@ -463,6 +483,10 @@ impl<E: Exchange> Engine<E> {
     }
 
     async fn on_strategy_order(&mut self, order: Order) {
+        if !self.strategy_lifecycle.execution_enabled() {
+            tracing::info!(symbol = %order.symbol, "shadow strategy order suppressed before journal/exchange");
+            return;
+        }
         if self.execution_halted {
             tracing::error!("refusing order: execution is halted after an order-journal failure");
             return;
@@ -789,6 +813,9 @@ impl<E: Exchange> Engine<E> {
     }
 
     async fn check_sl_tp(&mut self) {
+        if !self.strategy_lifecycle.execution_enabled() {
+            return;
+        }
         let price = self.last_price;
         if !price.is_finite() || price <= 0.0 {
             return;
