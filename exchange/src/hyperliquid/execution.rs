@@ -320,6 +320,38 @@ impl HyperliquidExecution {
         })
     }
 
+    /// Submits a previously journaled payload to Hyperliquid testnet only.
+    /// Mainnet execution stays explicitly disabled until the full order
+    /// reconciler owns ambiguous transport outcomes.
+    pub async fn submit_testnet_order(
+        &self,
+        prepared: &PreparedHyperliquidOrder,
+    ) -> Result<String> {
+        if self.network != HyperliquidNetwork::Testnet {
+            return Err(ExchangeError::Order(
+                "refusing Hyperliquid mainnet submission; testnet validation is required".into(),
+            ));
+        }
+        let response: serde_json::Value = reqwest::Client::new()
+            .post(self.exchange_url())
+            .json(&prepared.payload)
+            .send()
+            .await
+            .map_err(|error| {
+                ExchangeError::Rest(format!("submit Hyperliquid testnet order: {error}"))
+            })?
+            .error_for_status()
+            .map_err(|error| {
+                ExchangeError::Rest(format!("Hyperliquid testnet order status: {error}"))
+            })?
+            .json()
+            .await
+            .map_err(|error| {
+                ExchangeError::Rest(format!("parse Hyperliquid testnet order: {error}"))
+            })?;
+        parse_order_id(&response)
+    }
+
     /// Validates an intent before it can enter a future signing queue.
     ///
     /// Validation is purposefully strict: unsupported stop-loss/take-profit
@@ -367,6 +399,34 @@ fn format_wire_number(value: f64) -> Result<String> {
         .trim_end_matches('0')
         .trim_end_matches('.')
         .to_owned())
+}
+
+fn parse_order_id(response: &serde_json::Value) -> Result<String> {
+    if response.get("status").and_then(serde_json::Value::as_str) != Some("ok") {
+        return Err(ExchangeError::Order(format!(
+            "Hyperliquid rejected order: {}",
+            response
+                .get("response")
+                .and_then(|value| value.get("data"))
+                .unwrap_or(response)
+        )));
+    }
+    let status = response
+        .pointer("/response/data/statuses/0")
+        .and_then(serde_json::Value::as_object)
+        .ok_or_else(|| ExchangeError::Order("missing Hyperliquid order status".into()))?;
+    for outcome in ["resting", "filled"] {
+        if let Some(oid) = status
+            .get(outcome)
+            .and_then(|value| value.get("oid"))
+            .and_then(|value| value.as_u64())
+        {
+            return Ok(oid.to_string());
+        }
+    }
+    Err(ExchangeError::Order(
+        "Hyperliquid order response was neither resting nor filled".into(),
+    ))
 }
 
 fn validate_order(order: &Order) -> Result<()> {
@@ -621,6 +681,21 @@ mod tests {
         assert_eq!(prepared.payload["action"]["orders"][0]["a"], 0);
         assert_eq!(prepared.payload["signature"]["v"], 27);
         assert_eq!(prepared.payload["nonce"], prepared.nonce);
+    }
+
+    #[test]
+    fn order_response_requires_a_terminal_exchange_order_id() {
+        assert_eq!(
+            parse_order_id(&serde_json::json!({
+                "status": "ok", "response": {"data": {"statuses": [{"filled": {"oid": 42}}]}}
+            }))
+            .unwrap(),
+            "42"
+        );
+        assert!(parse_order_id(
+            &serde_json::json!({"status": "ok", "response": {"data": {"statuses": [{}]}}})
+        )
+        .is_err());
     }
 
     #[tokio::test]
