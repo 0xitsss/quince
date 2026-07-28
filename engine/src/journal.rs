@@ -12,7 +12,7 @@
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeSet;
 use std::fs::{File, OpenOptions};
-use std::io::{BufRead, BufReader, Write};
+use std::io::{BufRead, BufReader, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -95,10 +95,13 @@ pub struct OrderJournal {
 
 impl OrderJournal {
     /// Open (or create) a journal and continue its monotonically increasing
-    /// record sequence.  A partial final record is ignored because it can only
+    /// record sequence. A partial final record is ignored because it can only
     /// result from an interrupted append; all completed records are checked.
+    /// The ignored tail is physically removed before appending; otherwise a
+    /// new record would concatenate onto it and corrupt the journal.
     pub fn open(path: impl AsRef<Path>) -> Result<Self> {
         let path = path.as_ref().to_path_buf();
+        Self::discard_torn_tail(&path)?;
         let prior = Self::recover(&path)?;
         let next_sequence = prior
             .last()
@@ -110,6 +113,49 @@ impl OrderJournal {
             file,
             next_sequence,
         })
+    }
+
+    /// Remove only a final line without a newline terminator. A malformed
+    /// completed line is deliberately preserved so recovery fails closed.
+    fn discard_torn_tail(path: &Path) -> Result<()> {
+        let mut file = match OpenOptions::new().read(true).write(true).open(path) {
+            Ok(file) => file,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+            Err(error) => return Err(error.into()),
+        };
+        let file_len = file.metadata()?.len();
+        if file_len == 0 {
+            return Ok(());
+        }
+
+        file.seek(SeekFrom::End(-1))?;
+        let mut last_byte = [0_u8; 1];
+        file.read_exact(&mut last_byte)?;
+        if last_byte[0] == b'\n' {
+            return Ok(());
+        }
+
+        const CHUNK_SIZE: u64 = 8 * 1024;
+        let mut search_end = file_len;
+        let truncate_at = loop {
+            let chunk_start = search_end.saturating_sub(CHUNK_SIZE);
+            let chunk_len = (search_end - chunk_start) as usize;
+            let mut chunk = vec![0_u8; chunk_len];
+            file.seek(SeekFrom::Start(chunk_start))?;
+            file.read_exact(&mut chunk)?;
+
+            if let Some(newline) = chunk.iter().rposition(|byte| *byte == b'\n') {
+                break chunk_start + newline as u64 + 1;
+            }
+            if chunk_start == 0 {
+                break 0;
+            }
+            search_end = chunk_start;
+        };
+
+        file.set_len(truncate_at)?;
+        file.sync_data()?;
+        Ok(())
     }
 
     pub fn path(&self) -> &Path {
@@ -278,6 +324,29 @@ mod tests {
 
         let records = OrderJournal::recover(&path).unwrap();
         assert_eq!(records.len(), 1);
+        fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn reopen_discards_torn_tail_before_appending() {
+        let path = temp_path("discard-torn-tail");
+        let mut journal = OrderJournal::open(&path).unwrap();
+        journal.append(registered("qc_1")).unwrap();
+        drop(journal);
+
+        let mut file = OpenOptions::new().append(true).open(&path).unwrap();
+        file.write_all(br#"{"version":1,"sequence":"#).unwrap();
+        file.sync_data().unwrap();
+        drop(file);
+
+        let mut journal = OrderJournal::open(&path).unwrap();
+        assert_eq!(journal.append(registered("qc_2")).unwrap().sequence, 1);
+        drop(journal);
+
+        let records = OrderJournal::recover(&path).unwrap();
+        assert_eq!(records.len(), 2);
+        assert_eq!(records[0].event, registered("qc_1"));
+        assert_eq!(records[1].event, registered("qc_2"));
         fs::remove_file(path).unwrap();
     }
 

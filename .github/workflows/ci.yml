@@ -50,6 +50,9 @@ jobs:
       - name: release metadata policy
         run: bash tools/verify_release_metadata.sh
 
+      - name: release version contract
+        run: bash tools/test_verify_release_version.sh
+
       - name: cargo +nightly fmt
         run: cargo +nightly fmt --all -- --check
 

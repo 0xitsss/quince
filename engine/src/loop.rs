@@ -348,6 +348,7 @@ impl<E: Exchange> Engine<E> {
             StreamMsg::Trade(trade) => {
                 #[cfg(feature = "profiling")]
                 puffin::profile_scope!("StreamMsg::Trade");
+                self.risk.record_market_data();
                 self.last_price = trade.price;
                 for &(slot, v) in self.indicators.on_trade(&trade) {
                     self.qfl.set_indicator_by_slot(slot, v);
@@ -357,6 +358,7 @@ impl<E: Exchange> Engine<E> {
             StreamMsg::Depth(depth) => {
                 #[cfg(feature = "profiling")]
                 puffin::profile_scope!("StreamMsg::Depth");
+                self.risk.record_market_data();
                 for &(slot, v) in self.indicators.on_depth(&depth) {
                     self.qfl.set_indicator_by_slot(slot, v);
                 }
@@ -365,6 +367,7 @@ impl<E: Exchange> Engine<E> {
             StreamMsg::MarkPrice { price, .. } => {
                 #[cfg(feature = "profiling")]
                 puffin::profile_scope!("StreamMsg::MarkPrice");
+                self.risk.record_market_data();
                 self.last_price = price;
             }
             StreamMsg::OrderUpdate(fill) => {

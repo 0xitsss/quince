@@ -26,6 +26,10 @@ jobs:
       version: ${{ steps.vars.outputs.version }}
       prerelease: ${{ steps.vars.outputs.prerelease }}
     steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
       - name: Resolve version
         id: vars
         shell: bash
@@ -42,6 +46,7 @@ jobs:
             echo "Release version is empty" >&2
             exit 1
           fi
+          bash tools/verify_release_version.sh "${VERSION}"
           if [[ "${VERSION}" == *-* ]]; then
             PRERELEASE=true
           else

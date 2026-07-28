@@ -8,6 +8,8 @@
 use quince_core::types::*;
 use std::time::{Duration, Instant};
 
+const DEFAULT_MAX_MARKET_DATA_AGE: Duration = Duration::from_secs(5);
+
 pub struct RiskControls {
     pub max_position_size: f64,
     pub max_drawdown: f64,
@@ -21,6 +23,8 @@ pub struct RiskControls {
     pub(super) peak_equity: f64,
     pub(super) in_cooldown: bool,
     pub(super) cooldown_end: Instant,
+    last_market_data_at: Option<Instant>,
+    max_market_data_age: Duration,
     paused: bool,
     pause_reason: Option<String>,
 }
@@ -39,6 +43,8 @@ impl RiskControls {
             peak_equity: 0.0,
             in_cooldown: false,
             cooldown_end: Instant::now(),
+            last_market_data_at: None,
+            max_market_data_age: DEFAULT_MAX_MARKET_DATA_AGE,
             paused: false,
             pause_reason: None,
         }
@@ -63,10 +69,45 @@ impl RiskControls {
         self.paused
     }
 
+    /// Records a fresh trade, mark-price, or order-book observation.
+    ///
+    /// A later call to [`Self::check_order`] requires such an observation to
+    /// be recent. This prevents an evaluation timer from trading on a frozen
+    /// market-data stream.
+    pub fn record_market_data(&mut self) {
+        self.last_market_data_at = Some(Instant::now());
+    }
+
+    /// Sets the maximum permitted market-data age before new execution is
+    /// stopped. A zero duration deliberately makes the guard fail closed as
+    /// soon as the monotonic clock advances; callers should normally use a
+    /// small positive duration.
+    pub fn set_max_market_data_age(&mut self, max_age: Duration) {
+        self.max_market_data_age = max_age;
+    }
+
     fn reject_and_pause(&mut self, reason: impl Into<String>) -> Result<(), String> {
         let reason = reason.into();
         self.pause(reason.clone());
         Err(reason)
+    }
+
+    fn check_market_data_freshness(&mut self) -> Result<(), String> {
+        let Some(observed_at) = self.last_market_data_at else {
+            return self.reject_and_pause("market data has not been observed");
+        };
+        let now = Instant::now();
+        let Some(age) = now.checked_duration_since(observed_at) else {
+            return self.reject_and_pause("market data timestamp is invalid");
+        };
+        if age > self.max_market_data_age {
+            return self.reject_and_pause(format!(
+                "market data is stale: age {} ms exceeds limit {} ms",
+                age.as_millis(),
+                self.max_market_data_age.as_millis()
+            ));
+        }
+        Ok(())
     }
 
     pub fn check_order(
@@ -83,6 +124,8 @@ impl RiskControls {
                     .unwrap_or("operator action required")
             ));
         }
+
+        self.check_market_data_freshness()?;
 
         if self.in_cooldown {
             if Instant::now() < self.cooldown_end {
@@ -189,13 +232,15 @@ mod tests {
     }
 
     fn risk() -> RiskControls {
-        RiskControls::new(crate::RiskConfig {
+        let mut controls = RiskControls::new(crate::RiskConfig {
             max_position_size: 10.0,
             max_drawdown: 0.1,
             max_order_freq: 5,
             max_daily_loss: 1000.0,
             cooldown_after_loss_secs: 0,
-        })
+        });
+        controls.record_market_data();
+        controls
     }
 
     #[test]
@@ -385,5 +430,38 @@ mod tests {
             .expect_err("loss at the configured ceiling must stop trading");
         assert!(error.contains("daily loss"));
         assert!(r.is_paused());
+    }
+
+    #[test]
+    fn missing_market_data_latches_kill_switch() {
+        let mut r = RiskControls::new(crate::RiskConfig::default());
+
+        let error = r
+            .check_order(&make_order(1.0), 10_000.0, 0.0)
+            .expect_err("orders without a market-data observation must fail closed");
+        assert!(error.contains("market data has not been observed"));
+        assert!(r.is_paused());
+    }
+
+    #[test]
+    fn stale_market_data_latches_kill_switch_until_operator_resumes() {
+        let mut r = risk();
+        r.last_market_data_at =
+            Some(Instant::now() - r.max_market_data_age - Duration::from_millis(1));
+
+        let error = r
+            .check_order(&make_order(1.0), 10_000.0, 0.0)
+            .expect_err("stale market data must fail closed");
+        assert!(error.contains("market data is stale"));
+        assert!(r.is_paused());
+
+        r.record_market_data();
+        let error = r
+            .check_order(&make_order(1.0), 10_000.0, 0.0)
+            .expect_err("a fresh tick cannot silently clear a stale-data kill switch");
+        assert!(error.contains("market data is stale"));
+
+        r.resume();
+        assert!(r.check_order(&make_order(1.0), 10_000.0, 0.0).is_ok());
     }
 }
