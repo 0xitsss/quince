@@ -36,10 +36,10 @@
             const path_to_root = "";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-94a698bc.js";
+            window.path_to_searchindex_js = "searchindex-787521ec.js";
         </script>
         <!-- Start loading toc.js asap -->
-        <script src="toc-530840c5.js"></script>
+        <script src="toc-69e5c6fa.js"></script>
     </head>
     <body>
     <div id="mdbook-help-container">
@@ -1421,6 +1421,10 @@ infrastructure. Accessed through [<code>Vm::cold</code>].</p>
     pub running: bool,
     pub call_stack: [usize ; MAX_CALL_DEPTH],
     pub call_depth: u8,
+    instruction_budget: u32,
+    instructions_remaining: u32,
+    last_event_instruction_count: u32,
+    instruction_budget_exhausted: bool,
     pub code_ptr: * const u64,
     pub code_len: usize,
     pub consts_ptr: * const f64,
@@ -1476,12 +1480,22 @@ fields (<code>reg.i</code>, <code>reg.f</code>).</p>
 <p>Tail-call helper: advance PC, fetch next instruction, dispatch.
 Every normal handler ends with <code>become dispatch_next(vm, instr)</code>.
 Control-flow handlers (jmp, jz, jnz, call, ret) set <code>vm.pc</code> directly,
-then fetch + <code>become DISPATCH_TABLE[...]</code> inline.</p>
+then tail-call [<code>dispatch_current</code>] to charge and dispatch the target.</p>
 <h1 id="safety-1"><a class="header" href="#safety-1">Safety</a></h1>
 <ul>
 <li><code>vm.code_ptr</code> must point to valid bytecode with at least <code>vm.pc + 1</code> instructions.</li>
 <li>Caller must ensure <code>vm</code> is in a consistent state before dispatching.</li>
 </ul>
+<h3 id="pub-fn-dispatch_current"><a class="header" href="#pub-fn-dispatch_current"><code>pub fn dispatch_current</code></a></h3>
+<pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>pub fn dispatch_current(...) { ... }
+<span class="boring">}</span></code></pre>
+<p>Dispatch the instruction at the current PC after charging it to the active
+event handler’s budget.</p>
+<h1 id="safety-2"><a class="header" href="#safety-2">Safety</a></h1>
+<p><code>vm.code_ptr</code> must point to valid bytecode at <code>vm.pc</code>; callers must only
+dispatch a VM initialized from a valid [<code>QfrProgram</code>].</p>
 <h2 id="constants-2"><a class="header" href="#constants-2">Constants</a></h2>
 <h3 id="pub-const-num_regs"><a class="header" href="#pub-const-num_regs"><code>pub const NUM_REGS</code></a></h3>
 <pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
@@ -1533,6 +1547,13 @@ then fetch + <code>become DISPATCH_TABLE[...]</code> inline.</p>
 </span><span class="boring">fn main() {
 </span>pub const MAX_EMA_STATES: usize = ...;
 <span class="boring">}</span></code></pre>
+<h3 id="pub-const-default_instruction_budget"><a class="header" href="#pub-const-default_instruction_budget"><code>pub const DEFAULT_INSTRUCTION_BUDGET</code></a></h3>
+<pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>pub const DEFAULT_INSTRUCTION_BUDGET: u32 = ...;
+<span class="boring">}</span></code></pre>
+<p>Maximum bytecode instructions one event handler may execute by default.
+This bounds strategy latency even when a source loop fails to make progress.</p>
 <h3 id="pub-const-reg_send_side"><a class="header" href="#pub-const-reg_send_side"><code>pub const REG_SEND_SIDE</code></a></h3>
 <pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
 </span><span class="boring">fn main() {
@@ -1975,7 +1996,6 @@ reconciliation via [<code>OrderManager</code>], [<code>PendingOrder</code>], and
 </span>pub struct OrderManager {
     pub orders: HashMap &lt; String , PendingOrder &gt;,
     pub exchange_to_client: HashMap &lt; String , String &gt;,
-    next_id: u64,
 };
 <span class="boring">}</span></code></pre>
 <h2 id="enums-13"><a class="header" href="#enums-13">Enums</a></h2>
@@ -2383,6 +2403,47 @@ which must be implemented as a dedicated authenticated adapter.</p>
 };
 <span class="boring">}</span></code></pre>
 <div style="break-before: page; page-break-before: always;"></div>
+<h1 id="module-hyperliquiduser_data"><a class="header" href="#module-hyperliquiduser_data">Module: <code>hyperliquid/user_data</code></a></h1>
+<blockquote>
+<p>Source: <code>hyperliquid/user_data.rs</code></p>
+</blockquote>
+<p>Hyperliquid private user-stream decoding and supervision.</p>
+<p>The WebSocket subscriptions are read-only, but their payloads are part of
+the execution integrity boundary. A malformed event, disconnect, or full
+ingress queue therefore emits <code>ReconcileRequired</code> before reconnecting.</p>
+<h2 id="enums-17"><a class="header" href="#enums-17">Enums</a></h2>
+<h3 id="pub-enum-userdataparseerror-1"><a class="header" href="#pub-enum-userdataparseerror-1"><code>pub enum UserDataParseError</code></a></h3>
+<pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>pub enum UserDataParseError {
+    Json(String,),
+    Invalid(&amp; 'static str,),
+}
+<span class="boring">}</span></code></pre>
+<h2 id="functions-13"><a class="header" href="#functions-13">Functions</a></h2>
+<h3 id="pub-fn-start_user_data_stream-1"><a class="header" href="#pub-fn-start_user_data_stream-1"><code>pub fn start_user_data_stream</code></a></h3>
+<pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>pub fn start_user_data_stream(...) { ... }
+<span class="boring">}</span></code></pre>
+<p>Starts a self-healing private user-data supervisor. A returned value means
+the initial subscriptions are live; later gaps cause an immediate engine
+reconciliation signal and bounded-delay reconnect.</p>
+<h3 id="pub-fn-parse_user_data_msgs"><a class="header" href="#pub-fn-parse_user_data_msgs"><code>pub fn parse_user_data_msgs</code></a></h3>
+<pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>pub fn parse_user_data_msgs(...) { ... }
+<span class="boring">}</span></code></pre>
+<p>Parses every lossless engine event in one private WebSocket payload.
+<code>userFills</code> may contain multiple fills; dropping all but the first would
+silently understate fee and position accounting.</p>
+<h2 id="type-aliases-5"><a class="header" href="#type-aliases-5">Type Aliases</a></h2>
+<h3 id="pub-type-parseresult"><a class="header" href="#pub-type-parseresult"><code>pub type ParseResult</code></a></h3>
+<pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>pub type ParseResult = std :: result :: Result &lt; T , UserDataParseError &gt;;
+<span class="boring">}</span></code></pre>
+<div style="break-before: page; page-break-before: always;"></div>
 <h1 id="module-flow"><a class="header" href="#module-flow">Module: <code>flow</code></a></h1>
 <blockquote>
 <p>Source: <code>flow.rs</code></p>
@@ -2598,7 +2659,7 @@ Includes [<code>Rsi</code>] (Relative Strength Index), [<code>Stochastic</code>]
 <p>Source: <code>simd.rs</code></p>
 </blockquote>
 <p><em>No module documentation.</em></p>
-<h2 id="functions-13"><a class="header" href="#functions-13">Functions</a></h2>
+<h2 id="functions-14"><a class="header" href="#functions-14">Functions</a></h2>
 <h3 id="pub-fn-sum"><a class="header" href="#pub-fn-sum"><code>pub fn sum</code></a></h3>
 <pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
 </span><span class="boring">fn main() {
@@ -2824,7 +2885,7 @@ order frequency, daily loss caps, and cooldown periods.</p>
 worker reads the durable journal and delivers snapshots through a bounded
 crossbeam channel; the engine’s latency-sensitive loop never waits on HTTP,
 a mutex, or a dashboard client.</p>
-<h2 id="functions-14"><a class="header" href="#functions-14">Functions</a></h2>
+<h2 id="functions-15"><a class="header" href="#functions-15">Functions</a></h2>
 <h3 id="pub-fn-start"><a class="header" href="#pub-fn-start"><code>pub fn start</code></a></h3>
 <pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
 </span><span class="boring">fn main() {
@@ -2882,7 +2943,7 @@ local profile contains the public address and no signing secret.</p>
     pub hyperliquid_address: String,
 };
 <span class="boring">}</span></code></pre>
-<h2 id="functions-15"><a class="header" href="#functions-15">Functions</a></h2>
+<h2 id="functions-16"><a class="header" href="#functions-16">Functions</a></h2>
 <h3 id="pub-fn-load_profile"><a class="header" href="#pub-fn-load_profile"><code>pub fn load_profile</code></a></h3>
 <pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
 </span><span class="boring">fn main() {

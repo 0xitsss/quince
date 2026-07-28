@@ -35,10 +35,10 @@
             const path_to_root = "../../";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../../searchindex-94a698bc.js";
+            window.path_to_searchindex_js = "../../searchindex-787521ec.js";
         </script>
         <!-- Start loading toc.js asap -->
-        <script src="../../toc-530840c5.js"></script>
+        <script src="../../toc-69e5c6fa.js"></script>
     </head>
     <body>
     <div id="mdbook-help-container">
@@ -302,6 +302,10 @@ infrastructure. Accessed through [<code>Vm::cold</code>].</p>
     pub running: bool,
     pub call_stack: [usize ; MAX_CALL_DEPTH],
     pub call_depth: u8,
+    instruction_budget: u32,
+    instructions_remaining: u32,
+    last_event_instruction_count: u32,
+    instruction_budget_exhausted: bool,
     pub code_ptr: * const u64,
     pub code_len: usize,
     pub consts_ptr: * const f64,
@@ -357,12 +361,22 @@ fields (<code>reg.i</code>, <code>reg.f</code>).</p>
 <p>Tail-call helper: advance PC, fetch next instruction, dispatch.
 Every normal handler ends with <code>become dispatch_next(vm, instr)</code>.
 Control-flow handlers (jmp, jz, jnz, call, ret) set <code>vm.pc</code> directly,
-then fetch + <code>become DISPATCH_TABLE[...]</code> inline.</p>
+then tail-call [<code>dispatch_current</code>] to charge and dispatch the target.</p>
 <h1 id="safety-1"><a class="header" href="#safety-1">Safety</a></h1>
 <ul>
 <li><code>vm.code_ptr</code> must point to valid bytecode with at least <code>vm.pc + 1</code> instructions.</li>
 <li>Caller must ensure <code>vm</code> is in a consistent state before dispatching.</li>
 </ul>
+<h3 id="pub-fn-dispatch_current"><a class="header" href="#pub-fn-dispatch_current"><code>pub fn dispatch_current</code></a></h3>
+<pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>pub fn dispatch_current(...) { ... }
+<span class="boring">}</span></code></pre>
+<p>Dispatch the instruction at the current PC after charging it to the active
+event handler’s budget.</p>
+<h1 id="safety-2"><a class="header" href="#safety-2">Safety</a></h1>
+<p><code>vm.code_ptr</code> must point to valid bytecode at <code>vm.pc</code>; callers must only
+dispatch a VM initialized from a valid [<code>QfrProgram</code>].</p>
 <h2 id="constants"><a class="header" href="#constants">Constants</a></h2>
 <h3 id="pub-const-num_regs"><a class="header" href="#pub-const-num_regs"><code>pub const NUM_REGS</code></a></h3>
 <pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
@@ -414,6 +428,13 @@ then fetch + <code>become DISPATCH_TABLE[...]</code> inline.</p>
 </span><span class="boring">fn main() {
 </span>pub const MAX_EMA_STATES: usize = ...;
 <span class="boring">}</span></code></pre>
+<h3 id="pub-const-default_instruction_budget"><a class="header" href="#pub-const-default_instruction_budget"><code>pub const DEFAULT_INSTRUCTION_BUDGET</code></a></h3>
+<pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>pub const DEFAULT_INSTRUCTION_BUDGET: u32 = ...;
+<span class="boring">}</span></code></pre>
+<p>Maximum bytecode instructions one event handler may execute by default.
+This bounds strategy latency even when a source loop fails to make progress.</p>
 <h3 id="pub-const-reg_send_side"><a class="header" href="#pub-const-reg_send_side"><code>pub const REG_SEND_SIDE</code></a></h3>
 <pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
 </span><span class="boring">fn main() {
