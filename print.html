@@ -36,7 +36,7 @@
             const path_to_root = "";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-33e97782.js";
+            window.path_to_searchindex_js = "searchindex-94a698bc.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="toc-530840c5.js"></script>
@@ -2790,6 +2790,8 @@ log file for post-session analysis and reconciliation.</p>
     peak_equity: f64,
     in_cooldown: bool,
     cooldown_end: Instant,
+    paused: bool,
+    pause_reason: Option &lt; String &gt;,
 };
 <span class="boring">}</span></code></pre>
 <div style="break-before: page; page-break-before: always;"></div>
