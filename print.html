@@ -36,7 +36,7 @@
             const path_to_root = "";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-ae923043.js";
+            window.path_to_searchindex_js = "searchindex-2c6efe2f.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="toc-13eb2a3e.js"></script>
@@ -2372,6 +2372,16 @@ asset index and permitted size precision.</p>
 <p>Fully prepared, signed exchange payload. It is intentionally separate from
 transport so callers can journal the immutable idempotency context before
 any network side effect occurs.</p>
+<h3 id="pub-struct-executionpreflight"><a class="header" href="#pub-struct-executionpreflight"><code>pub struct ExecutionPreflight</code></a></h3>
+<pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>pub struct ExecutionPreflight {
+    pub market_observed_at: DateTime &lt; Utc &gt;,
+    pub max_market_age: Duration,
+};
+<span class="boring">}</span></code></pre>
+<p>Inputs captured immediately before signing. An absent or stale market view
+is a hard execution failure, never a reason to reuse a last known quote.</p>
 <h3 id="pub-struct-hyperliquidexecution"><a class="header" href="#pub-struct-hyperliquidexecution"><code>pub struct HyperliquidExecution</code></a></h3>
 <pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
 </span><span class="boring">fn main() {
