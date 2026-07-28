@@ -224,9 +224,7 @@ impl Exchange for HyperliquidExecution {
     }
 
     async fn account_info(&self) -> Result<AccountInfo> {
-        Err(ExchangeError::Auth(
-            "Hyperliquid authenticated account queries are not implemented; do not treat public data as account state".into(),
-        ))
+        self.public.account_info_for(&self.account_address).await
     }
 
     async fn current_price(&self, symbol: &str) -> Result<f64> {
