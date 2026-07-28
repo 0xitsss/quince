@@ -45,6 +45,13 @@ impl HyperliquidNetwork {
         }
     }
 
+    pub const fn info_url(self) -> &'static str {
+        match self {
+            Self::Mainnet => "https://api.hyperliquid.xyz/info",
+            Self::Testnet => "https://api.hyperliquid-testnet.xyz/info",
+        }
+    }
+
     const fn is_testnet(self) -> bool {
         matches!(self, Self::Testnet)
     }
@@ -145,6 +152,31 @@ impl HyperliquidPerpMeta {
             .get(&coin.to_ascii_uppercase())
             .ok_or_else(|| ExchangeError::Order(format!("unknown Hyperliquid perp asset {coin}")))
     }
+
+    /// Formats a size only when it is exactly representable at the exchange's
+    /// declared precision. Silent client-side rounding changes risk exposure.
+    pub fn format_size(&self, coin: &str, size: f64) -> Result<String> {
+        if !size.is_finite() || size <= 0.0 {
+            return Err(ExchangeError::Order(
+                "invalid Hyperliquid order size".into(),
+            ));
+        }
+        let decimals = self.asset(coin)?.size_decimals as usize;
+        let formatted = format!("{size:.decimals$}");
+        let parsed: f64 = formatted
+            .parse()
+            .map_err(|_| ExchangeError::Order("format Hyperliquid order size".into()))?;
+        let tolerance = size.abs().max(1.0) * 1e-12;
+        if (parsed - size).abs() > tolerance {
+            return Err(ExchangeError::Order(format!(
+                "Hyperliquid size {size} exceeds {decimals}-decimal precision"
+            )));
+        }
+        Ok(formatted
+            .trim_end_matches('0')
+            .trim_end_matches('.')
+            .to_owned())
+    }
 }
 
 /// Authenticated adapter shell.
@@ -216,6 +248,24 @@ impl HyperliquidExecution {
                 return next;
             }
         }
+    }
+
+    /// Fetches a fresh, authoritative perp metadata snapshot before action
+    /// construction. This is read-only and deliberately separate from order
+    /// submission, so stale/invalid metadata cannot become a signed payload.
+    pub async fn load_perp_meta(&self) -> Result<HyperliquidPerpMeta> {
+        let value: serde_json::Value = reqwest::Client::new()
+            .post(self.network.info_url())
+            .json(&serde_json::json!({ "type": "meta" }))
+            .send()
+            .await
+            .map_err(|error| ExchangeError::Rest(format!("fetch Hyperliquid meta: {error}")))?
+            .error_for_status()
+            .map_err(|error| ExchangeError::Rest(format!("Hyperliquid meta status: {error}")))?
+            .json()
+            .await
+            .map_err(|error| ExchangeError::Rest(format!("parse Hyperliquid meta: {error}")))?;
+        HyperliquidPerpMeta::parse(&value)
     }
 
     /// Validates an intent before it can enter a future signing queue.
@@ -471,6 +521,8 @@ mod tests {
             }
         );
         assert!(meta.asset("SOL").is_err());
+        assert_eq!(meta.format_size("BTC", 0.12345).unwrap(), "0.12345");
+        assert!(meta.format_size("BTC", 0.123456).is_err());
     }
 
     #[tokio::test]
