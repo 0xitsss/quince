@@ -226,6 +226,20 @@ async fn main() -> Result<(), EngineError> {
                     .into(),
             ));
         }
+        // Construct the authenticated boundary now, even though mutations are
+        // still gated in the adapter. This validates that the keychain secret
+        // belongs to the configured address before any future live session.
+        let network = if strategy_config.network == Network::Testnet {
+            quince::exchange::hyperliquid::execution::HyperliquidNetwork::Testnet
+        } else {
+            quince::exchange::hyperliquid::execution::HyperliquidNetwork::Mainnet
+        };
+        let _execution = quince::exchange::hyperliquid::execution::HyperliquidExecution::new(
+            network,
+            &wallet.hyperliquid_address,
+            std::sync::Arc::new(wallet::load_hyperliquid_signer().map_err(EngineError::Strategy)?),
+        )
+        .map_err(|error| EngineError::Strategy(error.to_string()))?;
         Err(EngineError::Strategy(
             format!(
                 "wallet {} is configured, but Hyperliquid live trading is not enabled yet; use QUINCE_PUBLIC=1 for market data",

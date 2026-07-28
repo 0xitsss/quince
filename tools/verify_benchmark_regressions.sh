@@ -7,7 +7,10 @@
 set -euo pipefail
 
 readonly threshold="${QUINCE_BENCHMARK_MAX_REGRESSION:-0.10}"
-readonly roots=(qfl/target/criterion indicators/target/criterion engine/target/criterion)
+# Cargo workspaces write Criterion output to the workspace target directory.
+# Scanning crate-local target trees reads stale developer artefacts and can
+# reject an unrelated change long after their baseline was superseded.
+readonly roots=(target/criterion)
 failed=0
 
 for root in "${roots[@]}"; do

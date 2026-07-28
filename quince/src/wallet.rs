@@ -8,6 +8,10 @@
 
 use k256::ecdsa::{SigningKey, VerifyingKey};
 use k256::elliptic_curve::zeroize::Zeroize;
+use quince_exchange::hyperliquid::{
+    execution::{HyperliquidNetwork, HyperliquidSignature, HyperliquidSigner},
+    signing,
+};
 use rand::rngs::OsRng;
 use serde::{Deserialize, Serialize};
 use sha3::{Digest, Keccak256};
@@ -24,6 +28,12 @@ pub struct WalletProfile {
     pub hyperliquid_address: String,
 }
 
+/// Signer backed by the OS credential store. It retains only the public address
+/// between calls; the secret is loaded and zeroized for each signature.
+pub struct KeyringHyperliquidSigner {
+    address: String,
+}
+
 fn config_dir() -> Result<PathBuf, String> {
     if let Some(path) = std::env::var_os("XDG_CONFIG_HOME") {
         return Ok(PathBuf::from(path).join("quince"));
@@ -38,6 +48,22 @@ fn profile_path() -> Result<PathBuf, String> {
 
 fn keyring_entry() -> Result<keyring::Entry, String> {
     keyring::Entry::new(KEYRING_SERVICE, KEYRING_ACCOUNT).map_err(|e| e.to_string())
+}
+
+fn signing_key_from_keyring() -> Result<SigningKey, String> {
+    let mut secret = keyring_entry()?
+        .get_password()
+        .map_err(|error| format!("read system keychain: {error}"))?;
+    let result = hex::decode(&secret)
+        .map_err(|_| "wallet key in system keychain is not hexadecimal".to_owned())
+        .and_then(|mut bytes| {
+            let key = SigningKey::from_slice(&bytes)
+                .map_err(|_| "wallet key in system keychain is invalid".to_owned());
+            bytes.zeroize();
+            key
+        });
+    secret.zeroize();
+    result
 }
 
 fn address_for_key(key: &SigningKey) -> String {
@@ -84,6 +110,36 @@ pub fn has_private_key() -> Result<bool, String> {
         Ok(value) => Ok(!value.is_empty()),
         Err(keyring::Error::NoEntry) => Ok(false),
         Err(error) => Err(format!("read system keychain: {error}")),
+    }
+}
+
+/// Opens the keyring-backed signer only if the stored secret still belongs to
+/// the public wallet profile. This catches a stale or replaced keychain entry
+/// before an authenticated exchange session starts.
+pub fn load_hyperliquid_signer() -> Result<KeyringHyperliquidSigner, String> {
+    let profile = load_profile()?.ok_or("Hyperliquid wallet profile is missing")?;
+    let key = signing_key_from_keyring()?;
+    let derived = address_for_key(&key);
+    if !derived.eq_ignore_ascii_case(&profile.hyperliquid_address) {
+        return Err("system keychain secret does not match the Hyperliquid wallet profile".into());
+    }
+    Ok(KeyringHyperliquidSigner { address: derived })
+}
+
+impl HyperliquidSigner for KeyringHyperliquidSigner {
+    fn address(&self) -> &str {
+        &self.address
+    }
+
+    fn sign_l1_action(
+        &self,
+        connection_id: [u8; 32],
+        network: HyperliquidNetwork,
+    ) -> quince_exchange::r#trait::Result<HyperliquidSignature> {
+        let key =
+            signing_key_from_keyring().map_err(quince_exchange::r#trait::ExchangeError::Auth)?;
+        signing::sign_l1_action(&key, connection_id, network)
+            .map_err(quince_exchange::r#trait::ExchangeError::Auth)
     }
 }
 
@@ -177,5 +233,25 @@ mod tests {
     #[test]
     fn invalid_private_key_is_rejected() {
         assert!(SigningKey::from_slice(&[0_u8; 32]).is_err());
+    }
+
+    #[test]
+    fn l1_signature_vector_uses_the_expected_wallet_key() {
+        let key = SigningKey::from_slice(
+            &hex::decode("e908f86dbb4d55ac876378565aafeabc187f6690f046459397b17d9b9a19688e")
+                .unwrap(),
+        )
+        .unwrap();
+        let id: [u8; 32] =
+            hex::decode("de6c4037798a4434ca03cd05f00e3b803126221375cd1e7eaaaf041768be06eb")
+                .unwrap()
+                .try_into()
+                .unwrap();
+        let signature = signing::sign_l1_action(&key, id, HyperliquidNetwork::Testnet).unwrap();
+        assert_eq!(signature.v, 28);
+        assert_eq!(
+            signature.r,
+            "0x1713c0fc661b792a50e8ffdd59b637b1ed172d9a3aa4d801d9d88646710fb74b"
+        );
     }
 }
