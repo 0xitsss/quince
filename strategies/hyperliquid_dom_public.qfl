@@ -1,0 +1,60 @@
+-- Hyperliquid public L2 DOM signal strategy.
+-- Read-only by design: safe with QUINCE_PUBLIC=1, emits no exchange orders.
+
+@exchange hyperliquid
+@network mainnet
+
+@persist directional_signal : i64 = 0
+@persist buy_confirmations : i64 = 0
+@persist sell_confirmations : i64 = 0
+@persist cooldown_ticks : i64 = 0
+
+on depth(d) {
+    let bid0 = quince.depth_bid(0)
+    let bid1 = quince.depth_bid(1)
+    let bid2 = quince.depth_bid(2)
+    let ask0 = quince.depth_ask(0)
+    let ask1 = quince.depth_ask(1)
+    let ask2 = quince.depth_ask(2)
+
+    let bid_liquidity = bid0 + bid1 + bid2
+    let ask_liquidity = ask0 + ask1 + ask2
+
+    if bid_liquidity <= 0.0 or ask_liquidity <= 0.0 {
+        return
+    }
+
+    if cooldown_ticks > 0 {
+        cooldown_ticks = cooldown_ticks - 1
+        return
+    }
+
+    if bid_liquidity > ask_liquidity * 1.7 {
+        buy_confirmations = buy_confirmations + 1
+        sell_confirmations = 0
+    } elseif ask_liquidity > bid_liquidity * 1.5 {
+        sell_confirmations = sell_confirmations + 1
+        buy_confirmations = 0
+    } else {
+        buy_confirmations = 0
+        sell_confirmations = 0
+    }
+
+    if directional_signal <= 0 and buy_confirmations >= 3 {
+        directional_signal = 1
+        buy_confirmations = 0
+        cooldown_ticks = 20
+        quince.log("hl_dom_public: LONG signal")
+        quince.log2("hl_dom_bid_liquidity", bid_liquidity)
+        quince.log2("hl_dom_ask_liquidity", ask_liquidity)
+    }
+
+    if directional_signal >= 0 and sell_confirmations >= 3 {
+        directional_signal = -1
+        sell_confirmations = 0
+        cooldown_ticks = 20
+        quince.log("hl_dom_public: SHORT signal")
+        quince.log2("hl_dom_bid_liquidity", bid_liquidity)
+        quince.log2("hl_dom_ask_liquidity", ask_liquidity)
+    }
+}
