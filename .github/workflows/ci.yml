@@ -57,7 +57,7 @@ jobs:
         run: cargo +nightly fmt --all -- --check
 
       - name: cargo test
-        run: cargo test --workspace --all-targets --locked
+        run: cargo test --workspace --lib --bins --tests --examples --locked
 
       - name: cargo clippy
         run: cargo clippy --workspace --all-targets --no-deps -- -D warnings
