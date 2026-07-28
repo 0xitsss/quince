@@ -1,0 +1,50 @@
+-- Conservative top-of-book DOM scalper.
+-- Start in MOCK/PUBLIC mode only. Tune quantity and thresholds per instrument.
+
+@persist position_size : i64 = 0
+@persist buy_confirmations : i64 = 0
+@persist sell_confirmations : i64 = 0
+@persist cooldown_ticks : i64 = 0
+
+on depth(d) {
+    let bid_qty = quince.depth_bid(0)
+    let ask_qty = quince.depth_ask(0)
+
+    if bid_qty <= 0.0 or ask_qty <= 0.0 {
+        return
+    }
+
+    if cooldown_ticks > 0 {
+        cooldown_ticks = cooldown_ticks - 1
+        return
+    }
+
+    -- Demand must materially exceed supply for two consecutive book updates.
+    if bid_qty > ask_qty * 1.8 {
+        buy_confirmations = buy_confirmations + 1
+        sell_confirmations = 0
+    } elseif ask_qty > bid_qty * 1.5 {
+        sell_confirmations = sell_confirmations + 1
+        buy_confirmations = 0
+    } else {
+        buy_confirmations = 0
+        sell_confirmations = 0
+    }
+
+    if position_size == 0 and buy_confirmations >= 2 {
+        -- Market order: the engine's risk and stale-data guards remain final authority.
+        quince.order(0, 0.001, 0)
+        position_size = 1
+        buy_confirmations = 0
+        cooldown_ticks = 10
+        quince.log("dom_scalper: long entry")
+    }
+
+    if position_size > 0 and sell_confirmations >= 2 {
+        quince.order(1, 0.001, 0)
+        position_size = 0
+        sell_confirmations = 0
+        cooldown_ticks = 10
+        quince.log("dom_scalper: long exit")
+    }
+}
