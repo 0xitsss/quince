@@ -302,6 +302,29 @@ impl HyperliquidExecution {
         HyperliquidPerpMeta::parse(&value)
     }
 
+    /// Fetches the authoritative set of currently open exchange order IDs for
+    /// reconciliation after a transport ambiguity or private-stream gap.
+    pub async fn open_order_ids(&self) -> Result<Vec<String>> {
+        let value: serde_json::Value = reqwest::Client::new()
+            .post(self.network.info_url())
+            .json(&serde_json::json!({ "type": "openOrders", "user": self.account_address }))
+            .send()
+            .await
+            .map_err(|error| {
+                ExchangeError::Rest(format!("fetch Hyperliquid open orders: {error}"))
+            })?
+            .error_for_status()
+            .map_err(|error| {
+                ExchangeError::Rest(format!("Hyperliquid open-orders status: {error}"))
+            })?
+            .json()
+            .await
+            .map_err(|error| {
+                ExchangeError::Rest(format!("parse Hyperliquid open orders: {error}"))
+            })?;
+        parse_open_order_ids(&value)
+    }
+
     /// Creates a signed, IOC limit-order payload from a fresh authoritative
     /// metadata snapshot. Submission remains a distinct testnet-only step.
     pub fn prepare_limit_order(
@@ -498,6 +521,22 @@ fn parse_order_id(response: &serde_json::Value) -> Result<String> {
     Err(ExchangeError::Order(
         "Hyperliquid order response was neither resting nor filled".into(),
     ))
+}
+
+fn parse_open_order_ids(value: &serde_json::Value) -> Result<Vec<String>> {
+    let orders = value.as_array().ok_or_else(|| {
+        ExchangeError::Rest("Hyperliquid open-orders response is not an array".into())
+    })?;
+    let mut ids = Vec::with_capacity(orders.len());
+    for order in orders {
+        let oid = order
+            .get("oid")
+            .and_then(serde_json::Value::as_u64)
+            .filter(|oid| *oid > 0)
+            .ok_or_else(|| ExchangeError::Rest("invalid Hyperliquid open-order oid".into()))?;
+        ids.push(oid.to_string());
+    }
+    Ok(ids)
 }
 
 fn validate_order(order: &Order) -> Result<()> {
@@ -803,6 +842,15 @@ mod tests {
             &serde_json::json!({"status": "ok", "response": {"data": {"statuses": [{}]}}})
         )
         .is_err());
+    }
+
+    #[test]
+    fn reconciliation_open_orders_requires_authoritative_ids() {
+        assert_eq!(
+            parse_open_order_ids(&serde_json::json!([{"oid": 42}, {"oid": 7}])).unwrap(),
+            ["42", "7"]
+        );
+        assert!(parse_open_order_ids(&serde_json::json!([{"oid": 0}])).is_err());
     }
 
     #[tokio::test]
