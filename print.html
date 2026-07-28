@@ -36,10 +36,10 @@
             const path_to_root = "";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-6c0bdde9.js";
+            window.path_to_searchindex_js = "searchindex-efbd49e8.js";
         </script>
         <!-- Start loading toc.js asap -->
-        <script src="toc-7c62823a.js"></script>
+        <script src="toc-23fbf84c.js"></script>
     </head>
     <body>
     <div id="mdbook-help-container">
@@ -178,7 +178,210 @@
 
                 <div id="mdbook-content" class="content">
                     <main>
-                        <h1 id="module-ast"><a class="header" href="#module-ast">Module: <code>ast</code></a></h1>
+                        <h1 id="quince"><a class="header" href="#quince">Quince</a></h1>
+<p>Quince is a low-latency Rust execution engine and the Quince-Flavored Language
+(QFL) runtime for event-driven trading strategies. Its hot path is synchronous,
+bounded, and allocation-free after strategy and indicator construction.</p>
+<p>The system deliberately separates three concerns:</p>
+<ol>
+<li><strong>Market data and execution adapters</strong> normalize exchange events and keep
+live execution fail-closed when account, market-data, or reconciliation
+guarantees are absent.</li>
+<li><strong>The engine and QFL VM</strong> compile a strategy once, run it per event, and
+enforce risk and instruction budgets before an order can leave the process.</li>
+<li><strong>Indicators</strong> turn public trades into finite scalar features that QFL reads
+with <code>quince.get("name")</code>.</li>
+</ol>
+<h2 id="quick-indicator-example"><a class="header" href="#quick-indicator-example">Quick indicator example</a></h2>
+<p>The indicator is declared before the strategy handlers and read inside the
+handler. A custom indicator has the same QFL surface as a built-in one:</p>
+<pre><code class="language-qfl">@using custom_logistic_regression:0.05:0.01
+
+on trade(t) {
+    feature buy_probability = quince.get("custom_logistic_regression")
+    if buy_probability &gt; 0.60 {
+        quince.log("buy pressure")
+    }
+}
+</code></pre>
+<p><code>@using</code> is validated during startup. Unknown names, a wrong parameter count,
+non-numeric arguments, or out-of-range values reject the strategy before it can
+execute. An indicator may return no value during warm-up; QFL sees the normal
+engine default until it has a finite scalar.</p>
+<h2 id="native-extension-model"><a class="header" href="#native-extension-model">Native extension model</a></h2>
+<p>Custom indicators are Rust source files compiled and linked into the Quince
+binary. Dynamic plugins are intentionally not loaded: this makes the deployed
+artifact reproducible and ensures every indicator participates in review,
+tests, linting, and benchmark gates. See <a href="#writing-a-native-indicator">Writing a native
+indicator</a> for the contract, and the <a href="#native-indicator-catalogue">native catalogue</a>
+for all currently linked indicators.</p>
+<h2 id="validation-boundary"><a class="header" href="#validation-boundary">Validation boundary</a></h2>
+<p>An indicator is a feature, not a trading claim. Validate it in the replay
+environment with fees, slippage, and out-of-sample data before allowing a
+strategy that uses it to progress from shadow mode to execution.</p>
+<div style="break-before: page; page-break-before: always;"></div>
+<h1 id="native-indicator-catalogue"><a class="header" href="#native-indicator-catalogue">Native indicator catalogue</a></h1>
+<p>All entries below are compiled into the current binary. They consume public
+trades and publish one finite <code>f64</code> through <code>quince.get("&lt;name&gt;")</code>. A dash in
+<strong>Parameters</strong> means that the directive takes no arguments. <code>period</code> is the
+lookback length in trades; <code>alpha</code> is an exponential smoothing factor.</p>
+<pre><code class="language-qfl">@using custom_ema:20
+
+on trade(t) {
+    feature ema = quince.get("custom_ema")
+}
+</code></pre>
+<p>Some indicators require warm-up and therefore do not yield a value until enough
+trades have arrived. Statistical and microstructure features are descriptive;
+they must be replay-tested rather than interpreted as a standalone order signal.</p>
+<h2 id="trend-and-momentum"><a class="header" href="#trend-and-momentum">Trend and momentum</a></h2>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Indicator</th><th style="text-align: right">Parameters</th><th>Description</th></tr>
+</thead>
+<tbody>
+<tr><td><code>custom_sma</code></td><td style="text-align: right"><code>period</code></td><td>Simple moving average of trade price; a slow, stable price baseline.</td></tr>
+<tr><td><code>custom_ema</code></td><td style="text-align: right"><code>period</code></td><td>Exponentially weighted moving average of price, with more weight on recent trades.</td></tr>
+<tr><td><code>custom_wma</code></td><td style="text-align: right"><code>period</code></td><td>Linearly weighted moving average that emphasizes newer prices.</td></tr>
+<tr><td><code>custom_dema</code></td><td style="text-align: right"><code>period</code></td><td>Double EMA, reducing lag relative to a single EMA.</td></tr>
+<tr><td><code>custom_tema</code></td><td style="text-align: right"><code>period</code></td><td>Triple EMA, a more aggressive lag-reduced moving average.</td></tr>
+<tr><td><code>custom_kama</code></td><td style="text-align: right"><code>period</code>, <code>fast</code>, <code>slow</code></td><td>Kaufman adaptive moving average; adapts smoothing to directional efficiency.</td></tr>
+<tr><td><code>custom_linear_regression</code></td><td style="text-align: right"><code>period</code></td><td>Rolling least-squares slope of price, expressing local trend direction.</td></tr>
+<tr><td><code>custom_momentum</code></td><td style="text-align: right"><code>period</code></td><td>Difference between current price and the price <code>period</code> trades ago.</td></tr>
+<tr><td><code>custom_roc</code></td><td style="text-align: right"><code>period</code></td><td>Percentage rate of change over a rolling trade lookback.</td></tr>
+<tr><td><code>custom_rsi</code></td><td style="text-align: right"><code>period</code></td><td>Relative Strength Index computed from trade-to-trade gains and losses.</td></tr>
+<tr><td><code>custom_cmo</code></td><td style="text-align: right"><code>period</code></td><td>Chande Momentum Oscillator, a signed gain/loss momentum measure.</td></tr>
+<tr><td><code>custom_macd_signal</code></td><td style="text-align: right"><code>fast</code>, <code>slow</code>, <code>signal</code></td><td>MACD signal line derived from fast and slow EMAs of price.</td></tr>
+<tr><td><code>custom_trix</code></td><td style="text-align: right"><code>period</code></td><td>Rate of change of a triple-smoothed EMA; suppresses short-term noise.</td></tr>
+<tr><td><code>custom_stochastic_k</code></td><td style="text-align: right"><code>period</code></td><td>Current price position within its rolling high-low range.</td></tr>
+<tr><td><code>custom_williams_r</code></td><td style="text-align: right"><code>period</code></td><td>Inverted high-low range oscillator indicating price location near extremes.</td></tr>
+<tr><td><code>custom_vortex</code></td><td style="text-align: right"><code>period</code></td><td>Directional-movement ratio over a rolling trade window.</td></tr>
+<tr><td><code>custom_efficiency_ratio</code></td><td style="text-align: right">—</td><td>Price displacement divided by total absolute path; values near one indicate a clean move.</td></tr>
+<tr><td><code>custom_zscore</code></td><td style="text-align: right"><code>period</code></td><td>Price distance from its rolling mean in rolling standard deviations.</td></tr>
+</tbody>
+</table>
+</div>
+<h2 id="volatility-and-range"><a class="header" href="#volatility-and-range">Volatility and range</a></h2>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Indicator</th><th style="text-align: right">Parameters</th><th>Description</th></tr>
+</thead>
+<tbody>
+<tr><td><code>custom_atr</code></td><td style="text-align: right"><code>period</code></td><td>Trade-level average true range, using absolute consecutive price changes.</td></tr>
+<tr><td><code>custom_true_range</code></td><td style="text-align: right">—</td><td>Absolute change from the previous trade price.</td></tr>
+<tr><td><code>custom_bollinger_width</code></td><td style="text-align: right"><code>period</code></td><td>Width of a rolling price band; a compact proxy for dispersion.</td></tr>
+<tr><td><code>custom_donchian_width</code></td><td style="text-align: right"><code>period</code></td><td>Difference between the rolling high and low price.</td></tr>
+<tr><td><code>custom_historical_volatility</code></td><td style="text-align: right"><code>period</code></td><td>Rolling volatility of log returns.</td></tr>
+<tr><td><code>custom_ewma_volatility</code></td><td style="text-align: right"><code>alpha</code></td><td>Exponentially weighted volatility of log returns.</td></tr>
+<tr><td><code>custom_parkinson_volatility</code></td><td style="text-align: right"><code>period</code></td><td>Parkinson-scaled rolling root-mean-square of trade log returns.</td></tr>
+<tr><td><code>custom_return_variance</code></td><td style="text-align: right">—</td><td>Online variance of log returns.</td></tr>
+<tr><td><code>custom_return_skewness</code></td><td style="text-align: right">—</td><td>Online skewness of log returns; identifies asymmetry in return distribution.</td></tr>
+<tr><td><code>custom_return_kurtosis</code></td><td style="text-align: right">—</td><td>Online excess-tailedness measure of log returns.</td></tr>
+<tr><td><code>custom_log_return</code></td><td style="text-align: right">—</td><td>Natural logarithm of current price divided by previous price.</td></tr>
+</tbody>
+</table>
+</div>
+<h2 id="volume-and-money-flow"><a class="header" href="#volume-and-money-flow">Volume and money flow</a></h2>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Indicator</th><th style="text-align: right">Parameters</th><th>Description</th></tr>
+</thead>
+<tbody>
+<tr><td><code>signed_volume</code></td><td style="text-align: right">—</td><td>Cumulative buy quantity minus sell quantity.</td></tr>
+<tr><td><code>custom_signed_volume_ratio</code></td><td style="text-align: right">—</td><td>Signed volume normalized by cumulative total volume.</td></tr>
+<tr><td><code>custom_buy_volume_ratio</code></td><td style="text-align: right">—</td><td>Cumulative fraction of traded quantity initiated by buyers.</td></tr>
+<tr><td><code>custom_obv</code></td><td style="text-align: right">—</td><td>On-balance volume: volume added or subtracted according to price direction.</td></tr>
+<tr><td><code>custom_cvd</code></td><td style="text-align: right">—</td><td>Cumulative volume delta: buy quantity minus sell quantity over time.</td></tr>
+<tr><td><code>custom_vwap</code></td><td style="text-align: right">—</td><td>Cumulative volume-weighted average trade price.</td></tr>
+<tr><td><code>custom_vwma</code></td><td style="text-align: right"><code>period</code></td><td>Rolling volume-weighted moving average of price.</td></tr>
+<tr><td><code>custom_mfi</code></td><td style="text-align: right"><code>period</code></td><td>Money Flow Index based on typical-price changes and traded quantity.</td></tr>
+<tr><td><code>custom_money_flow</code></td><td style="text-align: right">—</td><td>Signed typical-price times quantity flow.</td></tr>
+<tr><td><code>custom_force_index</code></td><td style="text-align: right"><code>alpha</code></td><td>Smoothed price-change times quantity measure.</td></tr>
+<tr><td><code>custom_chaikin_oscillator</code></td><td style="text-align: right"><code>fast_alpha</code>, <code>slow_alpha</code></td><td>Difference between fast and slow exponentially smoothed money flow.</td></tr>
+<tr><td><code>custom_volume_roc</code></td><td style="text-align: right"><code>period</code></td><td>Percentage rate of change of trade quantity.</td></tr>
+<tr><td><code>custom_volume_zscore</code></td><td style="text-align: right"><code>period</code></td><td>Trade quantity relative to its rolling mean and deviation.</td></tr>
+<tr><td><code>custom_large_trade_ratio</code></td><td style="text-align: right"><code>threshold</code></td><td>Cumulative share of trades whose quantity meets the threshold.</td></tr>
+<tr><td><code>custom_average_trade_size</code></td><td style="text-align: right">—</td><td>Running arithmetic mean of trade quantity.</td></tr>
+</tbody>
+</table>
+</div>
+<h2 id="microstructure-and-price-transforms"><a class="header" href="#microstructure-and-price-transforms">Microstructure and price transforms</a></h2>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Indicator</th><th style="text-align: right">Parameters</th><th>Description</th></tr>
+</thead>
+<tbody>
+<tr><td><code>custom_trade_imbalance</code></td><td style="text-align: right">—</td><td>Buy-versus-sell trade-count imbalance.</td></tr>
+<tr><td><code>custom_trade_intensity</code></td><td style="text-align: right">—</td><td>Trade arrival intensity estimated from event timestamps.</td></tr>
+<tr><td><code>custom_price_impact</code></td><td style="text-align: right">—</td><td>Absolute price move per unit of current trade quantity.</td></tr>
+<tr><td><code>custom_tick_direction</code></td><td style="text-align: right">—</td><td>Sign of the most recent trade-to-trade price move.</td></tr>
+<tr><td><code>custom_tick_run_length</code></td><td style="text-align: right">—</td><td>Length of the current uninterrupted directional tick run.</td></tr>
+<tr><td><code>custom_median_price</code></td><td style="text-align: right">—</td><td>Running midpoint of the observed minimum and maximum trade price.</td></tr>
+<tr><td><code>custom_typical_price</code></td><td style="text-align: right">—</td><td>Current trade price, exposed through an explicit custom-indicator contract.</td></tr>
+<tr><td><code>custom_logistic_regression</code></td><td style="text-align: right"><code>learning_rate</code>, <code>l2</code></td><td>Online logistic model of trade log returns; emits model buy-pressure probability in <code>[0, 1]</code>.</td></tr>
+</tbody>
+</table>
+</div>
+<h2 id="selecting-a-feature"><a class="header" href="#selecting-a-feature">Selecting a feature</a></h2>
+<p>Begin with one feature per hypothesis: trend (<code>custom_ema</code> or
+<code>custom_linear_regression</code>), volatility (<code>custom_ewma_volatility</code>), flow
+(<code>custom_cvd</code> or <code>custom_buy_volume_ratio</code>), or microstructure
+(<code>custom_price_impact</code>). Treat closely related variants as correlated features,
+not independent confirmation. Keep a strategy in shadow/replay mode until its
+fee- and slippage-adjusted out-of-sample behavior is understood.</p>
+<div style="break-before: page; page-break-before: always;"></div>
+<h1 id="writing-a-native-indicator"><a class="header" href="#writing-a-native-indicator">Writing a native indicator</a></h1>
+<p>Each native plugin is one Rust file in <code>indicators/src/custom/</code>. The build
+script discovers those files in deterministic filename order and compiles a
+static registry into the binary.</p>
+<h2 id="contract"><a class="header" href="#contract">Contract</a></h2>
+<p>Every indicator declares a name, ordered numeric parameters, and a factory.
+It receives a public <code>Trade</code> and may yield one finite <code>f64</code> value. Returning
+<code>None</code> expresses warm-up; it is not an error. The update method must not block
+or allocate on the hot path.</p>
+<pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>use quince_core::types::Trade;
+use quince_indicators::{CustomIndicator, CustomIndicatorError};
+
+struct MyIndicator;
+
+impl CustomIndicator for MyIndicator {
+    fn on_trade(&amp;mut self, trade: &amp;Trade) -&gt; Option&lt;f64&gt; {
+        (trade.price.is_finite() &amp;&amp; trade.price &gt; 0.0).then_some(trade.price)
+    }
+}
+<span class="boring">}</span></code></pre>
+<p>Use <code>CustomIndicatorRegistration::validate_params</code> in the factory before
+constructing state. The engine independently validates the exact <code>@using</code>
+arguments at strategy startup, so malformed configurations fail before any live
+connection or order intent.</p>
+<h2 id="qfl-surface"><a class="header" href="#qfl-surface">QFL surface</a></h2>
+<p>For a descriptor named <code>custom_example</code> with one <code>period</code> parameter:</p>
+<pre><code class="language-qfl">@using custom_example:20
+
+on trade(t) {
+    feature value = quince.get("custom_example")
+}
+</code></pre>
+<p>Names are lowercase ASCII identifiers with digits and underscores allowed after
+the first character. All current plugins consume trades and expose one scalar
+value. The name in <code>quince.get</code> must exactly match the descriptor name.</p>
+<h2 id="required-checks"><a class="header" href="#required-checks">Required checks</a></h2>
+<p>Add focused deterministic tests for warm-up, expected output, and invalid
+parameters. Before merging, run:</p>
+<pre><code class="language-bash">cargo +nightly fmt --all -- --check
+cargo test --workspace --lib --bins --tests --examples --locked
+cargo clippy --workspace --all-targets --no-deps -- -D warnings
+</code></pre>
+<p>For a performance-sensitive indicator, add or run a Criterion scenario against
+the full QFL pipeline, then compare it to the versioned baseline in CI.</p>
+<div style="break-before: page; page-break-before: always;"></div>
+<h1 id="module-ast"><a class="header" href="#module-ast">Module: <code>ast</code></a></h1>
 <blockquote>
 <p>Source: <code>ast.rs</code></p>
 </blockquote>
@@ -1817,6 +2020,14 @@ and provides [<code>IndicatorBank</code>] for runtime indicator lifecycle.</p>
 </span><span class="boring">fn main() {
 </span>pub fn parse_using(...) { ... }
 <span class="boring">}</span></code></pre>
+<h3 id="pub-fn-parse_using_strict"><a class="header" href="#pub-fn-parse_using_strict"><code>pub fn parse_using_strict</code></a></h3>
+<pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>pub fn parse_using_strict(...) { ... }
+<span class="boring">}</span></code></pre>
+<p>Strict production parser for <code>@using</code> directives.
+Unlike [<code>parse_using</code>], it rejects malformed numeric parameters instead of
+silently dropping them. The engine uses this at startup.</p>
 <div style="break-before: page; page-break-before: always;"></div>
 <h1 id="module-journal"><a class="header" href="#module-journal">Module: <code>journal</code></a></h1>
 <blockquote>
@@ -2674,6 +2885,112 @@ silently understate fee and position accounting.</p>
 </span>pub type ParseResult = std :: result :: Result &lt; T , UserDataParseError &gt;;
 <span class="boring">}</span></code></pre>
 <div style="break-before: page; page-break-before: always;"></div>
+<h1 id="module-custom"><a class="header" href="#module-custom">Module: <code>custom</code></a></h1>
+<blockquote>
+<p>Source: <code>custom.rs</code></p>
+</blockquote>
+<p>Native, compile-time custom-indicator extension API.</p>
+<p>Put one Rust source file in <code>src/custom/</code>. The build script discovers it at
+compile time and adds its [<code>CustomIndicatorRegistration</code>] to the registry.
+Dynamic loading is deliberately unsupported: every plugin is reviewed,
+compiled, and linked into the Quince binary.</p>
+<h2 id="structs-30"><a class="header" href="#structs-30">Structs</a></h2>
+<h3 id="pub-struct-indicatorparameter"><a class="header" href="#pub-struct-indicatorparameter"><code>pub struct IndicatorParameter</code></a></h3>
+<pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>pub struct IndicatorParameter {
+    pub name: &amp; 'static str,
+    pub min: f64,
+    pub max: f64,
+};
+<span class="boring">}</span></code></pre>
+<p>A named numeric parameter accepted by a custom indicator.</p>
+<h3 id="pub-struct-indicatordescriptor"><a class="header" href="#pub-struct-indicatordescriptor"><code>pub struct IndicatorDescriptor</code></a></h3>
+<pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>pub struct IndicatorDescriptor {
+    pub name: &amp; 'static str,
+    pub input: IndicatorInput,
+    pub output: IndicatorOutput,
+    pub parameters: &amp; 'static [IndicatorParameter],
+};
+<span class="boring">}</span></code></pre>
+<p>Immutable metadata declared by every custom indicator.</p>
+<h3 id="pub-struct-customindicatorregistration"><a class="header" href="#pub-struct-customindicatorregistration"><code>pub struct CustomIndicatorRegistration</code></a></h3>
+<pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>pub struct CustomIndicatorRegistration {
+    pub descriptor: &amp; 'static IndicatorDescriptor,
+    pub create: CustomIndicatorFactory,
+};
+<span class="boring">}</span></code></pre>
+<p>Compile-time registration emitted by a custom-indicator source file.</p>
+<h2 id="enums-19"><a class="header" href="#enums-19">Enums</a></h2>
+<h3 id="pub-enum-indicatorinput"><a class="header" href="#pub-enum-indicatorinput"><code>pub enum IndicatorInput</code></a></h3>
+<pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>pub enum IndicatorInput {
+    Trade,
+}
+<span class="boring">}</span></code></pre>
+<p>Market-event format accepted by an indicator.</p>
+<h3 id="pub-enum-indicatoroutput"><a class="header" href="#pub-enum-indicatoroutput"><code>pub enum IndicatorOutput</code></a></h3>
+<pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>pub enum IndicatorOutput {
+    ScalarF64,
+}
+<span class="boring">}</span></code></pre>
+<p>Output format exposed to QFL through <code>quince.get("&lt;name&gt;")</code>.</p>
+<h3 id="pub-enum-customindicatorerror"><a class="header" href="#pub-enum-customindicatorerror"><code>pub enum CustomIndicatorError</code></a></h3>
+<pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>pub enum CustomIndicatorError {
+    UnknownIndicator(String,),
+    InvalidParameterCount(indicator: &amp; 'static str,
+    expected: usize,
+    actual: usize,),
+    InvalidParameter(indicator: &amp; 'static str,
+    parameter: &amp; 'static str,
+    value: f64,
+    min: f64,
+    max: f64,),
+    Construction(indicator: &amp; 'static str,
+    reason: &amp; 'static str,),
+}
+<span class="boring">}</span></code></pre>
+<p>Construction or validation failure for a custom indicator.</p>
+<h2 id="traits-2"><a class="header" href="#traits-2">Traits</a></h2>
+<h3 id="pub-trait-customindicator"><a class="header" href="#pub-trait-customindicator"><code>pub trait CustomIndicator</code></a></h3>
+<pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>pub trait CustomIndicator: Send {
+    fn on_trade (&amp; mut self , trade : &amp; Trade) -&gt; Option &lt; f64 &gt;;
+}
+<span class="boring">}</span></code></pre>
+<p>Native indicator implementation. <code>on_trade</code> must not allocate or block.</p>
+<h2 id="functions-16"><a class="header" href="#functions-16">Functions</a></h2>
+<h3 id="pub-fn-custom_indicator"><a class="header" href="#pub-fn-custom_indicator"><code>pub fn custom_indicator</code></a></h3>
+<pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>pub fn custom_indicator(...) { ... }
+<span class="boring">}</span></code></pre>
+<p>Finds a compile-time registered custom indicator by its QFL name.</p>
+<h3 id="pub-fn-custom_indicators"><a class="header" href="#pub-fn-custom_indicators"><code>pub fn custom_indicators</code></a></h3>
+<pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>pub fn custom_indicators(...) { ... }
+<span class="boring">}</span></code></pre>
+<p>All custom indicators linked into this Quince build, in deterministic
+filename order. This is intended for startup validation and tooling only.</p>
+<h2 id="type-aliases-6"><a class="header" href="#type-aliases-6">Type Aliases</a></h2>
+<h3 id="pub-type-customindicatorfactory"><a class="header" href="#pub-type-customindicatorfactory"><code>pub type CustomIndicatorFactory</code></a></h3>
+<pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>pub type CustomIndicatorFactory = fn (&amp; [f64]) -&gt; Result &lt; Box &lt; dyn CustomIndicator &gt; , CustomIndicatorError &gt;;
+<span class="boring">}</span></code></pre>
+<p>Factory signature used by the generated custom-indicator registry.</p>
+<div style="break-before: page; page-break-before: always;"></div>
 <h1 id="module-flow"><a class="header" href="#module-flow">Module: <code>flow</code></a></h1>
 <blockquote>
 <p>Source: <code>flow.rs</code></p>
@@ -2681,7 +2998,7 @@ silently understate fee and position accounting.</p>
 <p>Money Flow Index (MFI) indicator.
 A volume-weighted momentum oscillator that uses price and volume to identify
 overbought/oversold conditions. [<code>Mfi</code>] tracks positive and negative money flow.</p>
-<h2 id="structs-30"><a class="header" href="#structs-30">Structs</a></h2>
+<h2 id="structs-31"><a class="header" href="#structs-31">Structs</a></h2>
 <h3 id="pub-struct-mfi"><a class="header" href="#pub-struct-mfi"><code>pub struct Mfi</code></a></h3>
 <pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
 </span><span class="boring">fn main() {
@@ -2749,7 +3066,7 @@ overbought/oversold conditions. [<code>Mfi</code>] tracks positive and negative 
 <p>Technical analysis indicators for trading strategies.
 Provides moving averages, oscillators, volatility measures, flow indicators,
 and structure detection — all operating on the shared [<code>Candle</code>] type.</p>
-<h2 id="structs-31"><a class="header" href="#structs-31">Structs</a></h2>
+<h2 id="structs-32"><a class="header" href="#structs-32">Structs</a></h2>
 <h3 id="pub-struct-candle"><a class="header" href="#pub-struct-candle"><code>pub struct Candle</code></a></h3>
 <pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
 </span><span class="boring">fn main() {
@@ -2769,7 +3086,7 @@ and structure detection — all operating on the shared [<code>Candle</code>] ty
 <p>Moving average indicators.
 Provides [<code>Sma</code>] (Simple), [<code>Ema</code>] (Exponential), [<code>Wma</code>] (Weighted),
 and [<code>Hma</code>] (Hull) moving averages with O(1) incremental updates.</p>
-<h2 id="structs-32"><a class="header" href="#structs-32">Structs</a></h2>
+<h2 id="structs-33"><a class="header" href="#structs-33">Structs</a></h2>
 <h3 id="pub-struct-sma"><a class="header" href="#pub-struct-sma"><code>pub struct Sma</code></a></h3>
 <pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
 </span><span class="boring">fn main() {
@@ -2825,7 +3142,7 @@ and [<code>Hma</code>] (Hull) moving averages with O(1) incremental updates.</p>
 <p>Oscillator indicators for momentum and mean-reversion analysis.
 Includes [<code>Rsi</code>] (Relative Strength Index), [<code>Stochastic</code>], [<code>Cci</code>]
 (Commodity Channel Index), and [<code>WilliamsR</code>] (%R).</p>
-<h2 id="structs-33"><a class="header" href="#structs-33">Structs</a></h2>
+<h2 id="structs-34"><a class="header" href="#structs-34">Structs</a></h2>
 <h3 id="pub-struct-rsi"><a class="header" href="#pub-struct-rsi"><code>pub struct Rsi</code></a></h3>
 <pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
 </span><span class="boring">fn main() {
@@ -2889,7 +3206,7 @@ Includes [<code>Rsi</code>] (Relative Strength Index), [<code>Stochastic</code>]
 <p>Source: <code>simd.rs</code></p>
 </blockquote>
 <p><em>No module documentation.</em></p>
-<h2 id="functions-16"><a class="header" href="#functions-16">Functions</a></h2>
+<h2 id="functions-17"><a class="header" href="#functions-17">Functions</a></h2>
 <h3 id="pub-fn-sum"><a class="header" href="#pub-fn-sum"><code>pub fn sum</code></a></h3>
 <pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
 </span><span class="boring">fn main() {
@@ -2928,7 +3245,7 @@ Includes [<code>Rsi</code>] (Relative Strength Index), [<code>Stochastic</code>]
 <p>Market structure indicators.
 Provides [<code>Adx</code>] (Average Directional Index) for trend strength measurement
 and [<code>Psar</code>] (Parabolic SAR) for trend direction and reversal points.</p>
-<h2 id="structs-34"><a class="header" href="#structs-34">Structs</a></h2>
+<h2 id="structs-35"><a class="header" href="#structs-35">Structs</a></h2>
 <h3 id="pub-struct-adx"><a class="header" href="#pub-struct-adx"><code>pub struct Adx</code></a></h3>
 <pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
 </span><span class="boring">fn main() {
@@ -2986,7 +3303,7 @@ and [<code>Psar</code>] (Parabolic SAR) for trend direction and reversal points.
 <p>Volatility indicators.
 Provides [<code>TrueRange</code>], [<code>Atr</code>] (Average True Range), [<code>BollingerBands</code>],
 and [<code>KeltnerChannel</code>] for measuring and visualizing market volatility.</p>
-<h2 id="structs-35"><a class="header" href="#structs-35">Structs</a></h2>
+<h2 id="structs-36"><a class="header" href="#structs-36">Structs</a></h2>
 <h3 id="pub-struct-truerange"><a class="header" href="#pub-struct-truerange"><code>pub struct TrueRange</code></a></h3>
 <pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
 </span><span class="boring">fn main() {
@@ -3042,6 +3359,630 @@ and [<code>KeltnerChannel</code>] for measuring and visualizing market volatilit
 };
 <span class="boring">}</span></code></pre>
 <div style="break-before: page; page-break-before: always;"></div>
+<h1 id="module-customcustom_atr"><a class="header" href="#module-customcustom_atr">Module: <code>custom/custom_atr</code></a></h1>
+<blockquote>
+<p>Source: <code>custom/custom_atr.rs</code></p>
+</blockquote>
+<p><em>No module documentation.</em></p>
+<h2 id="statics"><a class="header" href="#statics">Statics</a></h2>
+<h3 id="pub-static-registration"><a class="header" href="#pub-static-registration"><code>pub static REGISTRATION</code></a></h3>
+<pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>pub static REGISTRATION: CustomIndicatorRegistration = ...;
+<span class="boring">}</span></code></pre>
+<div style="break-before: page; page-break-before: always;"></div>
+<h1 id="module-customcustom_average_trade_size"><a class="header" href="#module-customcustom_average_trade_size">Module: <code>custom/custom_average_trade_size</code></a></h1>
+<blockquote>
+<p>Source: <code>custom/custom_average_trade_size.rs</code></p>
+</blockquote>
+<p>Arithmetic mean of valid trade quantities.</p>
+<h2 id="statics-1"><a class="header" href="#statics-1">Statics</a></h2>
+<h3 id="pub-static-registration-1"><a class="header" href="#pub-static-registration-1"><code>pub static REGISTRATION</code></a></h3>
+<pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>pub static REGISTRATION: CustomIndicatorRegistration = ...;
+<span class="boring">}</span></code></pre>
+<div style="break-before: page; page-break-before: always;"></div>
+<h1 id="module-customcustom_bollinger_width"><a class="header" href="#module-customcustom_bollinger_width">Module: <code>custom/custom_bollinger_width</code></a></h1>
+<blockquote>
+<p>Source: <code>custom/custom_bollinger_width.rs</code></p>
+</blockquote>
+<p><em>No module documentation.</em></p>
+<h2 id="statics-2"><a class="header" href="#statics-2">Statics</a></h2>
+<h3 id="pub-static-registration-2"><a class="header" href="#pub-static-registration-2"><code>pub static REGISTRATION</code></a></h3>
+<pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>pub static REGISTRATION: CustomIndicatorRegistration = ...;
+<span class="boring">}</span></code></pre>
+<div style="break-before: page; page-break-before: always;"></div>
+<h1 id="module-customcustom_buy_volume_ratio"><a class="header" href="#module-customcustom_buy_volume_ratio">Module: <code>custom/custom_buy_volume_ratio</code></a></h1>
+<blockquote>
+<p>Source: <code>custom/custom_buy_volume_ratio.rs</code></p>
+</blockquote>
+<p>Cumulative buy volume share.</p>
+<h2 id="statics-3"><a class="header" href="#statics-3">Statics</a></h2>
+<h3 id="pub-static-registration-3"><a class="header" href="#pub-static-registration-3"><code>pub static REGISTRATION</code></a></h3>
+<pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>pub static REGISTRATION: CustomIndicatorRegistration = ...;
+<span class="boring">}</span></code></pre>
+<div style="break-before: page; page-break-before: always;"></div>
+<h1 id="module-customcustom_chaikin_oscillator"><a class="header" href="#module-customcustom_chaikin_oscillator">Module: <code>custom/custom_chaikin_oscillator</code></a></h1>
+<blockquote>
+<p>Source: <code>custom/custom_chaikin_oscillator.rs</code></p>
+</blockquote>
+<p><em>No module documentation.</em></p>
+<h2 id="statics-4"><a class="header" href="#statics-4">Statics</a></h2>
+<h3 id="pub-static-registration-4"><a class="header" href="#pub-static-registration-4"><code>pub static REGISTRATION</code></a></h3>
+<pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>pub static REGISTRATION: CustomIndicatorRegistration = ...;
+<span class="boring">}</span></code></pre>
+<div style="break-before: page; page-break-before: always;"></div>
+<h1 id="module-customcustom_cmo"><a class="header" href="#module-customcustom_cmo">Module: <code>custom/custom_cmo</code></a></h1>
+<blockquote>
+<p>Source: <code>custom/custom_cmo.rs</code></p>
+</blockquote>
+<p><em>No module documentation.</em></p>
+<h2 id="statics-5"><a class="header" href="#statics-5">Statics</a></h2>
+<h3 id="pub-static-registration-5"><a class="header" href="#pub-static-registration-5"><code>pub static REGISTRATION</code></a></h3>
+<pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>pub static REGISTRATION: CustomIndicatorRegistration = ...;
+<span class="boring">}</span></code></pre>
+<div style="break-before: page; page-break-before: always;"></div>
+<h1 id="module-customcustom_cvd"><a class="header" href="#module-customcustom_cvd">Module: <code>custom/custom_cvd</code></a></h1>
+<blockquote>
+<p>Source: <code>custom/custom_cvd.rs</code></p>
+</blockquote>
+<p><em>No module documentation.</em></p>
+<h2 id="statics-6"><a class="header" href="#statics-6">Statics</a></h2>
+<h3 id="pub-static-registration-6"><a class="header" href="#pub-static-registration-6"><code>pub static REGISTRATION</code></a></h3>
+<pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>pub static REGISTRATION: CustomIndicatorRegistration = ...;
+<span class="boring">}</span></code></pre>
+<div style="break-before: page; page-break-before: always;"></div>
+<h1 id="module-customcustom_dema"><a class="header" href="#module-customcustom_dema">Module: <code>custom/custom_dema</code></a></h1>
+<blockquote>
+<p>Source: <code>custom/custom_dema.rs</code></p>
+</blockquote>
+<p><em>No module documentation.</em></p>
+<h2 id="statics-7"><a class="header" href="#statics-7">Statics</a></h2>
+<h3 id="pub-static-registration-7"><a class="header" href="#pub-static-registration-7"><code>pub static REGISTRATION</code></a></h3>
+<pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>pub static REGISTRATION: CustomIndicatorRegistration = ...;
+<span class="boring">}</span></code></pre>
+<div style="break-before: page; page-break-before: always;"></div>
+<h1 id="module-customcustom_donchian_width"><a class="header" href="#module-customcustom_donchian_width">Module: <code>custom/custom_donchian_width</code></a></h1>
+<blockquote>
+<p>Source: <code>custom/custom_donchian_width.rs</code></p>
+</blockquote>
+<p><em>No module documentation.</em></p>
+<h2 id="statics-8"><a class="header" href="#statics-8">Statics</a></h2>
+<h3 id="pub-static-registration-8"><a class="header" href="#pub-static-registration-8"><code>pub static REGISTRATION</code></a></h3>
+<pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>pub static REGISTRATION: CustomIndicatorRegistration = ...;
+<span class="boring">}</span></code></pre>
+<div style="break-before: page; page-break-before: always;"></div>
+<h1 id="module-customcustom_efficiency_ratio"><a class="header" href="#module-customcustom_efficiency_ratio">Module: <code>custom/custom_efficiency_ratio</code></a></h1>
+<blockquote>
+<p>Source: <code>custom/custom_efficiency_ratio.rs</code></p>
+</blockquote>
+<p>Cumulative net price displacement divided by cumulative absolute movement.</p>
+<h2 id="statics-9"><a class="header" href="#statics-9">Statics</a></h2>
+<h3 id="pub-static-registration-9"><a class="header" href="#pub-static-registration-9"><code>pub static REGISTRATION</code></a></h3>
+<pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>pub static REGISTRATION: CustomIndicatorRegistration = ...;
+<span class="boring">}</span></code></pre>
+<div style="break-before: page; page-break-before: always;"></div>
+<h1 id="module-customcustom_ema"><a class="header" href="#module-customcustom_ema">Module: <code>custom/custom_ema</code></a></h1>
+<blockquote>
+<p>Source: <code>custom/custom_ema.rs</code></p>
+</blockquote>
+<p><em>No module documentation.</em></p>
+<h2 id="statics-10"><a class="header" href="#statics-10">Statics</a></h2>
+<h3 id="pub-static-registration-10"><a class="header" href="#pub-static-registration-10"><code>pub static REGISTRATION</code></a></h3>
+<pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>pub static REGISTRATION: CustomIndicatorRegistration = ...;
+<span class="boring">}</span></code></pre>
+<div style="break-before: page; page-break-before: always;"></div>
+<h1 id="module-customcustom_ewma_volatility"><a class="header" href="#module-customcustom_ewma_volatility">Module: <code>custom/custom_ewma_volatility</code></a></h1>
+<blockquote>
+<p>Source: <code>custom/custom_ewma_volatility.rs</code></p>
+</blockquote>
+<p><em>No module documentation.</em></p>
+<h2 id="statics-11"><a class="header" href="#statics-11">Statics</a></h2>
+<h3 id="pub-static-registration-11"><a class="header" href="#pub-static-registration-11"><code>pub static REGISTRATION</code></a></h3>
+<pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>pub static REGISTRATION: CustomIndicatorRegistration = ...;
+<span class="boring">}</span></code></pre>
+<div style="break-before: page; page-break-before: always;"></div>
+<h1 id="module-customcustom_force_index"><a class="header" href="#module-customcustom_force_index">Module: <code>custom/custom_force_index</code></a></h1>
+<blockquote>
+<p>Source: <code>custom/custom_force_index.rs</code></p>
+</blockquote>
+<p><em>No module documentation.</em></p>
+<h2 id="statics-12"><a class="header" href="#statics-12">Statics</a></h2>
+<h3 id="pub-static-registration-12"><a class="header" href="#pub-static-registration-12"><code>pub static REGISTRATION</code></a></h3>
+<pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>pub static REGISTRATION: CustomIndicatorRegistration = ...;
+<span class="boring">}</span></code></pre>
+<div style="break-before: page; page-break-before: always;"></div>
+<h1 id="module-customcustom_historical_volatility"><a class="header" href="#module-customcustom_historical_volatility">Module: <code>custom/custom_historical_volatility</code></a></h1>
+<blockquote>
+<p>Source: <code>custom/custom_historical_volatility.rs</code></p>
+</blockquote>
+<p><em>No module documentation.</em></p>
+<h2 id="statics-13"><a class="header" href="#statics-13">Statics</a></h2>
+<h3 id="pub-static-registration-13"><a class="header" href="#pub-static-registration-13"><code>pub static REGISTRATION</code></a></h3>
+<pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>pub static REGISTRATION: CustomIndicatorRegistration = ...;
+<span class="boring">}</span></code></pre>
+<div style="break-before: page; page-break-before: always;"></div>
+<h1 id="module-customcustom_kama"><a class="header" href="#module-customcustom_kama">Module: <code>custom/custom_kama</code></a></h1>
+<blockquote>
+<p>Source: <code>custom/custom_kama.rs</code></p>
+</blockquote>
+<p><em>No module documentation.</em></p>
+<h2 id="statics-14"><a class="header" href="#statics-14">Statics</a></h2>
+<h3 id="pub-static-registration-14"><a class="header" href="#pub-static-registration-14"><code>pub static REGISTRATION</code></a></h3>
+<pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>pub static REGISTRATION: CustomIndicatorRegistration = ...;
+<span class="boring">}</span></code></pre>
+<div style="break-before: page; page-break-before: always;"></div>
+<h1 id="module-customcustom_large_trade_ratio"><a class="header" href="#module-customcustom_large_trade_ratio">Module: <code>custom/custom_large_trade_ratio</code></a></h1>
+<blockquote>
+<p>Source: <code>custom/custom_large_trade_ratio.rs</code></p>
+</blockquote>
+<p>Share of trades whose quantity is at least a configured threshold.</p>
+<h2 id="statics-15"><a class="header" href="#statics-15">Statics</a></h2>
+<h3 id="pub-static-registration-15"><a class="header" href="#pub-static-registration-15"><code>pub static REGISTRATION</code></a></h3>
+<pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>pub static REGISTRATION: CustomIndicatorRegistration = ...;
+<span class="boring">}</span></code></pre>
+<div style="break-before: page; page-break-before: always;"></div>
+<h1 id="module-customcustom_linear_regression"><a class="header" href="#module-customcustom_linear_regression">Module: <code>custom/custom_linear_regression</code></a></h1>
+<blockquote>
+<p>Source: <code>custom/custom_linear_regression.rs</code></p>
+</blockquote>
+<p><em>No module documentation.</em></p>
+<h2 id="statics-16"><a class="header" href="#statics-16">Statics</a></h2>
+<h3 id="pub-static-registration-16"><a class="header" href="#pub-static-registration-16"><code>pub static REGISTRATION</code></a></h3>
+<pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>pub static REGISTRATION: CustomIndicatorRegistration = ...;
+<span class="boring">}</span></code></pre>
+<div style="break-before: page; page-break-before: always;"></div>
+<h1 id="module-customcustom_log_return"><a class="header" href="#module-customcustom_log_return">Module: <code>custom/custom_log_return</code></a></h1>
+<blockquote>
+<p>Source: <code>custom/custom_log_return.rs</code></p>
+</blockquote>
+<p>Natural log return between consecutive positive trade prices.</p>
+<h2 id="statics-17"><a class="header" href="#statics-17">Statics</a></h2>
+<h3 id="pub-static-registration-17"><a class="header" href="#pub-static-registration-17"><code>pub static REGISTRATION</code></a></h3>
+<pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>pub static REGISTRATION: CustomIndicatorRegistration = ...;
+<span class="boring">}</span></code></pre>
+<div style="break-before: page; page-break-before: always;"></div>
+<h1 id="module-customcustom_logistic_regression"><a class="header" href="#module-customcustom_logistic_regression">Module: <code>custom/custom_logistic_regression</code></a></h1>
+<blockquote>
+<p>Source: <code>custom/custom_logistic_regression.rs</code></p>
+</blockquote>
+<p>Online logistic regression over trade log-returns.</p>
+<h2 id="statics-18"><a class="header" href="#statics-18">Statics</a></h2>
+<h3 id="pub-static-registration-18"><a class="header" href="#pub-static-registration-18"><code>pub static REGISTRATION</code></a></h3>
+<pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>pub static REGISTRATION: CustomIndicatorRegistration = ...;
+<span class="boring">}</span></code></pre>
+<div style="break-before: page; page-break-before: always;"></div>
+<h1 id="module-customcustom_macd_signal"><a class="header" href="#module-customcustom_macd_signal">Module: <code>custom/custom_macd_signal</code></a></h1>
+<blockquote>
+<p>Source: <code>custom/custom_macd_signal.rs</code></p>
+</blockquote>
+<p><em>No module documentation.</em></p>
+<h2 id="statics-19"><a class="header" href="#statics-19">Statics</a></h2>
+<h3 id="pub-static-registration-19"><a class="header" href="#pub-static-registration-19"><code>pub static REGISTRATION</code></a></h3>
+<pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>pub static REGISTRATION: CustomIndicatorRegistration = ...;
+<span class="boring">}</span></code></pre>
+<div style="break-before: page; page-break-before: always;"></div>
+<h1 id="module-customcustom_median_price"><a class="header" href="#module-customcustom_median_price">Module: <code>custom/custom_median_price</code></a></h1>
+<blockquote>
+<p>Source: <code>custom/custom_median_price.rs</code></p>
+</blockquote>
+<p>Running midpoint of the observed trade-price range.</p>
+<h2 id="statics-20"><a class="header" href="#statics-20">Statics</a></h2>
+<h3 id="pub-static-registration-20"><a class="header" href="#pub-static-registration-20"><code>pub static REGISTRATION</code></a></h3>
+<pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>pub static REGISTRATION: CustomIndicatorRegistration = ...;
+<span class="boring">}</span></code></pre>
+<div style="break-before: page; page-break-before: always;"></div>
+<h1 id="module-customcustom_mfi"><a class="header" href="#module-customcustom_mfi">Module: <code>custom/custom_mfi</code></a></h1>
+<blockquote>
+<p>Source: <code>custom/custom_mfi.rs</code></p>
+</blockquote>
+<p><em>No module documentation.</em></p>
+<h2 id="statics-21"><a class="header" href="#statics-21">Statics</a></h2>
+<h3 id="pub-static-registration-21"><a class="header" href="#pub-static-registration-21"><code>pub static REGISTRATION</code></a></h3>
+<pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>pub static REGISTRATION: CustomIndicatorRegistration = ...;
+<span class="boring">}</span></code></pre>
+<div style="break-before: page; page-break-before: always;"></div>
+<h1 id="module-customcustom_momentum"><a class="header" href="#module-customcustom_momentum">Module: <code>custom/custom_momentum</code></a></h1>
+<blockquote>
+<p>Source: <code>custom/custom_momentum.rs</code></p>
+</blockquote>
+<p><em>No module documentation.</em></p>
+<h2 id="statics-22"><a class="header" href="#statics-22">Statics</a></h2>
+<h3 id="pub-static-registration-22"><a class="header" href="#pub-static-registration-22"><code>pub static REGISTRATION</code></a></h3>
+<pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>pub static REGISTRATION: CustomIndicatorRegistration = ...;
+<span class="boring">}</span></code></pre>
+<div style="break-before: page; page-break-before: always;"></div>
+<h1 id="module-customcustom_money_flow"><a class="header" href="#module-customcustom_money_flow">Module: <code>custom/custom_money_flow</code></a></h1>
+<blockquote>
+<p>Source: <code>custom/custom_money_flow.rs</code></p>
+</blockquote>
+<p><em>No module documentation.</em></p>
+<h2 id="statics-23"><a class="header" href="#statics-23">Statics</a></h2>
+<h3 id="pub-static-registration-23"><a class="header" href="#pub-static-registration-23"><code>pub static REGISTRATION</code></a></h3>
+<pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>pub static REGISTRATION: CustomIndicatorRegistration = ...;
+<span class="boring">}</span></code></pre>
+<div style="break-before: page; page-break-before: always;"></div>
+<h1 id="module-customcustom_obv"><a class="header" href="#module-customcustom_obv">Module: <code>custom/custom_obv</code></a></h1>
+<blockquote>
+<p>Source: <code>custom/custom_obv.rs</code></p>
+</blockquote>
+<p><em>No module documentation.</em></p>
+<h2 id="statics-24"><a class="header" href="#statics-24">Statics</a></h2>
+<h3 id="pub-static-registration-24"><a class="header" href="#pub-static-registration-24"><code>pub static REGISTRATION</code></a></h3>
+<pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>pub static REGISTRATION: CustomIndicatorRegistration = ...;
+<span class="boring">}</span></code></pre>
+<div style="break-before: page; page-break-before: always;"></div>
+<h1 id="module-customcustom_parkinson_volatility"><a class="header" href="#module-customcustom_parkinson_volatility">Module: <code>custom/custom_parkinson_volatility</code></a></h1>
+<blockquote>
+<p>Source: <code>custom/custom_parkinson_volatility.rs</code></p>
+</blockquote>
+<p><em>No module documentation.</em></p>
+<h2 id="statics-25"><a class="header" href="#statics-25">Statics</a></h2>
+<h3 id="pub-static-registration-25"><a class="header" href="#pub-static-registration-25"><code>pub static REGISTRATION</code></a></h3>
+<pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>pub static REGISTRATION: CustomIndicatorRegistration = ...;
+<span class="boring">}</span></code></pre>
+<div style="break-before: page; page-break-before: always;"></div>
+<h1 id="module-customcustom_price_impact"><a class="header" href="#module-customcustom_price_impact">Module: <code>custom/custom_price_impact</code></a></h1>
+<blockquote>
+<p>Source: <code>custom/custom_price_impact.rs</code></p>
+</blockquote>
+<p>Absolute price change per unit of the current trade quantity.</p>
+<h2 id="statics-26"><a class="header" href="#statics-26">Statics</a></h2>
+<h3 id="pub-static-registration-26"><a class="header" href="#pub-static-registration-26"><code>pub static REGISTRATION</code></a></h3>
+<pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>pub static REGISTRATION: CustomIndicatorRegistration = ...;
+<span class="boring">}</span></code></pre>
+<div style="break-before: page; page-break-before: always;"></div>
+<h1 id="module-customcustom_return_kurtosis"><a class="header" href="#module-customcustom_return_kurtosis">Module: <code>custom/custom_return_kurtosis</code></a></h1>
+<blockquote>
+<p>Source: <code>custom/custom_return_kurtosis.rs</code></p>
+</blockquote>
+<p>Online excess population kurtosis of simple returns.</p>
+<h2 id="statics-27"><a class="header" href="#statics-27">Statics</a></h2>
+<h3 id="pub-static-registration-27"><a class="header" href="#pub-static-registration-27"><code>pub static REGISTRATION</code></a></h3>
+<pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>pub static REGISTRATION: CustomIndicatorRegistration = ...;
+<span class="boring">}</span></code></pre>
+<div style="break-before: page; page-break-before: always;"></div>
+<h1 id="module-customcustom_return_skewness"><a class="header" href="#module-customcustom_return_skewness">Module: <code>custom/custom_return_skewness</code></a></h1>
+<blockquote>
+<p>Source: <code>custom/custom_return_skewness.rs</code></p>
+</blockquote>
+<p>Online population skewness of simple returns.</p>
+<h2 id="statics-28"><a class="header" href="#statics-28">Statics</a></h2>
+<h3 id="pub-static-registration-28"><a class="header" href="#pub-static-registration-28"><code>pub static REGISTRATION</code></a></h3>
+<pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>pub static REGISTRATION: CustomIndicatorRegistration = ...;
+<span class="boring">}</span></code></pre>
+<div style="break-before: page; page-break-before: always;"></div>
+<h1 id="module-customcustom_return_variance"><a class="header" href="#module-customcustom_return_variance">Module: <code>custom/custom_return_variance</code></a></h1>
+<blockquote>
+<p>Source: <code>custom/custom_return_variance.rs</code></p>
+</blockquote>
+<p>Online population variance of simple trade-to-trade returns.</p>
+<h2 id="statics-29"><a class="header" href="#statics-29">Statics</a></h2>
+<h3 id="pub-static-registration-29"><a class="header" href="#pub-static-registration-29"><code>pub static REGISTRATION</code></a></h3>
+<pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>pub static REGISTRATION: CustomIndicatorRegistration = ...;
+<span class="boring">}</span></code></pre>
+<div style="break-before: page; page-break-before: always;"></div>
+<h1 id="module-customcustom_roc"><a class="header" href="#module-customcustom_roc">Module: <code>custom/custom_roc</code></a></h1>
+<blockquote>
+<p>Source: <code>custom/custom_roc.rs</code></p>
+</blockquote>
+<p><em>No module documentation.</em></p>
+<h2 id="statics-30"><a class="header" href="#statics-30">Statics</a></h2>
+<h3 id="pub-static-registration-30"><a class="header" href="#pub-static-registration-30"><code>pub static REGISTRATION</code></a></h3>
+<pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>pub static REGISTRATION: CustomIndicatorRegistration = ...;
+<span class="boring">}</span></code></pre>
+<div style="break-before: page; page-break-before: always;"></div>
+<h1 id="module-customcustom_rsi"><a class="header" href="#module-customcustom_rsi">Module: <code>custom/custom_rsi</code></a></h1>
+<blockquote>
+<p>Source: <code>custom/custom_rsi.rs</code></p>
+</blockquote>
+<p><em>No module documentation.</em></p>
+<h2 id="statics-31"><a class="header" href="#statics-31">Statics</a></h2>
+<h3 id="pub-static-registration-31"><a class="header" href="#pub-static-registration-31"><code>pub static REGISTRATION</code></a></h3>
+<pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>pub static REGISTRATION: CustomIndicatorRegistration = ...;
+<span class="boring">}</span></code></pre>
+<div style="break-before: page; page-break-before: always;"></div>
+<h1 id="module-customcustom_signed_volume_ratio"><a class="header" href="#module-customcustom_signed_volume_ratio">Module: <code>custom/custom_signed_volume_ratio</code></a></h1>
+<blockquote>
+<p>Source: <code>custom/custom_signed_volume_ratio.rs</code></p>
+</blockquote>
+<p>Cumulative signed volume divided by cumulative volume.</p>
+<h2 id="statics-32"><a class="header" href="#statics-32">Statics</a></h2>
+<h3 id="pub-static-registration-32"><a class="header" href="#pub-static-registration-32"><code>pub static REGISTRATION</code></a></h3>
+<pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>pub static REGISTRATION: CustomIndicatorRegistration = ...;
+<span class="boring">}</span></code></pre>
+<div style="break-before: page; page-break-before: always;"></div>
+<h1 id="module-customcustom_sma"><a class="header" href="#module-customcustom_sma">Module: <code>custom/custom_sma</code></a></h1>
+<blockquote>
+<p>Source: <code>custom/custom_sma.rs</code></p>
+</blockquote>
+<p><em>No module documentation.</em></p>
+<h2 id="statics-33"><a class="header" href="#statics-33">Statics</a></h2>
+<h3 id="pub-static-registration-33"><a class="header" href="#pub-static-registration-33"><code>pub static REGISTRATION</code></a></h3>
+<pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>pub static REGISTRATION: CustomIndicatorRegistration = ...;
+<span class="boring">}</span></code></pre>
+<div style="break-before: page; page-break-before: always;"></div>
+<h1 id="module-customcustom_stochastic_k"><a class="header" href="#module-customcustom_stochastic_k">Module: <code>custom/custom_stochastic_k</code></a></h1>
+<blockquote>
+<p>Source: <code>custom/custom_stochastic_k.rs</code></p>
+</blockquote>
+<p><em>No module documentation.</em></p>
+<h2 id="statics-34"><a class="header" href="#statics-34">Statics</a></h2>
+<h3 id="pub-static-registration-34"><a class="header" href="#pub-static-registration-34"><code>pub static REGISTRATION</code></a></h3>
+<pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>pub static REGISTRATION: CustomIndicatorRegistration = ...;
+<span class="boring">}</span></code></pre>
+<div style="break-before: page; page-break-before: always;"></div>
+<h1 id="module-customcustom_tema"><a class="header" href="#module-customcustom_tema">Module: <code>custom/custom_tema</code></a></h1>
+<blockquote>
+<p>Source: <code>custom/custom_tema.rs</code></p>
+</blockquote>
+<p><em>No module documentation.</em></p>
+<h2 id="statics-35"><a class="header" href="#statics-35">Statics</a></h2>
+<h3 id="pub-static-registration-35"><a class="header" href="#pub-static-registration-35"><code>pub static REGISTRATION</code></a></h3>
+<pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>pub static REGISTRATION: CustomIndicatorRegistration = ...;
+<span class="boring">}</span></code></pre>
+<div style="break-before: page; page-break-before: always;"></div>
+<h1 id="module-customcustom_tick_direction"><a class="header" href="#module-customcustom_tick_direction">Module: <code>custom/custom_tick_direction</code></a></h1>
+<blockquote>
+<p>Source: <code>custom/custom_tick_direction.rs</code></p>
+</blockquote>
+<p>Latest non-zero price tick direction: -1, 0, or 1.</p>
+<h2 id="statics-36"><a class="header" href="#statics-36">Statics</a></h2>
+<h3 id="pub-static-registration-36"><a class="header" href="#pub-static-registration-36"><code>pub static REGISTRATION</code></a></h3>
+<pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>pub static REGISTRATION: CustomIndicatorRegistration = ...;
+<span class="boring">}</span></code></pre>
+<div style="break-before: page; page-break-before: always;"></div>
+<h1 id="module-customcustom_tick_run_length"><a class="header" href="#module-customcustom_tick_run_length">Module: <code>custom/custom_tick_run_length</code></a></h1>
+<blockquote>
+<p>Source: <code>custom/custom_tick_run_length.rs</code></p>
+</blockquote>
+<p>Number of consecutive non-zero price ticks in the latest direction.</p>
+<h2 id="statics-37"><a class="header" href="#statics-37">Statics</a></h2>
+<h3 id="pub-static-registration-37"><a class="header" href="#pub-static-registration-37"><code>pub static REGISTRATION</code></a></h3>
+<pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>pub static REGISTRATION: CustomIndicatorRegistration = ...;
+<span class="boring">}</span></code></pre>
+<div style="break-before: page; page-break-before: always;"></div>
+<h1 id="module-customcustom_trade_imbalance"><a class="header" href="#module-customcustom_trade_imbalance">Module: <code>custom/custom_trade_imbalance</code></a></h1>
+<blockquote>
+<p>Source: <code>custom/custom_trade_imbalance.rs</code></p>
+</blockquote>
+<p>Net count of buyer-initiated minus seller-initiated trades.</p>
+<h2 id="statics-38"><a class="header" href="#statics-38">Statics</a></h2>
+<h3 id="pub-static-registration-38"><a class="header" href="#pub-static-registration-38"><code>pub static REGISTRATION</code></a></h3>
+<pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>pub static REGISTRATION: CustomIndicatorRegistration = ...;
+<span class="boring">}</span></code></pre>
+<div style="break-before: page; page-break-before: always;"></div>
+<h1 id="module-customcustom_trade_intensity"><a class="header" href="#module-customcustom_trade_intensity">Module: <code>custom/custom_trade_intensity</code></a></h1>
+<blockquote>
+<p>Source: <code>custom/custom_trade_intensity.rs</code></p>
+</blockquote>
+<p>Trades per elapsed second since the first valid trade.</p>
+<h2 id="statics-39"><a class="header" href="#statics-39">Statics</a></h2>
+<h3 id="pub-static-registration-39"><a class="header" href="#pub-static-registration-39"><code>pub static REGISTRATION</code></a></h3>
+<pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>pub static REGISTRATION: CustomIndicatorRegistration = ...;
+<span class="boring">}</span></code></pre>
+<div style="break-before: page; page-break-before: always;"></div>
+<h1 id="module-customcustom_trix"><a class="header" href="#module-customcustom_trix">Module: <code>custom/custom_trix</code></a></h1>
+<blockquote>
+<p>Source: <code>custom/custom_trix.rs</code></p>
+</blockquote>
+<p><em>No module documentation.</em></p>
+<h2 id="statics-40"><a class="header" href="#statics-40">Statics</a></h2>
+<h3 id="pub-static-registration-40"><a class="header" href="#pub-static-registration-40"><code>pub static REGISTRATION</code></a></h3>
+<pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>pub static REGISTRATION: CustomIndicatorRegistration = ...;
+<span class="boring">}</span></code></pre>
+<div style="break-before: page; page-break-before: always;"></div>
+<h1 id="module-customcustom_true_range"><a class="header" href="#module-customcustom_true_range">Module: <code>custom/custom_true_range</code></a></h1>
+<blockquote>
+<p>Source: <code>custom/custom_true_range.rs</code></p>
+</blockquote>
+<p><em>No module documentation.</em></p>
+<h2 id="statics-41"><a class="header" href="#statics-41">Statics</a></h2>
+<h3 id="pub-static-registration-41"><a class="header" href="#pub-static-registration-41"><code>pub static REGISTRATION</code></a></h3>
+<pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>pub static REGISTRATION: CustomIndicatorRegistration = ...;
+<span class="boring">}</span></code></pre>
+<div style="break-before: page; page-break-before: always;"></div>
+<h1 id="module-customcustom_typical_price"><a class="header" href="#module-customcustom_typical_price">Module: <code>custom/custom_typical_price</code></a></h1>
+<blockquote>
+<p>Source: <code>custom/custom_typical_price.rs</code></p>
+</blockquote>
+<p>Trade-price value, provided as an explicit custom-indicator contract.</p>
+<h2 id="statics-42"><a class="header" href="#statics-42">Statics</a></h2>
+<h3 id="pub-static-registration-42"><a class="header" href="#pub-static-registration-42"><code>pub static REGISTRATION</code></a></h3>
+<pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>pub static REGISTRATION: CustomIndicatorRegistration = ...;
+<span class="boring">}</span></code></pre>
+<div style="break-before: page; page-break-before: always;"></div>
+<h1 id="module-customcustom_volume_roc"><a class="header" href="#module-customcustom_volume_roc">Module: <code>custom/custom_volume_roc</code></a></h1>
+<blockquote>
+<p>Source: <code>custom/custom_volume_roc.rs</code></p>
+</blockquote>
+<p><em>No module documentation.</em></p>
+<h2 id="statics-43"><a class="header" href="#statics-43">Statics</a></h2>
+<h3 id="pub-static-registration-43"><a class="header" href="#pub-static-registration-43"><code>pub static REGISTRATION</code></a></h3>
+<pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>pub static REGISTRATION: CustomIndicatorRegistration = ...;
+<span class="boring">}</span></code></pre>
+<div style="break-before: page; page-break-before: always;"></div>
+<h1 id="module-customcustom_volume_zscore"><a class="header" href="#module-customcustom_volume_zscore">Module: <code>custom/custom_volume_zscore</code></a></h1>
+<blockquote>
+<p>Source: <code>custom/custom_volume_zscore.rs</code></p>
+</blockquote>
+<p><em>No module documentation.</em></p>
+<h2 id="statics-44"><a class="header" href="#statics-44">Statics</a></h2>
+<h3 id="pub-static-registration-44"><a class="header" href="#pub-static-registration-44"><code>pub static REGISTRATION</code></a></h3>
+<pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>pub static REGISTRATION: CustomIndicatorRegistration = ...;
+<span class="boring">}</span></code></pre>
+<div style="break-before: page; page-break-before: always;"></div>
+<h1 id="module-customcustom_vortex"><a class="header" href="#module-customcustom_vortex">Module: <code>custom/custom_vortex</code></a></h1>
+<blockquote>
+<p>Source: <code>custom/custom_vortex.rs</code></p>
+</blockquote>
+<p><em>No module documentation.</em></p>
+<h2 id="statics-45"><a class="header" href="#statics-45">Statics</a></h2>
+<h3 id="pub-static-registration-45"><a class="header" href="#pub-static-registration-45"><code>pub static REGISTRATION</code></a></h3>
+<pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>pub static REGISTRATION: CustomIndicatorRegistration = ...;
+<span class="boring">}</span></code></pre>
+<div style="break-before: page; page-break-before: always;"></div>
+<h1 id="module-customcustom_vwap"><a class="header" href="#module-customcustom_vwap">Module: <code>custom/custom_vwap</code></a></h1>
+<blockquote>
+<p>Source: <code>custom/custom_vwap.rs</code></p>
+</blockquote>
+<p><em>No module documentation.</em></p>
+<h2 id="statics-46"><a class="header" href="#statics-46">Statics</a></h2>
+<h3 id="pub-static-registration-46"><a class="header" href="#pub-static-registration-46"><code>pub static REGISTRATION</code></a></h3>
+<pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>pub static REGISTRATION: CustomIndicatorRegistration = ...;
+<span class="boring">}</span></code></pre>
+<div style="break-before: page; page-break-before: always;"></div>
+<h1 id="module-customcustom_vwma"><a class="header" href="#module-customcustom_vwma">Module: <code>custom/custom_vwma</code></a></h1>
+<blockquote>
+<p>Source: <code>custom/custom_vwma.rs</code></p>
+</blockquote>
+<p><em>No module documentation.</em></p>
+<h2 id="statics-47"><a class="header" href="#statics-47">Statics</a></h2>
+<h3 id="pub-static-registration-47"><a class="header" href="#pub-static-registration-47"><code>pub static REGISTRATION</code></a></h3>
+<pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>pub static REGISTRATION: CustomIndicatorRegistration = ...;
+<span class="boring">}</span></code></pre>
+<div style="break-before: page; page-break-before: always;"></div>
+<h1 id="module-customcustom_williams_r"><a class="header" href="#module-customcustom_williams_r">Module: <code>custom/custom_williams_r</code></a></h1>
+<blockquote>
+<p>Source: <code>custom/custom_williams_r.rs</code></p>
+</blockquote>
+<p><em>No module documentation.</em></p>
+<h2 id="statics-48"><a class="header" href="#statics-48">Statics</a></h2>
+<h3 id="pub-static-registration-48"><a class="header" href="#pub-static-registration-48"><code>pub static REGISTRATION</code></a></h3>
+<pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>pub static REGISTRATION: CustomIndicatorRegistration = ...;
+<span class="boring">}</span></code></pre>
+<div style="break-before: page; page-break-before: always;"></div>
+<h1 id="module-customcustom_wma"><a class="header" href="#module-customcustom_wma">Module: <code>custom/custom_wma</code></a></h1>
+<blockquote>
+<p>Source: <code>custom/custom_wma.rs</code></p>
+</blockquote>
+<p><em>No module documentation.</em></p>
+<h2 id="statics-49"><a class="header" href="#statics-49">Statics</a></h2>
+<h3 id="pub-static-registration-49"><a class="header" href="#pub-static-registration-49"><code>pub static REGISTRATION</code></a></h3>
+<pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>pub static REGISTRATION: CustomIndicatorRegistration = ...;
+<span class="boring">}</span></code></pre>
+<div style="break-before: page; page-break-before: always;"></div>
+<h1 id="module-customcustom_zscore"><a class="header" href="#module-customcustom_zscore">Module: <code>custom/custom_zscore</code></a></h1>
+<blockquote>
+<p>Source: <code>custom/custom_zscore.rs</code></p>
+</blockquote>
+<p><em>No module documentation.</em></p>
+<h2 id="statics-50"><a class="header" href="#statics-50">Statics</a></h2>
+<h3 id="pub-static-registration-50"><a class="header" href="#pub-static-registration-50"><code>pub static REGISTRATION</code></a></h3>
+<pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>pub static REGISTRATION: CustomIndicatorRegistration = ...;
+<span class="boring">}</span></code></pre>
+<div style="break-before: page; page-break-before: always;"></div>
+<h1 id="module-customsigned_volume"><a class="header" href="#module-customsigned_volume">Module: <code>custom/signed_volume</code></a></h1>
+<blockquote>
+<p>Source: <code>custom/signed_volume.rs</code></p>
+</blockquote>
+<p>Example custom indicator discovered automatically by <code>build.rs</code>.</p>
+<h2 id="statics-51"><a class="header" href="#statics-51">Statics</a></h2>
+<h3 id="pub-static-registration-51"><a class="header" href="#pub-static-registration-51"><code>pub static REGISTRATION</code></a></h3>
+<pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>pub static REGISTRATION: CustomIndicatorRegistration = ...;
+<span class="boring">}</span></code></pre>
+<div style="break-before: page; page-break-before: always;"></div>
 <h1 id="module-lib-5"><a class="header" href="#module-lib-5">Module: <code>lib</code></a></h1>
 <blockquote>
 <p>Source: <code>lib.rs</code></p>
@@ -3049,7 +3990,7 @@ and [<code>KeltnerChannel</code>] for measuring and visualizing market volatilit
 <p>Structured trade logging.
 [<code>TradeLog</code>] writes JSON-formatted fill records to a CSV-compatible
 log file for post-session analysis and reconciliation.</p>
-<h2 id="structs-36"><a class="header" href="#structs-36">Structs</a></h2>
+<h2 id="structs-37"><a class="header" href="#structs-37">Structs</a></h2>
 <h3 id="pub-struct-tradelog"><a class="header" href="#pub-struct-tradelog"><code>pub struct TradeLog</code></a></h3>
 <pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
 </span><span class="boring">fn main() {
@@ -3065,7 +4006,7 @@ log file for post-session analysis and reconciliation.</p>
 <p>Risk control enforcement at runtime.
 [<code>RiskControls</code>] validates orders and positions against configured limits
 (max position size, max drawdown, order frequency, daily loss, cooldown).</p>
-<h2 id="structs-37"><a class="header" href="#structs-37">Structs</a></h2>
+<h2 id="structs-38"><a class="header" href="#structs-38">Structs</a></h2>
 <h3 id="pub-struct-riskcontrols"><a class="header" href="#pub-struct-riskcontrols"><code>pub struct RiskControls</code></a></h3>
 <pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
 </span><span class="boring">fn main() {
@@ -3095,7 +4036,7 @@ log file for post-session analysis and reconciliation.</p>
 <p>Risk management configuration and controls.
 Defines [<code>RiskConfig</code>] for parameterizing position sizing, drawdown limits,
 order frequency, daily loss caps, and cooldown periods.</p>
-<h2 id="structs-38"><a class="header" href="#structs-38">Structs</a></h2>
+<h2 id="structs-39"><a class="header" href="#structs-39">Structs</a></h2>
 <h3 id="pub-struct-riskconfig"><a class="header" href="#pub-struct-riskconfig"><code>pub struct RiskConfig</code></a></h3>
 <pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
 </span><span class="boring">fn main() {
@@ -3119,7 +4060,7 @@ every input JSON object verbatim.  When the millisecond timestamps tie, a
 trade is emitted before depth.  That conservative ordering prevents a
 same-timestamp depth snapshot from influencing a preceding trade; ties are
 counted in the report because their true exchange ordering is unknown.</p>
-<h2 id="structs-39"><a class="header" href="#structs-39">Structs</a></h2>
+<h2 id="structs-40"><a class="header" href="#structs-40">Structs</a></h2>
 <h3 id="pub-struct-mergesummary"><a class="header" href="#pub-struct-mergesummary"><code>pub struct MergeSummary</code></a></h3>
 <pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
 </span><span class="boring">fn main() {
@@ -3130,7 +4071,7 @@ counted in the report because their true exchange ordering is unknown.</p>
     pub output: String,
 };
 <span class="boring">}</span></code></pre>
-<h2 id="functions-17"><a class="header" href="#functions-17">Functions</a></h2>
+<h2 id="functions-18"><a class="header" href="#functions-18">Functions</a></h2>
 <h3 id="pub-fn-merge"><a class="header" href="#pub-fn-merge"><code>pub fn merge</code></a></h3>
 <pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
 </span><span class="boring">fn main() {
@@ -3150,7 +4091,7 @@ conservative deterministic tie-breaker described in this module’s docs.</p>
 worker reads the durable journal and delivers snapshots through a bounded
 crossbeam channel; the engine’s latency-sensitive loop never waits on HTTP,
 a mutex, or a dashboard client.</p>
-<h2 id="functions-18"><a class="header" href="#functions-18">Functions</a></h2>
+<h2 id="functions-19"><a class="header" href="#functions-19">Functions</a></h2>
 <h3 id="pub-fn-start"><a class="header" href="#pub-fn-start"><code>pub fn start</code></a></h3>
 <pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
 </span><span class="boring">fn main() {
@@ -3181,7 +4122,7 @@ mock/public/live exchange mode, and launches the main engine event loop.</p>
 [<code>MockExchange</code>] simulates order matching, position tracking, and price
 streams without network dependencies — suitable for integration tests
 and strategy dry-runs.</p>
-<h2 id="structs-40"><a class="header" href="#structs-40">Structs</a></h2>
+<h2 id="structs-41"><a class="header" href="#structs-41">Structs</a></h2>
 <h3 id="pub-struct-mockexchange"><a class="header" href="#pub-struct-mockexchange"><code>pub struct MockExchange</code></a></h3>
 <pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
 </span><span class="boring">fn main() {
@@ -3199,7 +4140,7 @@ and strategy dry-runs.</p>
 <p>Streaming importer for reconstructed OKX/Tardis <code>book_snapshot_25</code> CSV.</p>
 <p>Input is read from stdin so compressed archives can be decompressed outside
 the process without buffering a trading day in memory.</p>
-<h2 id="functions-19"><a class="header" href="#functions-19">Functions</a></h2>
+<h2 id="functions-20"><a class="header" href="#functions-20">Functions</a></h2>
 <h3 id="pub-fn-import_snapshot_25"><a class="header" href="#pub-fn-import_snapshot_25"><code>pub fn import_snapshot_25</code></a></h3>
 <pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
 </span><span class="boring">fn main() {
@@ -3222,7 +4163,7 @@ and one of these event shapes:
 <code>{"schema_version":1,"type":"depth","timestamp_ms":...,"bids":[{"price":...,"qty":...}], "asks":[...]}</code>; or <code>{"schema_version":1,"type":"eval","timestamp_ms":...}</code>.</p>
 <p>Replay never opens a socket and never sends an exchange order.  QFL order
 intents are captured in-memory and reported as deterministic counters.</p>
-<h2 id="structs-41"><a class="header" href="#structs-41">Structs</a></h2>
+<h2 id="structs-42"><a class="header" href="#structs-42">Structs</a></h2>
 <h3 id="pub-struct-replaycostmodel"><a class="header" href="#pub-struct-replaycostmodel"><code>pub struct ReplayCostModel</code></a></h3>
 <pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
 </span><span class="boring">fn main() {
@@ -3265,7 +4206,7 @@ specific venue/account tier.</p>
     pub ending_mark_price: Option &lt; f64 &gt;,
 };
 <span class="boring">}</span></code></pre>
-<h2 id="enums-19"><a class="header" href="#enums-19">Enums</a></h2>
+<h2 id="enums-20"><a class="header" href="#enums-20">Enums</a></h2>
 <h3 id="pub-enum-replayerror"><a class="header" href="#pub-enum-replayerror"><code>pub enum ReplayError</code></a></h3>
 <pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
 </span><span class="boring">fn main() {
@@ -3280,7 +4221,7 @@ specific venue/account tier.</p>
     CostModel(String,),
 }
 <span class="boring">}</span></code></pre>
-<h2 id="functions-20"><a class="header" href="#functions-20">Functions</a></h2>
+<h2 id="functions-21"><a class="header" href="#functions-21">Functions</a></h2>
 <h3 id="pub-fn-run"><a class="header" href="#pub-fn-run"><code>pub fn run</code></a></h3>
 <pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
 </span><span class="boring">fn main() {
@@ -3305,7 +4246,7 @@ programmatic callers. It is still strictly offline paper execution.</p>
 <p>A suite never turns a failed/unsupported strategy into a zero-result run.
 Every discovered artifact has a corresponding outcome, so an operator can
 distinguish a strategy that produced no intents from one that did not load.</p>
-<h2 id="structs-42"><a class="header" href="#structs-42">Structs</a></h2>
+<h2 id="structs-43"><a class="header" href="#structs-43">Structs</a></h2>
 <h3 id="pub-struct-replaysuiteresult"><a class="header" href="#pub-struct-replaysuiteresult"><code>pub struct ReplaySuiteResult</code></a></h3>
 <pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
 </span><span class="boring">fn main() {
@@ -3329,7 +4270,7 @@ distinguish a strategy that produced no intents from one that did not load.</p>
     pub results: Vec &lt; ReplaySuiteResult &gt;,
 };
 <span class="boring">}</span></code></pre>
-<h2 id="enums-20"><a class="header" href="#enums-20">Enums</a></h2>
+<h2 id="enums-21"><a class="header" href="#enums-21">Enums</a></h2>
 <h3 id="pub-enum-replaysuiteerror"><a class="header" href="#pub-enum-replaysuiteerror"><code>pub enum ReplaySuiteError</code></a></h3>
 <pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
 </span><span class="boring">fn main() {
@@ -3340,7 +4281,7 @@ distinguish a strategy that produced no intents from one that did not load.</p>
     source: std :: io :: Error,),
 }
 <span class="boring">}</span></code></pre>
-<h2 id="functions-21"><a class="header" href="#functions-21">Functions</a></h2>
+<h2 id="functions-22"><a class="header" href="#functions-22">Functions</a></h2>
 <h3 id="pub-fn-run-1"><a class="header" href="#pub-fn-run-1"><code>pub fn run</code></a></h3>
 <pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
 </span><span class="boring">fn main() {
@@ -3357,7 +4298,7 @@ so state can never leak between artifacts.</p>
 <p>Local EVM wallet onboarding for Hyperliquid.</p>
 <p>Private keys are stored only in the operating system credential store. The
 local profile contains the public address and no signing secret.</p>
-<h2 id="structs-43"><a class="header" href="#structs-43">Structs</a></h2>
+<h2 id="structs-44"><a class="header" href="#structs-44">Structs</a></h2>
 <h3 id="pub-struct-walletprofile"><a class="header" href="#pub-struct-walletprofile"><code>pub struct WalletProfile</code></a></h3>
 <pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
 </span><span class="boring">fn main() {
@@ -3375,7 +4316,7 @@ local profile contains the public address and no signing secret.</p>
 <span class="boring">}</span></code></pre>
 <p>Signer backed by the OS credential store. It retains only the public address
 between calls; the secret is loaded and zeroized for each signature.</p>
-<h2 id="functions-22"><a class="header" href="#functions-22">Functions</a></h2>
+<h2 id="functions-23"><a class="header" href="#functions-23">Functions</a></h2>
 <h3 id="pub-fn-load_profile"><a class="header" href="#pub-fn-load_profile"><code>pub fn load_profile</code></a></h3>
 <pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
 </span><span class="boring">fn main() {
