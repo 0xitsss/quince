@@ -35,7 +35,7 @@
             const path_to_root = "../../../";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../../../searchindex-8f4f9455.js";
+            window.path_to_searchindex_js = "../../../searchindex-cd1ba18e.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="../../../toc-13eb2a3e.js"></script>
@@ -234,6 +234,18 @@ asset index and permitted size precision.</p>
     pub size_decimals: u8,
 };
 <span class="boring">}</span></code></pre>
+<h3 id="pub-struct-preparedhyperliquidorder"><a class="header" href="#pub-struct-preparedhyperliquidorder"><code>pub struct PreparedHyperliquidOrder</code></a></h3>
+<pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>pub struct PreparedHyperliquidOrder {
+    pub client_order_id: String,
+    pub nonce: u64,
+    pub payload: serde_json :: Value,
+};
+<span class="boring">}</span></code></pre>
+<p>Fully prepared, signed exchange payload. It is intentionally separate from
+transport so callers can journal the immutable idempotency context before
+any network side effect occurs.</p>
 <h3 id="pub-struct-hyperliquidexecution"><a class="header" href="#pub-struct-hyperliquidexecution"><code>pub struct HyperliquidExecution</code></a></h3>
 <pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
 </span><span class="boring">fn main() {
