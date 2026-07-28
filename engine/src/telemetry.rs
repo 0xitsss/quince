@@ -220,3 +220,6 @@ mod tests {
         assert_eq!(snapshot.market_event_latency_p99_us, 9);
     }
 }
+// SPDX-FileCopyrightText: 2026 0xitsss
+//
+// SPDX-License-Identifier: AGPL-3.0-only OR LicenseRef-Quince-Commercial

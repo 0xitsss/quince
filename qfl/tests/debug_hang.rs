@@ -126,3 +126,6 @@ on trade(t) {
 
     println!("ALL OK");
 }
+// SPDX-FileCopyrightText: 2026 0xitsss
+//
+// SPDX-License-Identifier: AGPL-3.0-only OR LicenseRef-Quince-Commercial

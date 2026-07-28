@@ -146,3 +146,6 @@ criterion_group!(
     targets = bench_indicator_only, bench_full_pipeline
 );
 criterion_main!(benches);
+// SPDX-FileCopyrightText: 2026 0xitsss
+//
+// SPDX-License-Identifier: AGPL-3.0-only OR LicenseRef-Quince-Commercial

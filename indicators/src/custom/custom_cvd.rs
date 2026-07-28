@@ -1,0 +1,5 @@
+use quince_core::types::{Side,Trade};use quince_indicators::{CustomIndicator,CustomIndicatorError,CustomIndicatorRegistration,IndicatorDescriptor,IndicatorInput,IndicatorOutput};static D:IndicatorDescriptor=IndicatorDescriptor{name:"custom_cvd",input:IndicatorInput::Trade,output:IndicatorOutput::ScalarF64,parameters:&[]};pub static REGISTRATION:CustomIndicatorRegistration=CustomIndicatorRegistration{descriptor:&D,create};struct I{v:f64}fn create(x:&[f64])->Result<Box<dyn CustomIndicator>,CustomIndicatorError>{if x.is_empty(){Ok(Box::new(I{v:0.}))}else{Err(CustomIndicatorError::Construction{indicator:D.name,reason:"accepts no parameters"})}}impl CustomIndicator for I{fn on_trade(&mut self,t:&Trade)->Option<f64>{self.v+=if t.side==Side::Buy{t.qty}else{-t.qty};Some(self.v)}}
+#[cfg(test)]mod tests{use super::*;use chrono::Utc;fn t(s:Side)->Trade{Trade{price:1.,qty:2.,time:Utc::now(),side:s,trade_id:1}}#[test]fn cvd(){let mut i=create(&[]).unwrap();i.on_trade(&t(Side::Buy));assert_eq!(i.on_trade(&t(Side::Sell)),Some(0.));}}
+// SPDX-FileCopyrightText: 2026 0xitsss
+//
+// SPDX-License-Identifier: AGPL-3.0-only OR LicenseRef-Quince-Commercial

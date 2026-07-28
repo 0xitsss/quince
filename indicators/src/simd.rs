@@ -329,3 +329,6 @@ fn sum_sq_diff_avx2(a: &[f64], b: &[f64], center: f64) -> f64 {
         reduce_add_pd(acc) + tail
     }
 }
+// SPDX-FileCopyrightText: 2026 0xitsss
+//
+// SPDX-License-Identifier: AGPL-3.0-only OR LicenseRef-Quince-Commercial

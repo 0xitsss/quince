@@ -266,3 +266,6 @@ mod tests {
         let _ = fs::remove_file(output);
     }
 }
+// SPDX-FileCopyrightText: 2026 0xitsss
+//
+// SPDX-License-Identifier: AGPL-3.0-only OR LicenseRef-Quince-Commercial

@@ -1,0 +1,17 @@
+@using custom_logistic_regression:0.05:0.01
+
+@persist last_probability : f64 = 0.5
+
+on trade(t) {
+    feature probability = quince.get("custom_logistic_regression")
+
+    if probability > 0.60 and last_probability <= 0.60 {
+        quince.log("online-logreg buy-pressure crossover")
+    }
+
+    if probability < 0.40 and last_probability >= 0.40 {
+        quince.log("online-logreg sell-pressure crossover")
+    }
+
+    last_probability = probability
+}

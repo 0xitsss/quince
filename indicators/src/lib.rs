@@ -1,9 +1,12 @@
-﻿// SPDX-FileCopyrightText: 2026 0xitsss
+// SPDX-FileCopyrightText: 2026 0xitsss
 //
 // SPDX-License-Identifier: AGPL-3.0-only OR LicenseRef-Quince-Commercial
 //! Technical analysis indicators for trading strategies.
 //! Provides moving averages, oscillators, volatility measures, flow indicators,
 //! and structure detection — all operating on the shared [`Candle`] type.
+
+// Lets `src/custom/*.rs` use the same import path as external Rust code.
+extern crate self as quince_indicators;
 
 pub mod flow;
 pub mod ma;
@@ -12,6 +15,13 @@ pub mod simd;
 pub mod structure;
 pub mod volatility;
 
+mod custom;
+
+pub use custom::{
+    custom_indicator, custom_indicators, CustomIndicator, CustomIndicatorError,
+    CustomIndicatorRegistration, IndicatorDescriptor, IndicatorInput, IndicatorOutput,
+    IndicatorParameter,
+};
 pub use flow::*;
 pub use ma::*;
 pub use oscillator::*;

@@ -157,3 +157,6 @@ criterion_group!(
     bench_zscore,
 );
 criterion_main!(benches);
+// SPDX-FileCopyrightText: 2026 0xitsss
+//
+// SPDX-License-Identifier: AGPL-3.0-only OR LicenseRef-Quince-Commercial

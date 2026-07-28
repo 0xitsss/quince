@@ -7,16 +7,48 @@
 set -euo pipefail
 
 readonly threshold="${QUINCE_BENCHMARK_MAX_REGRESSION:-0.10}"
+marker=""
+
+usage() {
+  printf 'usage: %s [--since MARKER]\n' "$0" >&2
+}
+
+while (($# > 0)); do
+  case "$1" in
+    --since)
+      shift
+      marker="${1:-}"
+      [[ -n "$marker" && -e "$marker" ]] || {
+        printf 'benchmark marker does not exist: %s\n' "$marker" >&2
+        exit 2
+      }
+      ;;
+    --help|-h)
+      usage
+      exit 0
+      ;;
+    *)
+      usage
+      exit 2
+      ;;
+  esac
+  shift
+done
+
 # Cargo workspaces write Criterion output to the workspace target directory.
 # Scanning crate-local target trees reads stale developer artefacts and can
 # reject an unrelated change long after their baseline was superseded.
 readonly roots=(target/criterion)
 failed=0
+checked=0
+bootstrapped=0
 
 for root in "${roots[@]}"; do
   [[ -d "$root" ]] || continue
   while IFS= read -r estimate; do
+    [[ -z "$marker" || "$estimate" -nt "$marker" ]] || continue
     upper_bound="$(jq -r '.mean.confidence_interval.upper_bound' "$estimate")"
+    checked=$((checked + 1))
     if awk -v value="$upper_bound" -v limit="$threshold" 'BEGIN { exit !(value > limit) }'; then
       benchmark="${estimate#"$root"/}"
       benchmark="${benchmark%/change/estimates.json}"
@@ -27,7 +59,28 @@ for root in "${roots[@]}"; do
       failed=1
     fi
   done < <(find "$root" -path '*/change/estimates.json' -type f -print)
+
+  if [[ -n "$marker" ]]; then
+    while IFS= read -r estimate; do
+      [[ "$estimate" -nt "$marker" ]] || continue
+      change="${estimate%/new/estimates.json}/change/estimates.json"
+      if [[ ! -f "$change" || ! "$change" -nt "$marker" ]]; then
+        printf 'benchmark baseline bootstrap: %s\n' "${estimate%/new/estimates.json}" >&2
+        bootstrapped=$((bootstrapped + 1))
+      fi
+    done < <(find "$root" -path '*/new/estimates.json' -type f -print)
+  fi
 done
+
+if [[ -n "$marker" && "$checked" -eq 0 && "$bootstrapped" -eq 0 ]]; then
+  printf 'benchmark regression gate found no estimates from this run\n' >&2
+  failed=1
+fi
+
+if [[ "$bootstrapped" -gt 0 && "${QUINCE_BENCHMARK_ALLOW_BOOTSTRAP:-0}" != "1" ]]; then
+  printf 'benchmark baseline is missing for %d benchmark(s); bootstrap is allowed only on master\n' "$bootstrapped" >&2
+  failed=1
+fi
 
 if (( failed )); then
   printf 'Benchmark regression gate failed. Investigate or explicitly version the private CI baseline.\n' >&2

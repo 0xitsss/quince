@@ -6,7 +6,7 @@
 //! strategy conditions via QFL runtime, manages order placement/tracking,
 //! applies risk controls, and coordinates all subsystems.
 
-use crate::indicators::{parse_using, IndicatorBank};
+use crate::indicators::{parse_using_strict, IndicatorBank};
 use crate::journal::{JournalError, JournalEvent, OrderJournal};
 use crate::orders::OrderManager;
 use crate::strategy_lifecycle::{DeploymentMode, StrategyLifecycle, StrategyRevision};
@@ -163,7 +163,8 @@ impl<E: Exchange> Engine<E> {
             src.lines().count()
         );
 
-        let ind_cfg = parse_using(&src);
+        let ind_cfg = parse_using_strict(&src)
+            .map_err(|error| EngineError::Strategy(format!("invalid @using directive: {error}")))?;
         for entry in &ind_cfg {
             tracing::info!(
                 "  indicator: {} params={:?} buffer={}",
@@ -174,7 +175,8 @@ impl<E: Exchange> Engine<E> {
         }
         tracing::info!("parsed {} indicator directives", ind_cfg.len());
 
-        let mut indicators = IndicatorBank::new(&ind_cfg);
+        let mut indicators = IndicatorBank::try_new(&ind_cfg)
+            .map_err(|error| EngineError::Strategy(format!("invalid @using directive: {error}")))?;
 
         // Phase 4g: pre-assign indicator slots — zero HashMap lookups in hot path
         let synthetic_names = [

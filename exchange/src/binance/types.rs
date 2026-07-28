@@ -40,8 +40,11 @@ pub fn parse_ws_msg(text: String) -> Option<StreamMsg> {
         "depthUpdate" | "depth" => {
             // A partial book is worse than no book: DOM strategies must not
             // act on a silently truncated snapshot after a schema change.
-            let bids = parse_depth_levels(inner.get("b")?.as_array()?)?;
-            let asks = parse_depth_levels(inner.get("a")?.as_array()?)?;
+            let bids = parse_depth_levels(inner.get("b")?.as_array()?, true)?;
+            let asks = parse_depth_levels(inner.get("a")?.as_array()?, false)?;
+            if bids.last()?.price >= asks.first()?.price {
+                return None;
+            }
             Some(StreamMsg::Depth(Depth { bids, asks }))
         }
         "markPriceUpdate" => Some(StreamMsg::MarkPrice {
@@ -114,13 +117,25 @@ fn parse_positive_number(value: &BorrowedValue<'_>) -> Option<f64> {
     (number.is_finite() && number > 0.0).then_some(number)
 }
 
-fn parse_depth_levels(arr: &[BorrowedValue<'_>]) -> Option<Vec<DepthLevel>> {
+fn parse_depth_levels(arr: &[BorrowedValue<'_>], descending: bool) -> Option<Vec<DepthLevel>> {
+    if arr.is_empty() {
+        return None;
+    }
     let mut out = Vec::with_capacity(arr.len());
     for level in arr {
         let entry = level.as_array()?;
         let price = parse_positive_number(entry.first()?)?;
         let qty = parse_positive_number(entry.get(1)?)?;
         out.push(DepthLevel { price, qty });
+    }
+    if out.windows(2).any(|pair| {
+        if descending {
+            pair[0].price <= pair[1].price
+        } else {
+            pair[0].price >= pair[1].price
+        }
+    }) {
+        return None;
     }
     Some(out)
 }
@@ -285,6 +300,83 @@ mod tests {
         ] {
             assert!(parse_ws_msg(payload.into()).is_none(), "{payload}");
         }
+    }
+
+    #[test]
+    fn contract_matrix_binance_market_data_boundary() {
+        // This is deliberately a matrix, not a hand-picked fixture list: every
+        // value below has crossed a real parser boundary in a distinct field.
+        let invalid = [
+            "0", "-1", "NaN", "inf", "-inf", "abc", "", "  ", "1e309", "-0", "+0", "00",
+        ];
+        let mut cases = 0_u16;
+
+        for value in invalid {
+            for field in ["p", "q"] {
+                let (price, qty) = if field == "p" {
+                    (value, "1")
+                } else {
+                    ("100", value)
+                };
+                let payload = format!(
+                    r#"{{"e":"aggTrade","p":{price:?},"q":{qty:?},"T":1,"m":false,"t":1}}"#
+                );
+                assert!(parse_ws_msg(payload).is_none(), "trade {field}={value:?}");
+                cases += 1;
+            }
+
+            for side in ["b", "a"] {
+                for field in ["price", "qty"] {
+                    let level = if field == "price" {
+                        format!(r#"[{value:?},"1"]"#)
+                    } else {
+                        format!(r#"["100",{value:?}]"#)
+                    };
+                    let (bids, asks) = if side == "b" {
+                        (format!("[{level}]"), "[[\"101\",\"1\"]]".to_owned())
+                    } else {
+                        ("[[\"100\",\"1\"]]".to_owned(), format!("[{level}]"))
+                    };
+                    let payload = format!(r#"{{"e":"depthUpdate","b":{bids},"a":{asks}}}"#);
+                    assert!(parse_ws_msg(payload).is_none(), "{side} {field}={value:?}");
+                    cases += 1;
+                }
+            }
+        }
+
+        for payload in [
+            r#"{}"#,
+            r#"{"e":"aggTrade"}"#,
+            r#"{"e":"aggTrade","p":"1","q":"1","T":1,"m":false}"#,
+            r#"{"e":"aggTrade","p":1,"q":"1","T":1,"m":false,"t":1}"#,
+            r#"{"e":"aggTrade","p":"1","q":"1","T":"1","m":false,"t":1}"#,
+            r#"{"e":"aggTrade","p":"1","q":"1","T":1,"m":"false","t":1}"#,
+            r#"{"e":"depthUpdate","b":[],"a":[["101","1"]]}"#,
+            r#"{"e":"depthUpdate","b":[["100","1"]],"a":[]}"#,
+            r#"{"e":"depthUpdate","b":[["100","1"],["101","1"]],"a":[["102","1"]]}"#,
+            r#"{"e":"depthUpdate","b":[["100","1"]],"a":[["99","1"]]}"#,
+            r#"{"e":"depthUpdate","b":[["99","1"],["100","1"]],"a":[["101","1"]]}"#,
+            r#"{"e":"depthUpdate","b":[["100","1"]],"a":[["102","1"],["101","1"]]}"#,
+        ] {
+            assert!(parse_ws_msg(payload.into()).is_none(), "{payload}");
+            cases += 1;
+        }
+
+        for price in ["1", "100", "100.125", "1e-5"] {
+            for qty in ["1", "2.5", "1e-8"] {
+                for (maker, side) in [("false", Side::Buy), ("true", Side::Sell)] {
+                    let payload = format!(
+                        r#"{{"e":"aggTrade","p":"{price}","q":"{qty}","T":1,"m":{maker},"t":1}}"#
+                    );
+                    assert!(
+                        matches!(parse_ws_msg(payload), Some(StreamMsg::Trade(Trade { side: actual, .. })) if actual == side)
+                    );
+                    cases += 1;
+                }
+            }
+        }
+
+        assert_eq!(cases, 108, "contract matrix coverage changed: {cases}");
     }
 
     #[test]

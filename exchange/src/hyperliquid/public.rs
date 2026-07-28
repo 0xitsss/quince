@@ -299,7 +299,7 @@ fn parse_ws_msg(text: &str) -> Option<StreamMsg> {
         }
         "l2Book" => {
             let levels = value.get("data")?.get("levels")?.as_array()?;
-            let parse_side = |index: usize| {
+            let parse_side = |index: usize, descending: bool| {
                 levels
                     .get(index)?
                     .as_array()?
@@ -311,9 +311,22 @@ fn parse_ws_msg(text: &str) -> Option<StreamMsg> {
                         })
                     })
                     .collect::<Option<Vec<_>>>()
+                    .filter(|side| {
+                        !side.is_empty()
+                            && !side.windows(2).any(|pair| {
+                                if descending {
+                                    pair[0].price <= pair[1].price
+                                } else {
+                                    pair[0].price >= pair[1].price
+                                }
+                            })
+                    })
             };
-            let bids = parse_side(0)?;
-            let asks = parse_side(1)?;
+            let bids = parse_side(0, true)?;
+            let asks = parse_side(1, false)?;
+            if bids.last()?.price >= asks.first()?.price {
+                return None;
+            }
             Some(StreamMsg::Depth(Depth { bids, asks }))
         }
         _ => None,
@@ -394,6 +407,98 @@ mod tests {
         ] {
             assert!(parse_ws_msg(payload).is_none(), "{payload}");
         }
+    }
+
+    #[test]
+    fn contract_matrix_hyperliquid_market_data_boundary() {
+        let invalid = [
+            "0", "-1", "NaN", "inf", "-inf", "abc", "", "  ", "1e309", "-0", "+0", "00",
+        ];
+        let mut cases = 0_u16;
+
+        for value in invalid {
+            for field in ["px", "sz"] {
+                let mut trade = serde_json::json!({
+                    "coin": "BTC", "side": "B", "px": "100", "sz": "1", "time": 1, "tid": 1
+                });
+                trade[field] = serde_json::Value::String(value.into());
+                let payload = serde_json::json!({ "channel": "trades", "data": [trade] });
+                assert!(
+                    parse_ws_msg(&payload.to_string()).is_none(),
+                    "trade {field}={value:?}"
+                );
+                cases += 1;
+            }
+
+            for side in [0, 1] {
+                for field in ["px", "sz"] {
+                    let mut level = serde_json::json!({ "px": "100", "sz": "1" });
+                    level[field] = serde_json::Value::String(value.into());
+                    let levels = if side == 0 {
+                        serde_json::json!([[level], [{ "px": "101", "sz": "1" }]])
+                    } else {
+                        serde_json::json!([[{ "px": "100", "sz": "1" }], [level]])
+                    };
+                    let payload = serde_json::json!({
+                        "channel": "l2Book", "data": { "levels": levels }
+                    });
+                    assert!(
+                        parse_ws_msg(&payload.to_string()).is_none(),
+                        "book side={side} {field}={value:?}"
+                    );
+                    cases += 1;
+                }
+            }
+        }
+
+        for side in ["", "BUY", "SELL", "X", "b", "a", "0", " "] {
+            let payload = serde_json::json!({
+                "channel": "trades",
+                "data": [{ "side": side, "px": "100", "sz": "1", "time": 1, "tid": 1 }]
+            });
+            assert!(
+                parse_ws_msg(&payload.to_string()).is_none(),
+                "side={side:?}"
+            );
+            cases += 1;
+        }
+
+        for payload in [
+            r#"{}"#,
+            r#"{"channel":"trades"}"#,
+            r#"{"channel":"trades","data":[]}"#,
+            r#"{"channel":"trades","data":[{}]}"#,
+            r#"{"channel":"trades","data":[{"side":"B","px":100,"sz":"1","time":1,"tid":1}]}"#,
+            r#"{"channel":"trades","data":[{"side":"B","px":"100","sz":"1","time":"1","tid":1}]}"#,
+            r#"{"channel":"trades","data":[{"side":"B","px":"100","sz":"1","time":1,"tid":"1"}]}"#,
+            r#"{"channel":"l2Book","data":{"levels":[]}}"#,
+            r#"{"channel":"l2Book","data":{"levels":[[],[{"px":"101","sz":"1"}]]}}"#,
+            r#"{"channel":"l2Book","data":{"levels":[[{"px":"100","sz":"1"}],[]]}}"#,
+            r#"{"channel":"l2Book","data":{"levels":[[{"px":"100","sz":"1"}],[{"px":"99","sz":"1"}]]}}"#,
+            r#"{"channel":"l2Book","data":{"levels":[[{"px":"99","sz":"1"},{"px":"100","sz":"1"}],[{"px":"101","sz":"1"}]]}}"#,
+            r#"{"channel":"l2Book","data":{"levels":[[{"px":"100","sz":"1"}],[{"px":"102","sz":"1"},{"px":"101","sz":"1"}]]}}"#,
+            r#"not json"#,
+        ] {
+            assert!(parse_ws_msg(payload).is_none(), "{payload}");
+            cases += 1;
+        }
+
+        for price in ["1", "100", "100.125", "1e-5"] {
+            for qty in ["1", "2.5", "1e-8"] {
+                for (wire_side, side) in [("B", Side::Buy), ("A", Side::Sell)] {
+                    let payload = serde_json::json!({
+                        "channel": "trades",
+                        "data": [{ "side": wire_side, "px": price, "sz": qty, "time": 1, "tid": 1 }]
+                    });
+                    assert!(
+                        matches!(parse_ws_msg(&payload.to_string()), Some(StreamMsg::Trade(Trade { side: actual, .. })) if actual == side)
+                    );
+                    cases += 1;
+                }
+            }
+        }
+
+        assert_eq!(cases, 118, "contract matrix coverage changed: {cases}");
     }
 
     #[test]

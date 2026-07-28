@@ -1,0 +1,14 @@
+@using signed_volume
+
+@persist previous_signed_volume : f64 = 0.0
+
+on trade(t) {
+    feature signed_volume = quince.get("signed_volume")
+    feature delta = signed_volume - previous_signed_volume
+
+    if delta > 0.0 {
+        quince.log("signed-volume buy pressure")
+    }
+
+    previous_signed_volume = signed_volume
+}

@@ -1,4 +1,4 @@
-﻿// SPDX-FileCopyrightText: 2026 0xitsss
+// SPDX-FileCopyrightText: 2026 0xitsss
 //
 // SPDX-License-Identifier: AGPL-3.0-only OR LicenseRef-Quince-Commercial
 //! Indicator parsing and management for the trading engine.
@@ -6,7 +6,10 @@
 //! and provides [`IndicatorBank`] for runtime indicator lifecycle.
 
 use quince_core::types::*;
-use quince_indicators::Candle;
+use quince_indicators::{
+    custom_indicator, custom_indicators, Candle, CustomIndicator, IndicatorInput,
+};
+use std::collections::HashSet;
 
 const DEFAULT_BUFFER: usize = 256;
 
@@ -18,6 +21,18 @@ pub struct IndicatorEntry {
 }
 
 pub fn parse_using(src: &str) -> Vec<IndicatorEntry> {
+    parse_using_inner(src, false).unwrap_or_default()
+}
+
+/// Strict production parser for `@using` directives.
+///
+/// Unlike [`parse_using`], it rejects malformed numeric parameters instead of
+/// silently dropping them. The engine uses this at startup.
+pub fn parse_using_strict(src: &str) -> Result<Vec<IndicatorEntry>, String> {
+    parse_using_inner(src, true)
+}
+
+fn parse_using_inner(src: &str, strict: bool) -> Result<Vec<IndicatorEntry>, String> {
     let mut entries: Vec<IndicatorEntry> = Vec::new();
 
     for line in src.lines() {
@@ -28,13 +43,24 @@ pub fn parse_using(src: &str) -> Vec<IndicatorEntry> {
             for token in rest.split_whitespace() {
                 let parts: Vec<&str> = token.split(':').collect();
                 if parts.is_empty() || parts[0].is_empty() {
+                    if strict {
+                        return Err(format!("invalid @using entry `{token}`"));
+                    }
                     continue;
                 }
                 let name = parts[0].to_lowercase();
-                let params: Vec<f64> = parts[1..]
-                    .iter()
-                    .filter_map(|s| s.parse::<f64>().ok())
-                    .collect();
+                let mut params = Vec::with_capacity(parts.len().saturating_sub(1));
+                for parameter in &parts[1..] {
+                    match parameter.parse::<f64>() {
+                        Ok(value) if value.is_finite() => params.push(value),
+                        _ if strict => {
+                            return Err(format!(
+                                "indicator `{name}` has invalid numeric parameter `{parameter}`"
+                            ));
+                        }
+                        _ => {}
+                    }
+                }
                 let buf = default_buffer(&name, &params);
                 entries.push(IndicatorEntry {
                     name,
@@ -45,12 +71,37 @@ pub fn parse_using(src: &str) -> Vec<IndicatorEntry> {
         }
     }
 
-    entries
+    Ok(entries)
 }
 
 fn default_buffer(_: &str, params: &[f64]) -> usize {
     let period = params.first().copied().unwrap_or(20.0) as usize;
     (period * 2).max(DEFAULT_BUFFER)
+}
+
+fn is_builtin(name: &str) -> bool {
+    matches!(
+        name,
+        "sma"
+            | "ema"
+            | "wma"
+            | "vwma"
+            | "lsma"
+            | "rsi"
+            | "macd"
+            | "cci"
+            | "roc"
+            | "stoch"
+            | "bb"
+            | "kc"
+            | "atr"
+            | "mfi"
+            | "adx"
+            | "zscore"
+            | "cvd"
+            | "pmdi"
+            | "nmdi"
+    )
 }
 
 // в”Ђв”Ђ ActiveIndicator wraps quince-indicators types в”Ђв”Ђ
@@ -82,6 +133,11 @@ enum ActiveIndicator {
         value: f64,
         prev_data: f64,
         has_prev: bool,
+    },
+    Custom {
+        name: &'static str,
+        indicator: Box<dyn CustomIndicator>,
+        slot: u16,
     },
 }
 
@@ -131,6 +187,57 @@ pub struct IndicatorBank {
 }
 
 impl IndicatorBank {
+    /// Validates every `@using` entry, including compile-time custom plugins.
+    /// Use this at the runtime boundary so a typo can never silently disable a
+    /// requested production indicator.
+    pub fn validate_config(cfg: &[IndicatorEntry]) -> Result<(), String> {
+        let mut registered_names = HashSet::with_capacity(custom_indicators().len());
+        for registration in custom_indicators() {
+            let descriptor = registration.descriptor;
+            let name = descriptor.name;
+            let valid_name = !name.is_empty()
+                && name.bytes().enumerate().all(|(index, byte)| {
+                    (index == 0 && byte.is_ascii_lowercase())
+                        || (index > 0
+                            && (byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'_'))
+                });
+            if !valid_name {
+                return Err(format!("custom indicator has invalid name `{name}`"));
+            }
+            if is_builtin(name) {
+                return Err(format!(
+                    "custom indicator `{name}` collides with a built-in indicator"
+                ));
+            }
+            if !registered_names.insert(name) {
+                return Err(format!("duplicate custom indicator name `{name}`"));
+            }
+            if descriptor.input != IndicatorInput::Trade {
+                return Err(format!(
+                    "custom indicator `{name}` uses an unsupported input format"
+                ));
+            }
+        }
+        for entry in cfg {
+            if is_builtin(&entry.name) {
+                continue;
+            }
+            let registration = custom_indicator(&entry.name)
+                .ok_or_else(|| format!("unknown indicator `{}`", entry.name))?;
+            registration
+                .validate_params(&entry.params)
+                .map_err(|error| error.to_string())?;
+        }
+        Ok(())
+    }
+
+    /// Creates a validated bank. Unlike [`Self::new`], it refuses unknown
+    /// directives rather than preserving legacy permissive behavior.
+    pub fn try_new(cfg: &[IndicatorEntry]) -> Result<Self, String> {
+        Self::validate_config(cfg)?;
+        Ok(Self::new(cfg))
+    }
+
     pub fn new(cfg: &[IndicatorEntry]) -> Self {
         let mut indicators = Vec::with_capacity(cfg.len());
 
@@ -190,7 +297,19 @@ impl IndicatorBank {
                     prev_data: 0.0,
                     has_prev: false,
                 },
-                _ => continue,
+                _ => match custom_indicator(&entry.name) {
+                    Some(registration) => match (registration.create)(&entry.params) {
+                        Ok(indicator) => ActiveIndicator::Custom {
+                            name: registration.descriptor.name,
+                            indicator,
+                            slot: 0,
+                        },
+                        // `try_new` rejects this before construction. `new` keeps
+                        // the old test/benchmark-friendly permissive contract.
+                        Err(_) => continue,
+                    },
+                    None => continue,
+                },
             };
             indicators.push(ind);
         }
@@ -274,7 +393,20 @@ impl IndicatorBank {
             "bid_depth" => self.slot_bid_depth = slot,
             "ask_depth" => self.slot_ask_depth = slot,
             "depth_imbalance" => self.slot_depth_imbalance = slot,
-            _ => {}
+            _ => {
+                for active in &mut self.indicators {
+                    if let ActiveIndicator::Custom {
+                        name: custom_name,
+                        slot: custom_slot,
+                        ..
+                    } = active
+                    {
+                        if *custom_name == name {
+                            *custom_slot = slot;
+                        }
+                    }
+                }
+            }
         }
     }
 
@@ -470,6 +602,18 @@ impl IndicatorBank {
                     }
                     self.results.push((self.slot_nmdi, *value));
                 }
+                ActiveIndicator::Custom {
+                    indicator, slot, ..
+                } => {
+                    if let Some(value) = indicator.on_trade(trade) {
+                        // User code is linked into the binary, but its output still
+                        // crosses an engine boundary: never poison VM state with a
+                        // non-finite value.
+                        if value.is_finite() {
+                            self.results.push((*slot, value));
+                        }
+                    }
+                }
             }
         }
 
@@ -615,6 +759,39 @@ mod tests {
     }
 
     #[test]
+    fn custom_indicator_is_resolved_by_using_and_writes_its_assigned_slot() {
+        let entries = parse_using("@using signed_volume");
+        let mut bank = IndicatorBank::try_new(&entries).expect("custom indicator is registered");
+        bank.set_name_to_slot("signed_volume", 77);
+        let buy = Trade {
+            price: 100.0,
+            qty: 2.5,
+            time: chrono::Utc::now(),
+            side: Side::Buy,
+            trade_id: 1,
+        };
+        assert!(bank
+            .on_trade(&buy)
+            .iter()
+            .any(|&(slot, value)| slot == 77 && value == 2.5));
+    }
+
+    #[test]
+    fn strict_indicator_validation_rejects_unknown_and_bad_custom_parameters() {
+        let unknown = parse_using("@using does_not_exist:20");
+        let unknown_error = IndicatorBank::try_new(&unknown)
+            .err()
+            .expect("must reject unknown");
+        assert!(unknown_error.contains("unknown indicator"));
+
+        let invalid = parse_using("@using signed_volume:1");
+        let invalid_error = IndicatorBank::try_new(&invalid)
+            .err()
+            .expect("must reject arity");
+        assert!(invalid_error.contains("expects 0 parameters"));
+    }
+
+    #[test]
     fn parse_using_empty_src() {
         let entries = parse_using("");
         assert!(entries.is_empty());
@@ -644,6 +821,13 @@ mod tests {
         let entries = parse_using("@using ema:abc:20");
         assert_eq!(entries.len(), 1);
         assert_eq!(entries[0].params, vec![20.0]);
+    }
+
+    #[test]
+    fn strict_using_parser_rejects_non_numeric_parameter() {
+        let error = parse_using_strict("@using signed_volume:abc")
+            .expect_err("production parser must reject malformed params");
+        assert!(error.contains("invalid numeric parameter"));
     }
 
     #[test]

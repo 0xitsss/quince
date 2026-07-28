@@ -3,6 +3,7 @@ name = "quince-indicators"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+build = "build.rs"
 
 [features]
 default = ["simd"]
@@ -13,6 +14,7 @@ quince-core = { path = "../core" }
 
 [dev-dependencies]
 criterion = { version = "0.5", features = ["html_reports"] }
+chrono.workspace = true
 
 [[bench]]
 name = "bench"

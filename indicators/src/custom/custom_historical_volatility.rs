@@ -1,0 +1,7 @@
+use quince_core::{ring::RingVec,types::Trade};use quince_indicators::{CustomIndicator,CustomIndicatorError,CustomIndicatorRegistration,IndicatorDescriptor,IndicatorInput,IndicatorOutput,IndicatorParameter};
+static P:&[IndicatorParameter]=&[IndicatorParameter{name:"period",min:2.,max:10000.}];static D:IndicatorDescriptor=IndicatorDescriptor{name:"custom_historical_volatility",input:IndicatorInput::Trade,output:IndicatorOutput::ScalarF64,parameters:P};pub static REGISTRATION:CustomIndicatorRegistration=CustomIndicatorRegistration{descriptor:&D,create};struct I{p:usize,last:Option<f64>,r:RingVec}
+fn create(x:&[f64])->Result<Box<dyn CustomIndicator>,CustomIndicatorError>{Ok(Box::new(I{p:x[0]as usize,last:None,r:RingVec::new(x[0]as usize)}))}impl CustomIndicator for I{fn on_trade(&mut self,t:&Trade)->Option<f64>{if let Some(x)=self.last{self.r.push((t.price/x).ln());};self.last=Some(t.price);if self.r.len()!=self.p{return None};let m=self.r.iter().sum::<f64>()/self.p as f64;Some((self.r.iter().map(|x|(x-m).powi(2)).sum::<f64>()/self.p as f64).sqrt())}}
+#[cfg(test)]mod tests{use super::*;use chrono::Utc;use quince_core::types::Side;fn t(p:f64)->Trade{Trade{price:p,qty:1.,time:Utc::now(),side:Side::Buy,trade_id:1}}#[test]fn hv(){let mut i=create(&[2.]).unwrap();i.on_trade(&t(10.));i.on_trade(&t(11.));assert!(i.on_trade(&t(10.)).unwrap()>0.);}}
+// SPDX-FileCopyrightText: 2026 0xitsss
+//
+// SPDX-License-Identifier: AGPL-3.0-only OR LicenseRef-Quince-Commercial

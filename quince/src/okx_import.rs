@@ -159,3 +159,6 @@ pub fn import_trades(symbol: &str, output: &str) -> Result<u64, String> {
     }
     Ok(imported)
 }
+// SPDX-FileCopyrightText: 2026 0xitsss
+//
+// SPDX-License-Identifier: AGPL-3.0-only OR LicenseRef-Quince-Commercial

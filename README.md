@@ -3,26 +3,35 @@
 ![Quince — a high-performance language for HFT](docs/assets/quince-hero.png)
 
 [![Build](https://img.shields.io/badge/build-passing-brightgreen?style=for-the-badge)](https://github.com/0xitsss/quince)
-[![Tests](https://img.shields.io/badge/tests-1001%20passing-brightgreen?style=for-the-badge)](https://github.com/0xitsss/quince)
+[![Tests](https://img.shields.io/badge/tests-1143%20passing-brightgreen?style=for-the-badge)](https://github.com/0xitsss/quince/actions)
 [![Clippy](https://img.shields.io/badge/clippy-0%20warnings-brightgreen?style=for-the-badge)](https://github.com/0xitsss/quince)
 [![License](https://img.shields.io/badge/license-AGPL--3.0%20OR%20Commercial-blue?style=for-the-badge)](https://www.gnu.org/licenses/agpl-3.0)
 [![REUSE](https://img.shields.io/badge/REUSE-compliant-green?style=for-the-badge)](https://reuse.software)
 [![Rust](https://img.shields.io/badge/rust-1.80+-orange?style=for-the-badge&logo=rust)](https://www.rust-lang.org)
-[![Version](https://img.shields.io/badge/version-0.7.7-purple?style=for-the-badge)](https://github.com/0xitsss/quince)
+[![Version](https://img.shields.io/badge/version-0.7.8-purple?style=for-the-badge)](https://github.com/0xitsss/quince)
 [![Docs](https://img.shields.io/badge/docs-mdBook-blue?style=for-the-badge&logo=mdbook)](https://0xitsss.github.io/quince)
 [![SonarQube](https://img.shields.io/badge/sonar-passing-brightgreen?style=for-the-badge&logo=sonarcloud)](https://sonarcloud.io/project/overview?id=0xitsss_quince)
 
-**Q**uantitative **U**ltra-low-latency **I**nterpreter for **N**etwork-centric **C**ompetitive **E**xecution
+**Q**uantitative **U**ltra-low-latency **I**nterpreter for **N**etwork-centric **C**ompetitive **E**xecution.
 
-Low-latency trading engine using crossbeam channels throughout. Engine loop uses priority polling with `try_recv`. Custom bytecode VM (QFL) delivers sub-10-microsecond tick-to-order latency with zero heap allocation in the hot path.
+Quince is a Rust-native trading runtime for deterministic, event-driven
+strategies. It combines a compiled QFL bytecode VM, bounded crossbeam-based
+event flow, native indicator extensions, exchange adapters, replay, and
+fail-closed execution controls in one deployable binary.
+
+The project is built for operators who care about the whole path—not merely
+strategy syntax: market-data integrity, order reconciliation, versioned
+deployments, durable journals, risk latches, reproducible benchmarks, and a
+clear boundary between public data, shadow mode, paper execution, and live
+trading.
 
 ---
 
 ## Table of Contents
 
-- [Features](#features)
-- [Project Structure](#project-structure)
+- [Capabilities](#capabilities)
 - [Quick Start](#quick-start)
+- [Project Structure](#project-structure)
 - [Architecture](#architecture)
   - [System Overview](#system-overview)
   - [Engine Loop Sequence](#engine-loop-sequence)
@@ -42,14 +51,18 @@ Low-latency trading engine using crossbeam channels throughout. Engine loop uses
 
 ---
 
-## Features
+## Capabilities
 
 ### Engine
-- Priority-polling event loop with `try_recv` on crossbeam channels
-- Hot-reload support — swap strategies at runtime without restart
-- Realized PnL tracking, position management, order lifecycle
-- OrderManager with SL/TP tracking and timeout checks
-- Mock exchange mode for backtesting without API keys
+- Bounded, priority-polled event loop using non-blocking crossbeam channels
+- Strategy lifecycle with content-addressed artifacts, version checks, shadow
+  deployment, promotion, rollback, and durable checkpointing
+- Order journal, reconciliation, idempotent client IDs, SL/TP lifecycle, and
+  explicit ambiguous-submission handling
+- Native Binance Futures and Hyperliquid paths with public-data modes,
+  preflight validation, and execution that remains fail-closed by default
+- Replay and paper execution with fees, slippage, deterministic event ordering,
+  and capture import
 
 ### QFL Language & VM
 - Register-based VM with direct threaded dispatch (jump table)
@@ -63,22 +76,26 @@ Low-latency trading engine using crossbeam channels throughout. Engine loop uses
 - Persistent state across hot-reloads (64 persist slots)
 - Tracer and profiler built into the VM
 
-### Indicators (50+) — SIMD Accelerated
-- Moving Averages: SMA, EMA, WMA, VWMA, LSMA
-- Oscillators: RSI, MACD, Stochastic, CCI, ROC
-- Volatility: ATR, Bollinger Bands, Keltner Channels
-- Flow/Microstructure: OBV, CVD, MFI, ADX, DOM, Z-Score, NetOI
-- 6 AVX2-accelerated kernels (sum, weighted_sum, sum_and_sum_xy, sum_abs_diff, min_max, sum_sq_diff) — ~3x speedup on large window sizes
+### Indicators
+- Built-in technical indicators and **52 compiled native indicators** spanning
+  trend, momentum, volatility, flow, and trade microstructure
+- Native extension registry: every plugin declares its `@using` name, ordered
+  parameter bounds, input/output contract, and factory at compile time
+- No runtime plugin loading: indicators are reviewed, linked, tested, linted,
+  and benchmarked as part of the deployed binary
+- SIMD kernels for rolling computations where the architecture supports them
+- Full reference: [native indicator catalogue](https://0xitsss.github.io/quince/native-indicators.html)
 
 ### Risk Controls
 - Position size limits, max notional checks
-- Drawdown detection and daily loss limits
+- Drawdown detection, daily loss limits, and latched kill switches
 - Rate limiting per time window
 - Automatic cooldown on consecutive losses
-- Reduce-only order enforcement
+- Reduce-only order enforcement and stale-data rejection
 
 ### Compliance
-- REUSE 3.2 specification — SPDX headers on all 47 Rust source files
+- REUSE 3.2 / SPDX licensing across source, strategies, documentation, CI, and
+  manifests
 - Dual licensing: AGPL-3.0-only for open source / Quince Commercial License for proprietary use
 - QFL (.qfl) and QFR (.qfr) formats protected under commercial license
 
@@ -86,92 +103,106 @@ Low-latency trading engine using crossbeam channels throughout. Engine loop uses
 
 ## Project Structure
 
-| Crate | Lines (code) | Description |
-|-------|-------------|-------------|
-| `core/` | 713 | Shared types, RingBuffer, RingVec |
-| `exchange/` | 1,060 | Binance Futures WS + REST client, MockExchange |
-| `engine/` | 2,508 | Event loop, OrderManager, IndicatorBank, RiskControls |
-| `indicators/` | 2,540 | 50+ technical indicators + SIMD kernels |
-| `logger/` | 248 | Trade fill logger (JSON Lines) |
-| `qfl/` | 20,757 | Parser, type checker, optimizer, compiler, VM, tracer |
-| `risk/` | 296 | Position limits, drawdown, rate limiting |
-| `quince/` | 599 | CLI binary, MockExchange |
-| `docgen/` | 622 | syn-based API doc generator |
-| **Total** | **29,157** | **47 Rust source files** |
+| Area | Responsibility |
+|---|---|
+| `core/` | Shared domain types and bounded ring data structures. |
+| `exchange/` | Binance and Hyperliquid adapters, signing, preflight, normalization, and public data feeds. |
+| `engine/` | Event loop, strategy lifecycle, order journal, reconciliation, replay, risk integration, and telemetry. |
+| `indicators/` | Built-ins, SIMD helpers, and the compile-time native-indicator registry. |
+| `qfl/` | Lexer, parser, type checker, optimizer, compiler, register VM, tracer, and profiler. |
+| `risk/` | Position, notional, rate, drawdown, cooldown, and execution-pause controls. |
+| `quince/` | Operator CLI, wallet setup, replay/capture tools, and loopback-only dashboard. |
+| `book/` | mdBook architecture guide, native indicator catalogue, and generated API reference. |
 
 ---
 
 ## Quick Start
 
+Build with the pinned nightly toolchain and use mock mode first:
+
 ```bash
-# Mock mode (simulated data, no API keys)
-QUINCE_MOCK=1 cargo run
-
-# Public WS mode (real Binance data, no API keys)
-QUINCE_PUBLIC=1 cargo run
-
-# Hyperliquid public market data (strategy directives)
-# @exchange hyperliquid
-# @network testnet
-QUINCE_PUBLIC=1 QUINCE_STRATEGY=strategies/hyperliquid_public.qfl QUINCE_SYMBOL=BTC cargo run
-
-# Create or import a Hyperliquid EVM wallet. Input is hidden and the key is
-# stored in the OS keychain; only its public address is saved locally.
-QUINCE_WALLET_SETUP=1 cargo run
-
-The wizard either creates a fresh EVM wallet or imports a 32-byte hex private
-key. It stores the secret in the operating system credential store and saves
-only the public address in the local Quince profile. Never put a private key
-in `.qfl`, `.env`, shell history, or a repository file.
-
-On a first interactive launch, Quince opens the same wizard automatically.
-Set `QUINCE_SKIP_WALLET_SETUP=1` for an intentional wallet-free session.
-
-# With custom QFL strategy
-QUINCE_MOCK=1 QUINCE_STRATEGY=strategies/scalper.qfl QUINCE_SYMBOL=btcusdt cargo run
-
-# Testnet mode (Binance testnet credentials)
-BINANCE_API_KEY=xxx BINANCE_SECRET_KEY=xxx QUINCE_TESTNET=1 cargo run
-
-# Optional local, read-only operator dashboard. It is loopback-only by
-# default and deliberately exposes no trading-control endpoints.
-QUINCE_MOCK=1 QUINCE_DASHBOARD=1 cargo run
-# Open http://127.0.0.1:3000 ; JSON status: /api/v1/state
-
-# Inspect or verify a durable order journal offline. These commands never open
-# an exchange socket and never require credentials.
-cargo run --bin quince -- journal inspect trades.orders.jsonl
-cargo run --bin quince -- journal verify trades.orders.jsonl
-
-# Opt-in read-only Binance Futures testnet authentication check (never places an order)
-BINANCE_TESTNET_API_KEY=xxx BINANCE_TESTNET_SECRET_KEY=xxx \
-  cargo test -p quince-exchange --test binance_testnet -- --ignored
-
-# Live mode (real Binance credentials)
-BINANCE_API_KEY=xxx BINANCE_SECRET_KEY=xxx QUINCE_LIVE=1 cargo run
-
-# With profiling (http://127.0.0.1:29012)
-cargo run --features profiling
-
-# Dump compiled QFL bytecode as assembly
-cargo run --bin dump_qfl -- strategies/ema_cross.qfl
-
-# Run all tests (1001)
-cargo test
-
-# Run benchmarks
-cargo bench -p quince-qfl --bench bench
-cargo bench -p quince-indicators --bench bench  # SIMD vs scalar indicator perf
-cargo bench -p quince-engine --bench bench      # pipeline + VM tick
-# Five-minute, three-strategy p50/p95/p99 + throughput matrix (JSON and SVG)
-cargo run -p quince-engine --bin strategy_bench --release --locked -- --duration-secs 300
-
-# Build documentation site (auto-generates API docs from source)
-cargo run -p docgen && mdbook build book
-
-# Check clippy (zero warnings)
-cargo clippy --all-targets -- -D warnings
+cargo +nightly build --locked
+QUINCE_MOCK=1 cargo run --locked
 ```
+
+Run a QFL strategy against the deterministic mock feed:
+
+```bash
+QUINCE_MOCK=1 \
+  QUINCE_STRATEGY=strategies/scalper.qfl \
+  QUINCE_SYMBOL=btcusdt \
+  cargo run --locked
+```
+
+For public market-data observation, credentials are not required:
+
+```bash
+# Binance Futures public stream
+QUINCE_PUBLIC=1 cargo run --locked
+
+# Hyperliquid public stream; exchange/network are declared in the strategy
+QUINCE_PUBLIC=1 \
+  QUINCE_STRATEGY=strategies/hyperliquid_public.qfl \
+  QUINCE_SYMBOL=BTC \
+  cargo run --locked
+```
+
+### Wallet and execution
+
+Create or import a dedicated Hyperliquid EVM wallet with hidden input:
+
+```bash
+QUINCE_WALLET_SETUP=1 cargo run --locked
+```
+
+The wizard stores the secret in the OS credential store and only the public
+address in the local profile. Never place a private key in QFL, `.env`, shell
+history, or a repository file. First interactive launch opens this wizard
+automatically; use `QUINCE_SKIP_WALLET_SETUP=1` only for an intentional
+wallet-free session.
+
+Live execution is opt-in and requires exchange credentials. Start with the
+relevant testnet/public/shadow workflow and verify reconciliation before
+enabling it:
+
+```bash
+# Binance Futures testnet
+BINANCE_API_KEY=... BINANCE_SECRET_KEY=... QUINCE_TESTNET=1 cargo run --locked
+
+# Explicit Binance live mode
+BINANCE_API_KEY=... BINANCE_SECRET_KEY=... QUINCE_LIVE=1 cargo run --locked
+```
+
+### Operator tools
+
+```bash
+# Loopback-only, read-only dashboard: http://127.0.0.1:3000
+QUINCE_MOCK=1 QUINCE_DASHBOARD=1 cargo run --locked
+
+# Journal inspection never opens an exchange socket
+cargo run --locked --bin quince -- journal inspect trades.orders.jsonl
+cargo run --locked --bin quince -- journal verify trades.orders.jsonl
+
+# Inspect compiled QFL bytecode
+cargo run --locked --bin dump_qfl -- strategies/custom_logistic_regression.qfl
+```
+
+### Verification
+
+```bash
+cargo +nightly fmt --all -- --check
+cargo test --workspace --lib --bins --tests --examples --locked
+cargo clippy --workspace --all-targets --no-deps -- -D warnings
+bash tools/verify_indicator_catalogue.sh
+
+# Reproducible Criterion suites
+cargo bench -p quince-qfl --bench bench -- --noplot
+cargo bench -p quince-indicators --bench bench -- --noplot
+cargo bench -p quince-engine --bench bench -- --noplot
+```
+
+The full operator and language reference is published in the
+[mdBook](https://0xitsss.github.io/quince/).
 
 ---
 
@@ -543,50 +574,33 @@ sequenceDiagram
 
 ## Performance
 
-Criterion benchmarks (ubuntu-latest, x86_64) — 4 groups, 14 strategies:
+Performance is measured with Criterion and gated in CI against a versioned
+baseline. Measurements are machine- and workload-specific; compare revisions
+on the same runner rather than treating a single number as a latency guarantee.
 
-| Group | Strategy | Throughput |
-|-------|----------|-----------|
-| **Pipeline** (parse + compile + optimize) | ema_cross | 42 µs |
-| | scalper | 78 µs |
-| | heavy_test | 412 µs |
-| **VM tick** (10k iters) | ema_cross | 1,850 ops/ms |
-| | scalper | 920 ops/ms |
-| | momentum | 1,120 ops/ms |
-| **VM scale** (heavy_test) | 1k iters | 1,780 ops/ms |
-| | 10k iters | 1,690 ops/ms |
-| | 100k iters | 1,550 ops/ms |
-| **Runtime feed** (heavy_test) | 10k trades | 420 ops/ms |
+Recent local release-profile measurements on 10,000 public-trade events:
 
-The historical Criterion values above isolate smaller units of work. Use the
-local `strategy_bench` command from Quick Start when comparing a full per-tick
-VM hot path (indicator update + slot writes + `on_trade` dispatch).
-Float sanitizer uses branchless SSE (`_mm_cmpunord_sd` + `_mm_andnot_pd`) — no branch mispredictions on NaN/Inf paths.
+| Workload | Time | Throughput |
+|---|---:|---:|
+| `custom_signed_volume`, indicator only | ~73 µs | ~136M events/s |
+| `custom_signed_volume`, complete QFL pipeline | ~390 µs | ~25.6M events/s |
+| `custom_logistic_regression`, indicator only | ~207 µs | ~48.3M events/s |
+| `custom_logistic_regression`, complete QFL pipeline | ~708 µs | ~14.1M events/s |
 
-SIMD-accelerated indicator kernels (AVX2, f64):
-
-| Kernel | Scalar | SIMD (AVX2) | Speedup |
-|--------|--------|-------------|---------|
-| WMA/200 update | 13.93 µs | 4.68 µs | **~3.0×** |
-
-Historical VM-only tick speed benchmarks per strategy (not comparable to the
-full hot-path matrix above):
-
-| Strategy | MHz |
-|----------|-----|
-| ema_cross | 38.4 MHz |
-| rsi_reversion | 23.1 MHz |
-| momentum | 18.7 MHz |
-| scalper | 11.5 MHz |
-| heavy_test | 4.6 MHz |
+The complete pipeline includes indicator update, feature-slot write, and
+`on_trade` bytecode dispatch. Run the Criterion commands in
+[Verification](#verification) before accepting a performance change. SIMD
+rolling kernels are used where the CPU and workload permit them.
 
 ---
 
 ## Documentation
 
-- **[mdBook](https://0xitsss.github.io/quince)** — Full documentation site (51 pages, auto-generated from doc comments, CI/CD)
-- **[`docs/QUINCE.md`](docs/QUINCE.md)** — Architecture, performance benchmarks, crate breakdown
-- **[`docs/QFL.md`](docs/QFL.md)** — Quince-Flavored Language syntax, types, indicators, example strategies
+- **[mdBook](https://0xitsss.github.io/quince)** — architecture, operator model,
+  QFL, native indicator catalogue, and generated API reference
+- **[Native indicator catalogue](https://0xitsss.github.io/quince/native-indicators.html)** — all compiled plugins, their parameters, and intended signals
+- **[`docs/QUINCE.md`](docs/QUINCE.md)** — architecture and crate breakdown
+- **[`docs/QFL.md`](docs/QFL.md)** — QFL syntax, types, indicators, and example strategies
 - **Operator dashboard** — `QUINCE_DASHBOARD=1` starts loopback-only Axum UI; it reads the durable journal via a bounded crossbeam bridge and exposes no mutation endpoints
 - **[SonarQube](https://sonarcloud.io/project/overview?id=0xitsss_quince)** — Static analysis dashboard
 
@@ -596,13 +610,16 @@ full hot-path matrix above):
 
 This project follows the [REUSE Specification 3.2](https://reuse.software/spec/) by the Free Software Foundation Europe:
 
-- **47 Rust source files** — each carries `SPDX-FileCopyrightText` and `SPDX-License-Identifier` headers
-- **REUSE.toml** — covers configuration files (CI/CD, Cargo.toml, .gitignore, mdBook config)
+- **Rust source files** — each carries `SPDX-FileCopyrightText` and
+  `SPDX-License-Identifier` headers
+- **REUSE.toml** — covers declarative formats: CI/CD, Cargo manifests, mdBook,
+  documentation, and QFL strategies
 - **LICENSES/ directory** — contains the full text of every referenced license:
   - `AGPL-3.0-only.txt` — GNU Affero General Public License v3.0 only
   - `LicenseRef-Quince-Commercial.txt` — Quince Commercial License v1.0
 
-Every file in the repository is REUSE-compliant with a clear, unambiguous license.
+The repository has a clear, unambiguous license declaration for every source,
+strategy, documentation, and configuration surface.
 
 ---
 
@@ -610,7 +627,8 @@ Every file in the repository is REUSE-compliant with a clear, unambiguous licens
 
 | Version | Phase | Changes |
 | ------- | ----- | ------- |
-| v0.7.7 | Current | Production replay toolchain with strict capture validation, costs, deterministic capture merging and OKX import; execution-sync risk gate and marked-equity drawdown protection; all third-party GitHub Actions pinned to immutable commit SHAs |
+| v0.7.8 | Current | Compile-time native indicator system with 52 documented indicators, including online logistic regression; strict `@using` validation; expanded exchange contract matrices; mdBook catalogue guarded by CI; SPDX/REUSE coverage and production documentation refresh. |
+| v0.7.7 | Previous | Production replay toolchain with strict capture validation, costs, deterministic capture merging and OKX import; execution-sync risk gate and marked-equity drawdown protection; all third-party GitHub Actions pinned to immutable commit SHAs |
 | v0.7.5 | 8f | Durable order journal with crash-safe recovery; engine-generated idempotency keys and Binance client-ID reconciliation; hardened Binance request lifecycle; Hyperliquid authenticated execution boundary remains fail-closed pending verified signing vectors |
 | v0.7.6 | 8g | Verified Hyperliquid testnet execution primitives and strict preflight/reconciliation boundaries; strategy lifecycle with Shadow mode; Axum readiness/metrics; public-data DOM scalping signal strategy |
 | v0.7.4 | 8e | Automatic first-run wallet setup using the OS keychain; stricter live-mode and environment validation; read-only Binance public adapter; release Thin LTO; CI quality gates; risk-accounting hardening |
