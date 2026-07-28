@@ -36,10 +36,10 @@
             const path_to_root = "";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-5dd23582.js";
+            window.path_to_searchindex_js = "searchindex-6c8dbffe.js";
         </script>
         <!-- Start loading toc.js asap -->
-        <script src="toc-69e5c6fa.js"></script>
+        <script src="toc-13eb2a3e.js"></script>
     </head>
     <body>
     <div id="mdbook-help-container">
@@ -2403,6 +2403,30 @@ which must be implemented as a dedicated authenticated adapter.</p>
 };
 <span class="boring">}</span></code></pre>
 <div style="break-before: page; page-break-before: always;"></div>
+<h1 id="module-hyperliquidsigning"><a class="header" href="#module-hyperliquidsigning">Module: <code>hyperliquid/signing</code></a></h1>
+<blockquote>
+<p>Source: <code>hyperliquid/signing.rs</code></p>
+</blockquote>
+<p>Minimal, vector-tested primitives for Hyperliquid L1-action signatures.</p>
+<p>This intentionally covers only the EIP-712 envelope around an already
+canonical <code>connection_id</code>. Action MessagePack encoding belongs in a separate
+module and must earn the same test-vector coverage before live submission.</p>
+<h2 id="functions-13"><a class="header" href="#functions-13">Functions</a></h2>
+<h3 id="pub-fn-l1_action_signing_digest"><a class="header" href="#pub-fn-l1_action_signing_digest"><code>pub fn l1_action_signing_digest</code></a></h3>
+<pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>pub fn l1_action_signing_digest(...) { ... }
+<span class="boring">}</span></code></pre>
+<p>Returns the EIP-712 digest the wallet must sign for a canonical L1 action
+connection ID. The protocol uses source <code>a</code> on mainnet and <code>b</code> on testnet.</p>
+<h3 id="pub-fn-sign_l1_action"><a class="header" href="#pub-fn-sign_l1_action"><code>pub fn sign_l1_action</code></a></h3>
+<pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>pub fn sign_l1_action(...) { ... }
+<span class="boring">}</span></code></pre>
+<p>Signs a canonical L1 action connection ID using Ethereum’s <code>r || s || v</code>
+shape. <code>v</code> is normalized to 27 or 28 for the exchange API.</p>
+<div style="break-before: page; page-break-before: always;"></div>
 <h1 id="module-hyperliquiduser_data"><a class="header" href="#module-hyperliquiduser_data">Module: <code>hyperliquid/user_data</code></a></h1>
 <blockquote>
 <p>Source: <code>hyperliquid/user_data.rs</code></p>
@@ -2420,7 +2444,7 @@ ingress queue therefore emits <code>ReconcileRequired</code> before reconnecting
     Invalid(&amp; 'static str,),
 }
 <span class="boring">}</span></code></pre>
-<h2 id="functions-13"><a class="header" href="#functions-13">Functions</a></h2>
+<h2 id="functions-14"><a class="header" href="#functions-14">Functions</a></h2>
 <h3 id="pub-fn-start_user_data_stream-1"><a class="header" href="#pub-fn-start_user_data_stream-1"><code>pub fn start_user_data_stream</code></a></h3>
 <pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
 </span><span class="boring">fn main() {
@@ -2659,7 +2683,7 @@ Includes [<code>Rsi</code>] (Relative Strength Index), [<code>Stochastic</code>]
 <p>Source: <code>simd.rs</code></p>
 </blockquote>
 <p><em>No module documentation.</em></p>
-<h2 id="functions-14"><a class="header" href="#functions-14">Functions</a></h2>
+<h2 id="functions-15"><a class="header" href="#functions-15">Functions</a></h2>
 <h3 id="pub-fn-sum"><a class="header" href="#pub-fn-sum"><code>pub fn sum</code></a></h3>
 <pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
 </span><span class="boring">fn main() {
@@ -2887,7 +2911,7 @@ order frequency, daily loss caps, and cooldown periods.</p>
 worker reads the durable journal and delivers snapshots through a bounded
 crossbeam channel; the engine’s latency-sensitive loop never waits on HTTP,
 a mutex, or a dashboard client.</p>
-<h2 id="functions-15"><a class="header" href="#functions-15">Functions</a></h2>
+<h2 id="functions-16"><a class="header" href="#functions-16">Functions</a></h2>
 <h3 id="pub-fn-start"><a class="header" href="#pub-fn-start"><code>pub fn start</code></a></h3>
 <pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
 </span><span class="boring">fn main() {
@@ -2945,7 +2969,16 @@ local profile contains the public address and no signing secret.</p>
     pub hyperliquid_address: String,
 };
 <span class="boring">}</span></code></pre>
-<h2 id="functions-16"><a class="header" href="#functions-16">Functions</a></h2>
+<h3 id="pub-struct-keyringhyperliquidsigner"><a class="header" href="#pub-struct-keyringhyperliquidsigner"><code>pub struct KeyringHyperliquidSigner</code></a></h3>
+<pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>pub struct KeyringHyperliquidSigner {
+    address: String,
+};
+<span class="boring">}</span></code></pre>
+<p>Signer backed by the OS credential store. It retains only the public address
+between calls; the secret is loaded and zeroized for each signature.</p>
+<h2 id="functions-17"><a class="header" href="#functions-17">Functions</a></h2>
 <h3 id="pub-fn-load_profile"><a class="header" href="#pub-fn-load_profile"><code>pub fn load_profile</code></a></h3>
 <pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
 </span><span class="boring">fn main() {
@@ -2956,6 +2989,14 @@ local profile contains the public address and no signing secret.</p>
 </span><span class="boring">fn main() {
 </span>pub fn has_private_key(...) { ... }
 <span class="boring">}</span></code></pre>
+<h3 id="pub-fn-load_hyperliquid_signer"><a class="header" href="#pub-fn-load_hyperliquid_signer"><code>pub fn load_hyperliquid_signer</code></a></h3>
+<pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>pub fn load_hyperliquid_signer(...) { ... }
+<span class="boring">}</span></code></pre>
+<p>Opens the keyring-backed signer only if the stored secret still belongs to
+the public wallet profile. This catches a stale or replaced keychain entry
+before an authenticated exchange session starts.</p>
 <h3 id="pub-fn-is_interactive"><a class="header" href="#pub-fn-is_interactive"><code>pub fn is_interactive</code></a></h3>
 <pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
 </span><span class="boring">fn main() {

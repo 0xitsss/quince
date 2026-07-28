@@ -35,10 +35,10 @@
             const path_to_root = "../../";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../../searchindex-5dd23582.js";
+            window.path_to_searchindex_js = "../../searchindex-6c8dbffe.js";
         </script>
         <!-- Start loading toc.js asap -->
-        <script src="../../toc-69e5c6fa.js"></script>
+        <script src="../../toc-13eb2a3e.js"></script>
     </head>
     <body>
     <div id="mdbook-help-container">
@@ -196,6 +196,15 @@ local profile contains the public address and no signing secret.</p>
     pub hyperliquid_address: String,
 };
 <span class="boring">}</span></code></pre>
+<h3 id="pub-struct-keyringhyperliquidsigner"><a class="header" href="#pub-struct-keyringhyperliquidsigner"><code>pub struct KeyringHyperliquidSigner</code></a></h3>
+<pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>pub struct KeyringHyperliquidSigner {
+    address: String,
+};
+<span class="boring">}</span></code></pre>
+<p>Signer backed by the OS credential store. It retains only the public address
+between calls; the secret is loaded and zeroized for each signature.</p>
 <h2 id="functions"><a class="header" href="#functions">Functions</a></h2>
 <h3 id="pub-fn-load_profile"><a class="header" href="#pub-fn-load_profile"><code>pub fn load_profile</code></a></h3>
 <pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
@@ -207,6 +216,14 @@ local profile contains the public address and no signing secret.</p>
 </span><span class="boring">fn main() {
 </span>pub fn has_private_key(...) { ... }
 <span class="boring">}</span></code></pre>
+<h3 id="pub-fn-load_hyperliquid_signer"><a class="header" href="#pub-fn-load_hyperliquid_signer"><code>pub fn load_hyperliquid_signer</code></a></h3>
+<pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>pub fn load_hyperliquid_signer(...) { ... }
+<span class="boring">}</span></code></pre>
+<p>Opens the keyring-backed signer only if the stored secret still belongs to
+the public wallet profile. This catches a stale or replaced keychain entry
+before an authenticated exchange session starts.</p>
 <h3 id="pub-fn-is_interactive"><a class="header" href="#pub-fn-is_interactive"><code>pub fn is_interactive</code></a></h3>
 <pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
 </span><span class="boring">fn main() {
