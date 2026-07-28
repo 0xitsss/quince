@@ -10,7 +10,7 @@ env:
 
 jobs:
   build:
-    name: Build & Test & Clippy
+    name: Production gates
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -29,14 +29,38 @@ jobs:
           restore-keys: |
             ci-
 
+      - name: Restore private Criterion baseline
+        uses: actions/cache@v4
+        with:
+          path: |
+            qfl/target/criterion
+            indicators/target/criterion
+            engine/target/criterion
+          key: criterion-${{ runner.os }}-${{ hashFiles('**/Cargo.lock') }}-v2
+
       - name: cargo build
         run: cargo build --workspace --locked
+
+      - name: release build
+        run: cargo build --workspace --release --locked
+
+      - name: public surface policy
+        run: bash tools/verify_public_surface.sh
 
       - name: cargo fmt
         run: cargo fmt --all -- --check
 
       - name: cargo test
-        run: cargo test --workspace --locked
+        run: cargo test --workspace --all-targets --locked
 
       - name: cargo clippy
         run: cargo clippy --workspace --all-targets --no-deps -- -D warnings
+
+      - name: Criterion benchmarks
+        run: |
+          cargo bench -p quince-qfl --bench bench -- --noplot
+          cargo bench -p quince-indicators --bench bench -- --noplot
+          cargo bench -p quince-engine --bench bench -- --noplot
+
+      - name: benchmark regression gate
+        run: bash tools/verify_benchmark_regressions.sh

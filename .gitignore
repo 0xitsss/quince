@@ -31,6 +31,10 @@ bench_results.txt
 
 # Internal plans/docs (not for public)
 qfl/docs/
+docs/*_DRAFT.md
+docs/*_REPORT.md
+docs/REDDIT_*.md
+docs/benchmarks/
 
 # Compiled QFR bytecode (build artifact)
 *.qfr
