@@ -15,7 +15,11 @@
 //! and provide one place to add a reviewed signing implementation later.
 
 use super::user_data;
-use super::{public::HyperliquidPublic, signing};
+use super::{
+    preflight::{MarketContextPolicy, MarketSnapshot},
+    public::HyperliquidPublic,
+    signing,
+};
 use crate::r#trait::{
     Exchange, ExchangeError, OrderRequest, OrderStatus, Result, Stream, StreamMsg,
 };
@@ -382,6 +386,27 @@ impl HyperliquidExecution {
                 "vaultAddress": serde_json::Value::Null,
             }),
         })
+    }
+
+    /// Strict preparation entrypoint for live-capable callers. It binds the
+    /// signed limit to a fresh quote for the same symbol and an explicit price
+    /// deviation policy before allocating a nonce.
+    pub fn prepare_limit_order_with_market_context(
+        &self,
+        request: OrderRequest,
+        meta: &HyperliquidPerpMeta,
+        snapshot: &MarketSnapshot,
+        policy: MarketContextPolicy,
+    ) -> Result<PreparedHyperliquidOrder> {
+        policy.check(&request.order, snapshot, Utc::now())?;
+        self.prepare_limit_order(
+            request,
+            meta,
+            &ExecutionPreflight {
+                market_observed_at: snapshot.observed_at,
+                max_market_age: policy.max_age,
+            },
+        )
     }
 
     /// Validates market freshness, intent and exchange metadata together.
@@ -826,6 +851,32 @@ mod tests {
         assert_eq!(prepared.payload["action"]["orders"][0]["a"], 0);
         assert_eq!(prepared.payload["signature"]["v"], 27);
         assert_eq!(prepared.payload["nonce"], prepared.nonce);
+    }
+
+    #[test]
+    fn strict_preparation_refuses_a_quote_for_another_symbol() {
+        let execution = adapter(HyperliquidNetwork::Testnet);
+        let meta = HyperliquidPerpMeta::parse(&serde_json::json!({
+            "universe": [{"name": "BTC", "szDecimals": 5}]
+        }))
+        .unwrap();
+        let result = execution.prepare_limit_order_with_market_context(
+            OrderRequest {
+                client_order_id: "strict-preflight".into(),
+                order: limit_order(),
+            },
+            &meta,
+            &MarketSnapshot {
+                symbol: "ETH".into(),
+                observed_at: Utc::now(),
+                reference_price: 100_000.0,
+            },
+            MarketContextPolicy {
+                max_age: Duration::seconds(1),
+                max_limit_deviation_bps: 100,
+            },
+        );
+        assert!(result.is_err());
     }
 
     #[test]
