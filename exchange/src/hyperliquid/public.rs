@@ -202,6 +202,11 @@ fn required_number(value: &serde_json::Value, field: &str) -> Result<f64> {
     parse_number(value).ok_or_else(|| ExchangeError::Rest(format!("invalid Hyperliquid {field}")))
 }
 
+fn parse_positive_number(value: &serde_json::Value) -> Option<f64> {
+    let number = parse_number(value)?;
+    (number > 0.0).then_some(number)
+}
+
 fn parse_account_info(value: &serde_json::Value) -> Result<AccountInfo> {
     let account_value = required_number(
         value
@@ -281,8 +286,8 @@ fn parse_ws_msg(text: &str) -> Option<StreamMsg> {
         "trades" => {
             let trade = value.get("data")?.as_array()?.first()?;
             Some(StreamMsg::Trade(Trade {
-                price: parse_number(trade.get("px")?)?,
-                qty: parse_number(trade.get("sz")?)?,
+                price: parse_positive_number(trade.get("px")?)?,
+                qty: parse_positive_number(trade.get("sz")?)?,
                 time: chrono::DateTime::from_timestamp_millis(trade.get("time")?.as_i64()?)?,
                 side: match trade.get("side")?.as_str()? {
                     "B" | "buy" => Side::Buy,
@@ -301,8 +306,8 @@ fn parse_ws_msg(text: &str) -> Option<StreamMsg> {
                     .iter()
                     .map(|level| {
                         Some(DepthLevel {
-                            price: parse_number(level.get("px")?)?,
-                            qty: parse_number(level.get("sz")?)?,
+                            price: parse_positive_number(level.get("px")?)?,
+                            qty: parse_positive_number(level.get("sz")?)?,
                         })
                     })
                     .collect::<Option<Vec<_>>>()
@@ -333,6 +338,62 @@ mod tests {
         assert!(
             matches!(event, StreamMsg::Depth(Depth { bids, asks }) if bids[0].price == 100.0 && asks[0].qty == 3.0)
         );
+    }
+
+    #[test]
+    fn contract_fixture_public_trade_preserves_side_and_id() {
+        let event = parse_ws_msg(include_str!("../../tests/fixtures/hyperliquid_trades.json"))
+            .expect("Hyperliquid trade fixture must remain parseable");
+        assert!(matches!(
+            event,
+            StreamMsg::Trade(Trade {
+                side: Side::Buy,
+                trade_id: 7,
+                ..
+            })
+        ));
+    }
+
+    #[test]
+    fn contract_fixture_l2_book_preserves_bid_ask_ordering() {
+        let event = parse_ws_msg(include_str!(
+            "../../tests/fixtures/hyperliquid_l2_book.json"
+        ))
+        .expect("Hyperliquid l2Book fixture must remain parseable");
+        assert!(matches!(
+            event,
+            StreamMsg::Depth(Depth { bids, asks })
+                if bids[0].price == 65000.0 && asks[0].price == 65001.0
+        ));
+    }
+
+    #[test]
+    fn contract_fixture_trade_batch_preserves_first_exchange_event() {
+        let event = parse_ws_msg(include_str!(
+            "../../tests/fixtures/hyperliquid_trade_batch.json"
+        ))
+        .expect("Hyperliquid batched trade fixture must remain parseable");
+        assert!(matches!(
+            event,
+            StreamMsg::Trade(Trade {
+                side: Side::Sell,
+                price,
+                qty,
+                trade_id: 71_592_004,
+                ..
+            }) if price == 67_124.1 && qty == 0.019
+        ));
+    }
+
+    #[test]
+    fn contract_boundary_rejects_non_positive_or_non_finite_market_data() {
+        for payload in [
+            r#"{"channel":"trades","data":[{"side":"B","px":"NaN","sz":"1","time":1717200000000,"tid":7}]}"#,
+            r#"{"channel":"trades","data":[{"side":"A","px":"100","sz":"0","time":1717200000000,"tid":7}]}"#,
+            r#"{"channel":"l2Book","data":{"levels":[[{"px":"100","sz":"1"}],[{"px":"0","sz":"1"}]]}}"#,
+        ] {
+            assert!(parse_ws_msg(payload).is_none(), "{payload}");
+        }
     }
 
     #[test]

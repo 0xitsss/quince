@@ -13,30 +13,28 @@ jobs:
     name: Production gates
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
 
-      - uses: dtolnay/rust-toolchain@nightly
+      - uses: dtolnay/rust-toolchain@4fd1da8b0805d2d2e936788875a7d65dbd677dc2 # nightly
         with:
           components: clippy, rustfmt
 
-      - uses: actions/cache@v4
+      - uses: actions/cache@5a3ec84eff668545956fd18022155c47e93e2684 # v4.2.3
         with:
           path: |
             ~/.cargo/registry
             ~/.cargo/git
-            target
           key: ci-${{ hashFiles('**/Cargo.lock') }}
           restore-keys: |
             ci-
 
-      - name: Restore private Criterion baseline
-        uses: actions/cache@v4
+      # The Criterion baseline is intentionally isolated from Cargo's build cache.
+      # Bump this key only after reviewing and accepting a new performance baseline.
+      - name: Restore versioned Criterion baseline
+        uses: actions/cache@5a3ec84eff668545956fd18022155c47e93e2684 # v4.2.3
         with:
-          path: |
-            qfl/target/criterion
-            indicators/target/criterion
-            engine/target/criterion
-          key: criterion-${{ runner.os }}-${{ hashFiles('**/Cargo.lock') }}-v2
+          path: target/criterion
+          key: criterion-${{ runner.os }}-v3
 
       - name: cargo build
         run: cargo build --workspace --locked
@@ -58,6 +56,9 @@ jobs:
 
       - name: cargo test
         run: cargo test --workspace --lib --bins --tests --examples --locked
+
+      - name: exchange contract fixtures
+        run: cargo test -p quince-exchange --lib contract_ --locked
 
       - name: cargo clippy
         run: cargo clippy --workspace --all-targets --no-deps -- -D warnings

@@ -1,4 +1,4 @@
-﻿// SPDX-FileCopyrightText: 2026 0xitsss
+// SPDX-FileCopyrightText: 2026 0xitsss
 //
 // SPDX-License-Identifier: AGPL-3.0-only OR LicenseRef-Quince-Commercial
 //! Binance WebSocket message parsing.
@@ -26,8 +26,8 @@ pub fn parse_ws_msg(text: String) -> Option<StreamMsg> {
         "aggTrade" | "trade" => {
             let trade = inner;
             Some(StreamMsg::Trade(Trade {
-                price: trade.get("p")?.as_str()?.parse().ok()?,
-                qty: trade.get("q")?.as_str()?.parse().ok()?,
+                price: parse_positive_number(trade.get("p")?)?,
+                qty: parse_positive_number(trade.get("q")?)?,
                 time: chrono::DateTime::from_timestamp_millis(trade.get("T")?.as_u64()? as i64)?,
                 side: if trade.get("m")?.as_bool()? {
                     Side::Sell
@@ -38,8 +38,10 @@ pub fn parse_ws_msg(text: String) -> Option<StreamMsg> {
             }))
         }
         "depthUpdate" | "depth" => {
-            let bids = parse_depth_levels(inner.get("b")?.as_array()?);
-            let asks = parse_depth_levels(inner.get("a")?.as_array()?);
+            // A partial book is worse than no book: DOM strategies must not
+            // act on a silently truncated snapshot after a schema change.
+            let bids = parse_depth_levels(inner.get("b")?.as_array()?)?;
+            let asks = parse_depth_levels(inner.get("a")?.as_array()?)?;
             Some(StreamMsg::Depth(Depth { bids, asks }))
         }
         "markPriceUpdate" => Some(StreamMsg::MarkPrice {
@@ -107,21 +109,20 @@ pub fn parse_ws_msg(text: String) -> Option<StreamMsg> {
     }
 }
 
-fn parse_depth_levels(arr: &[BorrowedValue<'_>]) -> Vec<DepthLevel> {
+fn parse_positive_number(value: &BorrowedValue<'_>) -> Option<f64> {
+    let number = value.as_str()?.parse::<f64>().ok()?;
+    (number.is_finite() && number > 0.0).then_some(number)
+}
+
+fn parse_depth_levels(arr: &[BorrowedValue<'_>]) -> Option<Vec<DepthLevel>> {
     let mut out = Vec::with_capacity(arr.len());
     for level in arr {
-        if let Some(entry) = level.as_array() {
-            if entry.len() >= 2 {
-                if let (Some(p), Some(q)) = (
-                    entry[0].as_str().and_then(|s| s.parse().ok()),
-                    entry[1].as_str().and_then(|s| s.parse().ok()),
-                ) {
-                    out.push(DepthLevel { price: p, qty: q });
-                }
-            }
-        }
+        let entry = level.as_array()?;
+        let price = parse_positive_number(entry.first()?)?;
+        let qty = parse_positive_number(entry.get(1)?)?;
+        out.push(DepthLevel { price, qty });
     }
-    out
+    Some(out)
 }
 
 fn parse_balances(arr: &[BorrowedValue<'_>]) -> Vec<Balance> {
@@ -239,6 +240,50 @@ mod tests {
                 assert_eq!(t.side, Side::Buy);
             }
             _ => panic!("expected Trade, got {:?}", msg),
+        }
+    }
+
+    #[test]
+    fn contract_fixture_combined_depth_preserves_top_of_book() {
+        let msg =
+            parse_ws_msg(include_str!("../../tests/fixtures/binance_combined_depth.json").into())
+                .expect("Binance combined depth fixture must remain parseable");
+        assert!(matches!(
+            msg,
+            StreamMsg::Depth(Depth { bids, asks })
+                if bids.len() == 2
+                    && asks.len() == 2
+                    && bids[0].price == 48231.50
+                    && asks[0].price == 48235.00
+        ));
+    }
+
+    #[test]
+    fn contract_fixture_combined_agg_trade_preserves_aggressor_side_and_id() {
+        let msg = parse_ws_msg(
+            include_str!("../../tests/fixtures/binance_combined_agg_trade.json").into(),
+        )
+        .expect("Binance combined aggTrade fixture must remain parseable");
+        assert!(matches!(
+            msg,
+            StreamMsg::Trade(Trade {
+                price,
+                qty,
+                side: Side::Sell,
+                trade_id: 2_847_195_262,
+                ..
+            }) if price == 67_123.45 && qty == 0.004
+        ));
+    }
+
+    #[test]
+    fn contract_boundary_rejects_partial_or_non_finite_depth() {
+        for payload in [
+            r#"{"e":"depthUpdate","b":[["100","1"],["NaN","2"]],"a":[["101","1"]]}"#,
+            r#"{"e":"depthUpdate","b":[["100","1"],["99"]],"a":[["101","1"]]}"#,
+            r#"{"e":"depthUpdate","b":[["0","1"]],"a":[["101","1"]]}"#,
+        ] {
+            assert!(parse_ws_msg(payload.into()).is_none(), "{payload}");
         }
     }
 

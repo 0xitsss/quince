@@ -10,12 +10,14 @@ use crate::indicators::{parse_using, IndicatorBank};
 use crate::journal::{JournalError, JournalEvent, OrderJournal};
 use crate::orders::OrderManager;
 use crate::strategy_lifecycle::{DeploymentMode, StrategyLifecycle, StrategyRevision};
+use crate::telemetry::RuntimeTelemetry;
 use quince_core::types::*;
 use quince_exchange::r#trait::{Exchange, ExchangeError, OrderRequest, StreamMsg};
 use quince_logger::TradeLog;
 use quince_qfl::risk::RiskLimits;
 use quince_qfl::runtime::QflRuntime;
 use quince_risk::RiskControls;
+use sha2::{Digest, Sha256};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -41,6 +43,26 @@ const CANCEL_RETRY_INTERVAL: Duration = Duration::from_secs(1);
 const EVAL_INTERVAL: Duration = Duration::from_secs(1);
 const ACCOUNT_SYNC_INTERVAL: Duration = Duration::from_secs(10);
 
+fn strategy_artifact_digest(path: &str) -> Result<[u8; 32], EngineError> {
+    let bytes = std::fs::read(path).map_err(|error| {
+        EngineError::Strategy(format!("read strategy artifact {path}: {error}"))
+    })?;
+    Ok(Sha256::digest(bytes).into())
+}
+
+fn current_equity(
+    balance_names: &[String],
+    balance_values: &[f64],
+    position: Option<&Position>,
+) -> f64 {
+    let usdt = balance_names
+        .iter()
+        .position(|name| name == "USDT")
+        .and_then(|index| balance_values.get(index).copied())
+        .unwrap_or(0.0);
+    usdt + position.map(|value| value.unrealized_pnl).unwrap_or(0.0)
+}
+
 pub struct Engine<E: Exchange> {
     exchange: E,
     symbols: Vec<String>,
@@ -54,8 +76,14 @@ pub struct Engine<E: Exchange> {
 
     order_manager: OrderManager,
     order_journal: OrderJournal,
+    // No order may cross the engine boundary until an authoritative account
+    // refresh and reconciliation pass have both completed successfully.  This
+    // starts false so callers which drive the engine outside `run` still fail
+    // closed rather than accidentally bypassing startup preflight.
+    execution_sync_ready: bool,
     execution_halted: bool,
     strategy_lifecycle: StrategyLifecycle,
+    telemetry: Arc<RuntimeTelemetry>,
     indicators: IndicatorBank,
 
     last_price: f64,
@@ -86,6 +114,10 @@ impl<E: Exchange> Engine<E> {
         log_path: &str,
     ) -> Result<Self, EngineError> {
         let (orders_tx, orders_rx) = crossbeam_channel::unbounded();
+        // Bind lifecycle identity to the exact input artifact, not a path or
+        // placeholder. Operators can tell whether a mode transition refers to
+        // the same strategy bytes.
+        let artifact_digest = strategy_artifact_digest(strategy_path)?;
 
         // Load QFL strategy (.qfl = compile+optimize, .qfr = pre-compiled)
         let is_qfr = strategy_path.ends_with(".qfr");
@@ -229,10 +261,21 @@ impl<E: Exchange> Engine<E> {
         let order_journal = OrderJournal::open(&journal_path)?;
         let mut strategy_lifecycle = StrategyLifecycle::default();
         strategy_lifecycle
-            .deploy(StrategyRevision::new(1, [0_u8; 32], DeploymentMode::Live))
+            .deploy(StrategyRevision::new(
+                1,
+                artifact_digest,
+                DeploymentMode::Live,
+            ))
             .map_err(|error| {
                 EngineError::Strategy(format!("initialize strategy lifecycle: {error}"))
             })?;
+        let telemetry = RuntimeTelemetry::global();
+        telemetry.set_revision(
+            &strategy_lifecycle
+                .active()
+                .expect("initial strategy revision")
+                .revision,
+        );
 
         Ok(Self {
             exchange,
@@ -243,8 +286,10 @@ impl<E: Exchange> Engine<E> {
             logger,
             order_manager: OrderManager::new(),
             order_journal,
+            execution_sync_ready: false,
             execution_halted: false,
             strategy_lifecycle,
+            telemetry,
             indicators,
             last_price: 0.0,
             daily_pnl: 0.0,
@@ -269,10 +314,60 @@ impl<E: Exchange> Engine<E> {
     ) -> Result<(), EngineError> {
         self.strategy_lifecycle
             .deploy(revision)
-            .map_err(|error| EngineError::Strategy(error.to_string()))
+            .map_err(|error| EngineError::Strategy(error.to_string()))?;
+        self.telemetry.set_revision(
+            &self
+                .strategy_lifecycle
+                .active()
+                .expect("deployed revision")
+                .revision,
+        );
+        Ok(())
+    }
+
+    /// Switch the active strategy between live and shadow execution without
+    /// reusing its runtime state.  The mode change is represented as a new,
+    /// monotonically versioned deployment so an operator can audit or roll it
+    /// back through the same lifecycle boundary as a code revision.
+    pub fn set_deployment_mode(&mut self, mode: DeploymentMode) -> Result<(), EngineError> {
+        self.strategy_lifecycle
+            .switch_mode(mode)
+            .map_err(|error| EngineError::Strategy(error.to_string()))?;
+        self.telemetry.set_revision(
+            &self
+                .strategy_lifecycle
+                .active()
+                .expect("mode-switched revision")
+                .revision,
+        );
+        Ok(())
+    }
+
+    /// Promote the active shadow revision through the lifecycle boundary.
+    pub fn promote_shadow_strategy(&mut self) -> Result<(), EngineError> {
+        self.strategy_lifecycle
+            .promote_shadow()
+            .map_err(|error| EngineError::Strategy(error.to_string()))?;
+        self.telemetry.set_revision(
+            &self
+                .strategy_lifecycle
+                .active()
+                .expect("promoted revision")
+                .revision,
+        );
+        Ok(())
+    }
+
+    pub fn telemetry(&self) -> Arc<RuntimeTelemetry> {
+        Arc::clone(&self.telemetry)
     }
 
     pub async fn run(&mut self) -> Result<(), EngineError> {
+        // This is deliberately before stream subscription and, more
+        // importantly, before the first order dispatch.  A stale account or
+        // locally pending order is an execution-integrity failure, not a
+        // recoverable warning.
+        self.synchronize_execution_state().await?;
         let stream = self.exchange.subscribe(&self.symbols).await?;
         let rx = stream.rx;
 
@@ -340,7 +435,10 @@ impl<E: Exchange> Engine<E> {
                 #[cfg(feature = "profiling")]
                 puffin::profile_scope!("AccountSync");
                 did_work = true;
-                self.sync_account().await;
+                if let Err(error) = self.synchronize_execution_state().await {
+                    self.execution_sync_ready = false;
+                    tracing::error!(%error, "account/open-order synchronization failed; execution remains fail-closed");
+                }
                 self.next_account = now + ACCOUNT_SYNC_INTERVAL;
             }
 
@@ -364,6 +462,11 @@ impl<E: Exchange> Engine<E> {
     }
 
     async fn on_stream_msg(&mut self, msg: StreamMsg) {
+        // Keep timing entirely local to the engine event path: recording is a
+        // relaxed atomic increment into a bounded histogram and cannot block
+        // market-data processing.
+        let started_at = Instant::now();
+        self.telemetry.record_market_event();
         match msg {
             StreamMsg::Trade(trade) => {
                 #[cfg(feature = "profiling")]
@@ -456,10 +559,14 @@ impl<E: Exchange> Engine<E> {
                 // detail. Refresh account state and query every locally
                 // active order before permitting the normal loop to proceed.
                 tracing::warn!(%source, %reason, "exchange reconciliation required");
-                self.sync_account().await;
-                self.reconcile_pending_orders().await;
+                if let Err(error) = self.synchronize_execution_state().await {
+                    self.execution_sync_ready = false;
+                    tracing::error!(%error, "private-stream reconciliation failed; execution remains fail-closed");
+                }
             }
         }
+        self.telemetry
+            .record_market_event_latency(started_at.elapsed());
     }
 
     /// Vec-based balance store — linear search over N в‰¤ 5.
@@ -482,8 +589,24 @@ impl<E: Exchange> Engine<E> {
         self.qfl.set_position_size(signed_size);
     }
 
+    /// Current account equity in the engine's quote currency.
+    ///
+    /// The engine currently operates USD(T)-quoted instruments, so equity is
+    /// the USDT wallet balance plus the marked unrealized PnL of the tracked
+    /// position. Keeping this separate from `peak_equity` is essential: the
+    /// risk layer uses the latter as a high-water mark to calculate drawdown.
+    fn current_equity(&self) -> f64 {
+        current_equity(
+            &self.balance_names,
+            &self.balance_values,
+            self.position.as_ref(),
+        )
+    }
+
     async fn on_strategy_order(&mut self, order: Order) {
+        self.telemetry.record_order_intent();
         if !self.strategy_lifecycle.execution_enabled() {
+            self.telemetry.record_suppressed_order();
             tracing::info!(symbol = %order.symbol, "shadow strategy order suppressed before journal/exchange");
             return;
         }
@@ -491,14 +614,22 @@ impl<E: Exchange> Engine<E> {
             tracing::error!("refusing order: execution is halted after an order-journal failure");
             return;
         }
+        if !self.execution_sync_ready {
+            tracing::error!(symbol = %order.symbol, "refusing order: mandatory account/open-order synchronization has not completed");
+            return;
+        }
         let current_position = self.position.as_ref().map_or(0.0, |pos| match pos.side {
             PositionSide::Long => pos.size,
             PositionSide::Short => -pos.size,
             PositionSide::None => 0.0,
         }) + self.order_manager.pending_signed_exposure();
+        // Pass the account's current marked equity, not its historical high-water
+        // mark. `RiskControls` owns the high-water mark and pauses execution when
+        // the real drawdown breaches the configured limit.
+        let current_equity = self.current_equity();
         if let Err(reason) = self
             .risk
-            .check_order(&order, self.peak_equity, current_position)
+            .check_order(&order, current_equity, current_position)
         {
             tracing::warn!("risk rejected order: {}", reason);
             return;
@@ -614,23 +745,32 @@ impl<E: Exchange> Engine<E> {
         self.equity_check();
     }
 
-    async fn sync_account(&mut self) {
+    async fn sync_account(&mut self) -> Result<(), EngineError> {
         #[cfg(feature = "profiling")]
         puffin::profile_scope!("sync_account");
-        match self.exchange.account_info().await {
-            Ok(info) => {
-                for b in &info.balances {
-                    self.set_balance(&b.asset, b.wallet);
-                    self.qfl.set_balance(&b.asset, b.wallet);
-                }
-                let position = info
-                    .positions
-                    .into_iter()
-                    .find(|p| p.symbol == self.symbols.first().cloned().unwrap_or_default());
-                self.update_position(position);
-            }
-            Err(e) => tracing::warn!("account sync failed: {}", e),
+        let info = self.exchange.account_info().await?;
+        for b in &info.balances {
+            self.set_balance(&b.asset, b.wallet);
+            self.qfl.set_balance(&b.asset, b.wallet);
         }
+        let position = info
+            .positions
+            .into_iter()
+            .find(|p| p.symbol == self.symbols.first().cloned().unwrap_or_default());
+        self.update_position(position);
+        Ok(())
+    }
+
+    /// Refresh the authoritative account view and reconcile every locally
+    /// active order.  The order manager is intentionally the reconciliation
+    /// scope here: an engine may only own orders it journaled, while foreign
+    /// exchange orders must never be silently adopted into strategy state.
+    async fn synchronize_execution_state(&mut self) -> Result<(), EngineError> {
+        self.execution_sync_ready = false;
+        self.sync_account().await?;
+        self.reconcile_pending_orders().await?;
+        self.execution_sync_ready = true;
+        Ok(())
     }
 
     async fn check_timeouts(&mut self) {
@@ -755,7 +895,7 @@ impl<E: Exchange> Engine<E> {
 
     /// Authoritative, non-mutating reconciliation used after a private-stream
     /// gap. Timeout handling owns cancellation; this path only observes state.
-    async fn reconcile_pending_orders(&mut self) {
+    async fn reconcile_pending_orders(&mut self) -> Result<(), EngineError> {
         for cid in self.order_manager.pending_order_ids() {
             let Some(po) = self.order_manager.get(&cid) else {
                 continue;
@@ -773,7 +913,7 @@ impl<E: Exchange> Engine<E> {
                 Ok(status) => status,
                 Err(error) => {
                     tracing::error!(client_id = %cid, %error, "immediate order reconciliation failed; exposure remains active");
-                    continue;
+                    return Err(error.into());
                 }
             };
             let result = if self.order_manager.exchange_order_id(&cid).is_some() {
@@ -794,7 +934,9 @@ impl<E: Exchange> Engine<E> {
             };
             if let Err(error) = result {
                 tracing::error!(client_id = %cid, %error, "invalid immediate order reconciliation");
-                continue;
+                return Err(EngineError::Strategy(format!(
+                    "invalid authoritative order reconciliation for {cid}: {error}"
+                )));
             }
             if matches!(
                 status.status.trim().to_ascii_uppercase().as_str(),
@@ -806,10 +948,12 @@ impl<E: Exchange> Engine<E> {
                 }) {
                     self.execution_halted = true;
                     tracing::error!(client_id = %cid, %error, "terminal reconciliation was not journaled; execution halted");
+                    return Err(error.into());
                 }
             }
         }
         self.order_manager.cleanup_terminal();
+        Ok(())
     }
 
     async fn check_sl_tp(&mut self) {
@@ -949,18 +1093,7 @@ impl<E: Exchange> Engine<E> {
     }
 
     fn equity_check(&mut self) {
-        let usdt = self
-            .balance_names
-            .iter()
-            .position(|n| n == "USDT")
-            .and_then(|i| self.balance_values.get(i).copied())
-            .unwrap_or(0.0);
-        let equity = usdt
-            + self
-                .position
-                .as_ref()
-                .map(|p| p.unrealized_pnl)
-                .unwrap_or(0.0);
+        let equity = self.current_equity();
 
         if equity > self.peak_equity {
             self.peak_equity = equity;
@@ -1000,6 +1133,167 @@ impl<E: Exchange> Engine<E> {
 mod tests {
     use super::*;
 
+    struct StartupSyncExchange {
+        account_error: bool,
+    }
+
+    #[async_trait::async_trait]
+    impl Exchange for StartupSyncExchange {
+        async fn subscribe(
+            &self,
+            _symbols: &[String],
+        ) -> quince_exchange::r#trait::Result<quince_exchange::r#trait::Stream> {
+            let (_tx, rx) = crossbeam_channel::bounded(1);
+            Ok(quince_exchange::r#trait::Stream { rx })
+        }
+
+        async fn place_order(
+            &self,
+            _request: OrderRequest,
+        ) -> quince_exchange::r#trait::Result<String> {
+            Ok("test-order".into())
+        }
+
+        async fn cancel_order(
+            &self,
+            _symbol: &str,
+            _order_id: &str,
+        ) -> quince_exchange::r#trait::Result<()> {
+            Ok(())
+        }
+
+        async fn order_status(
+            &self,
+            symbol: &str,
+            order_id: &str,
+        ) -> quince_exchange::r#trait::Result<quince_exchange::r#trait::OrderStatus> {
+            Ok(quince_exchange::r#trait::OrderStatus {
+                order_id: order_id.into(),
+                symbol: symbol.into(),
+                side: Side::Buy,
+                qty: 0.0,
+                filled_qty: 0.0,
+                price: 0.0,
+                avg_price: 0.0,
+                status: "NEW".into(),
+            })
+        }
+
+        async fn account_info(&self) -> quince_exchange::r#trait::Result<AccountInfo> {
+            if self.account_error {
+                return Err(ExchangeError::Rest("account unavailable".into()));
+            }
+            Ok(AccountInfo {
+                balances: Vec::new(),
+                positions: Vec::new(),
+            })
+        }
+
+        async fn current_price(&self, _symbol: &str) -> quince_exchange::r#trait::Result<f64> {
+            Ok(100.0)
+        }
+    }
+
+    fn startup_sync_engine(
+        account_error: bool,
+    ) -> (Engine<StartupSyncExchange>, std::path::PathBuf) {
+        let path =
+            std::env::temp_dir().join(format!("quince-startup-sync-{}.qfl", uuid::Uuid::new_v4()));
+        std::fs::write(&path, "function on_eval()\nend\n").unwrap();
+        let log_path = path.with_extension("trades.jsonl");
+        let engine = Engine::new(
+            StartupSyncExchange { account_error },
+            &["BTCUSDT".into()],
+            path.to_str().unwrap(),
+            RiskControls::new(quince_risk::RiskConfig::default()),
+            log_path.to_str().unwrap(),
+        )
+        .unwrap();
+        (engine, path)
+    }
+
+    fn remove_startup_sync_artifacts(path: &std::path::Path) {
+        let _ = std::fs::remove_file(path);
+        let _ = std::fs::remove_file(path.with_extension("qfr"));
+        let _ = std::fs::remove_file(path.with_extension("trades.jsonl"));
+        let _ = std::fs::remove_file(path.with_extension("orders.jsonl"));
+    }
+
+    fn test_order() -> Order {
+        Order {
+            symbol: Arc::from("BTCUSDT"),
+            side: Side::Buy,
+            qty: 0.1,
+            price: None,
+            order_type: OrderType::Market,
+            reduce_only: false,
+            stop_loss: None,
+            take_profit: None,
+        }
+    }
+
+    #[tokio::test]
+    async fn startup_sync_allows_empty_read_only_account() {
+        let (mut engine, path) = startup_sync_engine(false);
+        assert!(!engine.execution_sync_ready);
+        engine.synchronize_execution_state().await.unwrap();
+        assert!(engine.execution_sync_ready);
+        remove_startup_sync_artifacts(&path);
+    }
+
+    #[tokio::test]
+    async fn startup_sync_failure_keeps_execution_fail_closed() {
+        let (mut engine, path) = startup_sync_engine(true);
+        assert!(engine.synchronize_execution_state().await.is_err());
+        assert!(!engine.execution_sync_ready);
+        remove_startup_sync_artifacts(&path);
+    }
+
+    #[test]
+    fn current_equity_includes_marked_unrealized_pnl() {
+        let names = vec!["BTC".to_string(), "USDT".to_string()];
+        let values = vec![0.5, 10_000.0];
+        let position = Position {
+            symbol: "BTCUSDT".to_string(),
+            side: PositionSide::Long,
+            size: 0.1,
+            entry_price: 100_000.0,
+            unrealized_pnl: -750.0,
+        };
+
+        assert_eq!(current_equity(&names, &values, Some(&position)), 9_250.0);
+    }
+
+    #[test]
+    fn current_marked_equity_trips_and_latches_drawdown_gate() {
+        let config = quince_risk::RiskConfig {
+            max_drawdown: 0.10,
+            ..quince_risk::RiskConfig::default()
+        };
+        let mut risk = RiskControls::new(config);
+        risk.record_market_data();
+        risk.check_order(&test_order(), 10_000.0, 0.0)
+            .expect("initial equity should establish the high-water mark");
+
+        let equity = current_equity(
+            &["USDT".to_string()],
+            &[9_000.0],
+            Some(&Position {
+                symbol: "BTCUSDT".to_string(),
+                side: PositionSide::Long,
+                size: 0.1,
+                entry_price: 100_000.0,
+                unrealized_pnl: -1_100.0,
+            }),
+        );
+        let error = risk
+            .check_order(&test_order(), equity, 0.0)
+            .expect_err("real marked equity is below the drawdown limit");
+
+        assert!(error.contains("drawdown"));
+        assert!(risk.is_paused());
+    }
+
     #[test]
     fn engine_error_exchange_display() {
         let msg = EngineError::Exchange(ExchangeError::Ws("timeout".into())).to_string();
@@ -1036,5 +1330,19 @@ mod tests {
     fn engine_error_from_exchange_error() {
         let e: EngineError = ExchangeError::Ws("fail".into()).into();
         assert!(matches!(e, EngineError::Exchange(_)));
+    }
+
+    #[test]
+    fn strategy_digest_is_stable_and_content_addressed() {
+        let path = std::env::temp_dir().join(format!("quince-digest-{}.qfl", uuid::Uuid::new_v4()));
+        std::fs::write(&path, "on trade(t) {}\n").unwrap();
+        let path = path.to_str().unwrap();
+
+        let first = strategy_artifact_digest(path).unwrap();
+        let second = strategy_artifact_digest(path).unwrap();
+        assert_eq!(first, second);
+        assert_ne!(first, [0; 32]);
+
+        std::fs::remove_file(path).unwrap();
     }
 }

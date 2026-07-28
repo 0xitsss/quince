@@ -9,7 +9,7 @@
 //! a mutex, or a dashboard client.
 
 use axum::{extract::State, http::StatusCode, response::Html, routing::get, Json, Router};
-use quince::engine::OrderJournal;
+use quince::engine::{OrderJournal, RuntimeTelemetry, RuntimeTelemetrySnapshot};
 use serde::Serialize;
 use std::net::SocketAddr;
 use std::path::PathBuf;
@@ -28,6 +28,7 @@ struct Snapshot {
     unresolved_client_order_ids: Vec<String>,
     last_error: Option<String>,
     journal_refresh_latency_us: u64,
+    execution: RuntimeTelemetrySnapshot,
 }
 
 #[derive(Debug, PartialEq, Eq, Serialize)]
@@ -36,17 +37,22 @@ struct Metrics {
     journal_refresh_latency_us: u64,
     journal_queue_depth: usize,
     journal_worker_dropped_snapshots: u64,
+    market_events: u64,
+    order_intents: u64,
+    suppressed_orders: u64,
 }
 
 struct DashboardState {
     snapshot: RwLock<Snapshot>,
     journal_queue_depth: AtomicUsize,
     journal_worker_dropped_snapshots: AtomicU64,
+    telemetry: std::sync::Arc<RuntimeTelemetry>,
 }
 
 type Shared = Arc<DashboardState>;
 
 pub fn start(addr: SocketAddr, journal_path: PathBuf) -> Result<(), String> {
+    let telemetry = RuntimeTelemetry::global();
     let initial = Snapshot {
         status: "starting",
         generated_at_ms: now_ms(),
@@ -55,11 +61,13 @@ pub fn start(addr: SocketAddr, journal_path: PathBuf) -> Result<(), String> {
         unresolved_client_order_ids: Vec::new(),
         last_error: None,
         journal_refresh_latency_us: 0,
+        execution: telemetry.snapshot(),
     };
     let state = Arc::new(DashboardState {
         snapshot: RwLock::new(initial),
         journal_queue_depth: AtomicUsize::new(0),
         journal_worker_dropped_snapshots: AtomicU64::new(0),
+        telemetry,
     });
     let (tx, rx) = crossbeam_channel::bounded::<Snapshot>(4);
     let worker_state = Arc::clone(&state);
@@ -80,6 +88,7 @@ pub fn start(addr: SocketAddr, journal_path: PathBuf) -> Result<(), String> {
                         records: records.len(),
                         last_error: None,
                         journal_refresh_latency_us: elapsed_us(started),
+                        execution: worker_state.telemetry.snapshot(),
                     },
                     Err(error) => Snapshot {
                         status: "degraded",
@@ -89,6 +98,7 @@ pub fn start(addr: SocketAddr, journal_path: PathBuf) -> Result<(), String> {
                         unresolved_client_order_ids: Vec::new(),
                         last_error: Some(error.to_string()),
                         journal_refresh_latency_us: elapsed_us(started),
+                        execution: worker_state.telemetry.snapshot(),
                     },
                 };
                 // Reserve the metric slot before publishing. `try_send` can
@@ -158,7 +168,11 @@ async fn snapshot(State(state): State<Shared>) -> Result<Json<Snapshot>, StatusC
     state
         .snapshot
         .read()
-        .map(|s| Json(s.clone()))
+        .map(|s| {
+            let mut snapshot = s.clone();
+            snapshot.execution = state.telemetry.snapshot();
+            Json(snapshot)
+        })
         .map_err(|_| StatusCode::SERVICE_UNAVAILABLE)
 }
 
@@ -189,13 +203,16 @@ async fn metrics(State(state): State<Shared>) -> Result<Json<Metrics>, StatusCod
                 state
                     .journal_worker_dropped_snapshots
                     .load(Ordering::Relaxed),
+                state.telemetry.snapshot(),
             ))
         })
         .map_err(|_| StatusCode::SERVICE_UNAVAILABLE)
 }
 
 async fn index() -> Html<&'static str> {
-    Html("<!doctype html><title>Quince</title><style>body{font:16px system-ui;background:#101717;color:#d7fff5;max-width:760px;margin:3rem auto}pre{background:#162322;padding:1rem;border-radius:8px}</style><h1>Quince operator dashboard</h1><p>Read-only. The engine never accepts order commands over HTTP.</p><pre id=s>loading…</pre><script>async function x(){let r=await fetch('/api/v1/state');s.textContent=JSON.stringify(await r.json(),null,2)}x();setInterval(x,1000)</script>")
+    Html(
+        "<!doctype html><title>Quince</title><style>body{font:16px system-ui;background:#101717;color:#d7fff5;max-width:760px;margin:3rem auto}pre{background:#162322;padding:1rem;border-radius:8px}</style><h1>Quince operator dashboard</h1><p>Read-only. The engine never accepts order commands over HTTP.</p><pre id=s>loading…</pre><script>async function x(){let r=await fetch('/api/v1/state');s.textContent=JSON.stringify(await r.json(),null,2)}x();setInterval(x,1000)</script>",
+    )
 }
 
 fn now_ms() -> u64 {
@@ -217,12 +234,21 @@ fn readiness_status(snapshot: &Snapshot, now: u64) -> bool {
         && snapshot.unresolved_client_order_ids.is_empty()
 }
 
-fn snapshot_metrics(snapshot: &Snapshot, now: u64, queue_depth: usize, dropped: u64) -> Metrics {
+fn snapshot_metrics(
+    snapshot: &Snapshot,
+    now: u64,
+    queue_depth: usize,
+    dropped: u64,
+    telemetry: RuntimeTelemetrySnapshot,
+) -> Metrics {
     Metrics {
         snapshot_age_ms: now.saturating_sub(snapshot.generated_at_ms),
         journal_refresh_latency_us: snapshot.journal_refresh_latency_us,
         journal_queue_depth: queue_depth,
         journal_worker_dropped_snapshots: dropped,
+        market_events: telemetry.market_events,
+        order_intents: telemetry.order_intents,
+        suppressed_orders: telemetry.suppressed_orders,
     }
 }
 
@@ -239,6 +265,7 @@ mod tests {
             unresolved_client_order_ids: unresolved.into_iter().map(str::to_owned).collect(),
             last_error: None,
             journal_refresh_latency_us: 1,
+            execution: RuntimeTelemetry::global().snapshot(),
         }
     }
 
@@ -263,7 +290,13 @@ mod tests {
 
     #[test]
     fn metrics_expose_snapshot_latency_and_backpressure_without_clock_underflow() {
-        let metrics = snapshot_metrics(&snapshot("ok", 10_000, vec![]), 9_000, 3, 7);
+        let metrics = snapshot_metrics(
+            &snapshot("ok", 10_000, vec![]),
+            9_000,
+            3,
+            7,
+            RuntimeTelemetry::global().snapshot(),
+        );
         assert_eq!(
             metrics,
             Metrics {
@@ -271,6 +304,9 @@ mod tests {
                 journal_refresh_latency_us: 1,
                 journal_queue_depth: 3,
                 journal_worker_dropped_snapshots: 7,
+                market_events: 0,
+                order_intents: 0,
+                suppressed_orders: 0,
             }
         );
     }

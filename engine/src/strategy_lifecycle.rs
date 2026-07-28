@@ -67,6 +67,10 @@ pub enum StrategyLifecycleError {
     NoRollbackTarget,
     #[error("no active strategy revision is deployed")]
     NoActiveRevision,
+    #[error("strategy version overflow while switching deployment mode")]
+    VersionOverflow,
+    #[error("active strategy revision is not in shadow mode")]
+    ActiveRevisionIsNotShadow,
 }
 
 /// Two-slot deployment register.
@@ -106,6 +110,41 @@ impl StrategyLifecycle {
         let candidate = StrategySlot::new(revision, Vec::new());
         self.previous = self.active.replace(candidate);
         Ok(())
+    }
+
+    /// Install an equivalent revision in another execution mode.  A mode
+    /// transition never mutates the active slot in place: it is a normal,
+    /// rollback-safe deployment with a fresh state checkpoint.
+    pub fn switch_mode(&mut self, mode: DeploymentMode) -> Result<(), StrategyLifecycleError> {
+        let active = self
+            .active()
+            .ok_or(StrategyLifecycleError::NoActiveRevision)?;
+        if active.revision.mode == mode {
+            return Ok(());
+        }
+        let version = active
+            .revision
+            .version
+            .checked_add(1)
+            .ok_or(StrategyLifecycleError::VersionOverflow)?;
+        self.deploy(StrategyRevision::new(
+            version,
+            active.revision.artifact_digest,
+            mode,
+        ))
+    }
+
+    /// Promote only the currently active shadow revision.  The promoted slot
+    /// gets a new version and clean checkpoint, so state observed during
+    /// shadow evaluation cannot leak into live execution.
+    pub fn promote_shadow(&mut self) -> Result<(), StrategyLifecycleError> {
+        let active = self
+            .active()
+            .ok_or(StrategyLifecycleError::NoActiveRevision)?;
+        if active.revision.mode != DeploymentMode::Shadow {
+            return Err(StrategyLifecycleError::ActiveRevisionIsNotShadow);
+        }
+        self.switch_mode(DeploymentMode::Live)
     }
 
     /// Persist a checkpoint for the active revision only.
@@ -212,6 +251,61 @@ mod tests {
         assert_eq!(
             StrategyLifecycle::default().checkpoint(vec![1]),
             Err(StrategyLifecycleError::NoActiveRevision)
+        );
+    }
+
+    #[test]
+    fn switching_mode_creates_a_new_shadow_revision() {
+        let mut lifecycle = StrategyLifecycle::default();
+        lifecycle.deploy(revision(1, DeploymentMode::Live)).unwrap();
+        lifecycle.checkpoint(vec![4]).unwrap();
+
+        lifecycle.switch_mode(DeploymentMode::Shadow).unwrap();
+
+        assert_eq!(lifecycle.active().unwrap().revision.version, 2);
+        assert_eq!(
+            lifecycle.active().unwrap().revision.mode,
+            DeploymentMode::Shadow
+        );
+        assert_eq!(lifecycle.active().unwrap().runtime_state, Vec::<u8>::new());
+        assert_eq!(lifecycle.rollback_target().unwrap().runtime_state, vec![4]);
+        assert!(!lifecycle.execution_enabled());
+    }
+
+    #[test]
+    fn switching_to_current_mode_is_idempotent() {
+        let mut lifecycle = StrategyLifecycle::default();
+        lifecycle
+            .deploy(revision(1, DeploymentMode::Shadow))
+            .unwrap();
+
+        lifecycle.switch_mode(DeploymentMode::Shadow).unwrap();
+
+        assert_eq!(lifecycle.active().unwrap().revision.version, 1);
+        assert!(lifecycle.rollback_target().is_none());
+    }
+
+    #[test]
+    fn shadow_promotion_requires_shadow_and_preserves_artifact_identity() {
+        let mut lifecycle = StrategyLifecycle::default();
+        lifecycle
+            .deploy(revision(1, DeploymentMode::Shadow))
+            .unwrap();
+        lifecycle.checkpoint(vec![9]).unwrap();
+
+        lifecycle.promote_shadow().unwrap();
+
+        assert!(lifecycle.execution_enabled());
+        assert_eq!(lifecycle.active().unwrap().revision.version, 2);
+        assert_eq!(
+            lifecycle.active().unwrap().revision.artifact_digest,
+            [1; 32]
+        );
+        assert!(lifecycle.active().unwrap().runtime_state.is_empty());
+        assert_eq!(lifecycle.rollback_target().unwrap().runtime_state, vec![9]);
+        assert_eq!(
+            lifecycle.promote_shadow(),
+            Err(StrategyLifecycleError::ActiveRevisionIsNotShadow)
         );
     }
 }
