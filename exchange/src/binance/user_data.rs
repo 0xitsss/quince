@@ -15,6 +15,9 @@ use std::time::Duration;
 const KEEPALIVE_INTERVAL: Duration = Duration::from_secs(30 * 60);
 const RECONNECT_DELAY: Duration = Duration::from_secs(1);
 
+type UserDataSocket =
+    tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>;
+
 fn listen_key_url(testnet: bool) -> &'static str {
     if testnet {
         "https://testnet.binancefuture.com/fapi/v1/listenKey"
@@ -83,6 +86,44 @@ fn signal(tx: &crossbeam_channel::Sender<StreamMsg>, reason: impl Into<String>) 
     });
 }
 
+async fn connect_user_stream(testnet: bool, listen_key: &str) -> ExchangeResult<UserDataSocket> {
+    let (socket, _) = tokio_tungstenite::connect_async(stream_url(testnet, listen_key))
+        .await
+        .map_err(|e| ExchangeError::Ws(format!("connect Binance user stream: {e}")))?;
+    Ok(socket)
+}
+
+async fn run_user_data_session(
+    socket: UserDataSocket,
+    client: &reqwest::Client,
+    api_key: &str,
+    testnet: bool,
+    listen_key: &str,
+    tx: &crossbeam_channel::Sender<StreamMsg>,
+) -> ExchangeResult<()> {
+    let (mut writer, mut reader) = socket.split();
+    let mut keepalive_tick = tokio::time::interval(KEEPALIVE_INTERVAL);
+    keepalive_tick.tick().await;
+    loop {
+        tokio::select! {
+            _ = keepalive_tick.tick() => keepalive(client, api_key, testnet, listen_key).await?,
+            message = reader.next() => match message {
+                Some(Ok(tokio_tungstenite::tungstenite::Message::Text(text))) => match parse_user_data_msg(&text) {
+                    Ok(Some(event)) => if tx.try_send(event).is_err() { return Err(ExchangeError::Ws("user-data ingress overflow".into())); },
+                    Ok(None) => {
+                        if text.contains("listenKeyExpired") { return Err(ExchangeError::Ws("Binance listen key expired".into())); }
+                    }
+                    Err(error) => return Err(ExchangeError::Ws(format!("invalid Binance user event: {error}"))),
+                },
+                Some(Ok(tokio_tungstenite::tungstenite::Message::Ping(payload))) => writer.send(tokio_tungstenite::tungstenite::Message::Pong(payload)).await.map_err(|e| ExchangeError::Ws(e.to_string()))?,
+                Some(Ok(tokio_tungstenite::tungstenite::Message::Close(_))) | None => return Err(ExchangeError::Disconnected),
+                Some(Err(error)) => return Err(ExchangeError::Ws(error.to_string())),
+                _ => {}
+            }
+        }
+    }
+}
+
 /// Starts a self-healing private-stream supervisor. Every disconnect, parser
 /// error, queue overflow, or listen-key failure emits `ReconcileRequired`
 /// before reconnecting. Thus a transient stream gap never becomes invisible.
@@ -91,13 +132,16 @@ pub async fn start_user_data_stream(
     testnet: bool,
     tx: crossbeam_channel::Sender<StreamMsg>,
 ) -> ExchangeResult<()> {
-    // Fail subscription before the engine starts when credentials cannot open
-    // a private stream. Reconnects after this point remain observable through
-    // `ReconcileRequired`.
-    let initial_listen_key = create_listen_key(&reqwest::Client::new(), &api_key, testnet).await?;
+    // A returned subscription means both the listen key and the private socket
+    // are live. Starting the engine before that boundary leaves a window where
+    // orders can be submitted without authoritative account/order updates.
+    let initial_client = reqwest::Client::new();
+    let initial_listen_key = create_listen_key(&initial_client, &api_key, testnet).await?;
+    let initial_socket = connect_user_stream(testnet, &initial_listen_key).await?;
     tokio::spawn(async move {
         let client = reqwest::Client::new();
         let mut next_listen_key = Some(initial_listen_key);
+        let mut next_socket = Some(initial_socket);
         loop {
             let listen_key = match next_listen_key.take() {
                 Some(key) => key,
@@ -110,32 +154,17 @@ pub async fn start_user_data_stream(
                     }
                 },
             };
-            let url = stream_url(testnet, &listen_key);
-            let session: ExchangeResult<()> = async {
-                let (socket, _) = tokio_tungstenite::connect_async(&url).await
-                    .map_err(|e| ExchangeError::Ws(format!("connect Binance user stream: {e}")))?;
-                let (mut writer, mut reader) = socket.split();
-                let mut keepalive_tick = tokio::time::interval(KEEPALIVE_INTERVAL);
-                keepalive_tick.tick().await;
-                loop {
-                    tokio::select! {
-                        _ = keepalive_tick.tick() => keepalive(&client, &api_key, testnet, &listen_key).await?,
-                        message = reader.next() => match message {
-                            Some(Ok(tokio_tungstenite::tungstenite::Message::Text(text))) => match parse_user_data_msg(&text) {
-                                Ok(Some(event)) => if tx.try_send(event).is_err() { return Err(ExchangeError::Ws("user-data ingress overflow".into())); },
-                                Ok(None) => {
-                                    if text.contains("listenKeyExpired") { return Err(ExchangeError::Ws("Binance listen key expired".into())); }
-                                }
-                                Err(error) => return Err(ExchangeError::Ws(format!("invalid Binance user event: {error}"))),
-                            },
-                            Some(Ok(tokio_tungstenite::tungstenite::Message::Ping(payload))) => writer.send(tokio_tungstenite::tungstenite::Message::Pong(payload)).await.map_err(|e| ExchangeError::Ws(e.to_string()))?,
-                            Some(Ok(tokio_tungstenite::tungstenite::Message::Close(_))) | None => return Err(ExchangeError::Disconnected),
-                            Some(Err(error)) => return Err(ExchangeError::Ws(error.to_string())),
-                            _ => {}
-                        }
-                    }
+            let socket = match next_socket.take() {
+                Some(socket) => Ok(socket),
+                None => connect_user_stream(testnet, &listen_key).await,
+            };
+            let session = match socket {
+                Ok(socket) => {
+                    run_user_data_session(socket, &client, &api_key, testnet, &listen_key, &tx)
+                        .await
                 }
-            }.await;
+                Err(error) => Err(error),
+            };
             if let Err(error) = session {
                 signal(&tx, format!("private stream gap: {error}"));
             }

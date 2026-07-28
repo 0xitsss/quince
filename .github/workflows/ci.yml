@@ -17,7 +17,7 @@ jobs:
 
       - uses: dtolnay/rust-toolchain@nightly
         with:
-          components: clippy
+          components: clippy, rustfmt
 
       - uses: actions/cache@v4
         with:
@@ -47,8 +47,8 @@ jobs:
       - name: public surface policy
         run: bash tools/verify_public_surface.sh
 
-      - name: cargo fmt
-        run: cargo fmt --all -- --check
+      - name: cargo +nightly fmt
+        run: cargo +nightly fmt --all -- --check
 
       - name: cargo test
         run: cargo test --workspace --all-targets --locked
