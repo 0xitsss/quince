@@ -41,12 +41,26 @@ fn domain_separator() -> [u8; 32] {
 #[serde(tag = "type", rename_all = "camelCase")]
 enum Action<'a> {
     Order(BulkOrder<'a>),
+    Cancel(BulkCancel),
 }
 
 #[derive(Serialize)]
 struct BulkOrder<'a> {
     orders: [WireOrder<'a>; 1],
     grouping: &'a str,
+}
+
+#[derive(Serialize)]
+struct BulkCancel {
+    cancels: [WireCancel; 1],
+}
+
+#[derive(Serialize)]
+struct WireCancel {
+    #[serde(rename = "a")]
+    asset: u32,
+    #[serde(rename = "o")]
+    oid: u64,
 }
 
 #[derive(Serialize)]
@@ -101,6 +115,21 @@ pub fn limit_order_connection_id(
         .map_err(|error| format!("encode Hyperliquid limit order: {error}"))?;
     encoded.extend(nonce.to_be_bytes());
     encoded.push(0); // no vault address
+    Ok(keccak(encoded))
+}
+
+/// Hashes the exact single-order cancel action accepted by Hyperliquid.
+pub fn cancel_connection_id(asset: u32, oid: u64, nonce: u64) -> Result<[u8; 32], String> {
+    if oid == 0 {
+        return Err("invalid Hyperliquid cancel order id".into());
+    }
+    let action = Action::Cancel(BulkCancel {
+        cancels: [WireCancel { asset, oid }],
+    });
+    let mut encoded = rmp_serde::to_vec_named(&action)
+        .map_err(|error| format!("encode Hyperliquid cancel: {error}"))?;
+    encoded.extend(nonce.to_be_bytes());
+    encoded.push(0);
     Ok(keccak(encoded))
 }
 
@@ -180,5 +209,17 @@ mod tests {
         let connection_id = limit_order_connection_id(1, true, "2000.0", "3.5", 1_583_838).unwrap();
         let signature = sign_l1_action(&key, connection_id, HyperliquidNetwork::Mainnet).unwrap();
         assert_eq!(format!("{}{}{:02x}", signature.r, &signature.s[2..], signature.v), "0x77957e58e70f43b6b68581f2dc42011fc384538a2e5b7bf42d5b936f19fbb67360721a8598727230f67080efee48c812a6a4442013fd3b0eed509171bef9f23f1c");
+    }
+
+    #[test]
+    fn canonical_cancel_hash_and_signature_match_the_official_sdk_vector() {
+        let key = SigningKey::from_slice(
+            &hex::decode("e908f86dbb4d55ac876378565aafeabc187f6690f046459397b17d9b9a19688e")
+                .unwrap(),
+        )
+        .unwrap();
+        let connection_id = cancel_connection_id(1, 82_382, 1_583_838).unwrap();
+        let signature = sign_l1_action(&key, connection_id, HyperliquidNetwork::Mainnet).unwrap();
+        assert_eq!(format!("{}{}{:02x}", signature.r, &signature.s[2..], signature.v), "0x02f76cc5b16e0810152fa0e14e7b219f49c361e3325f771544c6f54e157bf9fa17ed0afc11a98596be85d5cd9f86600aad515337318f7ab346e5ccc1b03425d51b");
     }
 }

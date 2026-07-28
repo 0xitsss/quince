@@ -352,6 +352,35 @@ impl HyperliquidExecution {
         parse_order_id(&response)
     }
 
+    /// Prepares a signed cancel payload from fresh metadata.
+    pub fn prepare_cancel(
+        &self,
+        symbol: &str,
+        order_id: &str,
+        meta: &HyperliquidPerpMeta,
+    ) -> Result<PreparedHyperliquidOrder> {
+        let asset = meta.asset(symbol)?;
+        let oid = order_id
+            .parse::<u64>()
+            .ok()
+            .filter(|oid| *oid > 0)
+            .ok_or_else(|| ExchangeError::Order("invalid Hyperliquid exchange order id".into()))?;
+        let nonce = self.next_nonce();
+        let connection_id =
+            signing::cancel_connection_id(asset.index, oid, nonce).map_err(ExchangeError::Order)?;
+        let signature = self.signer.sign_l1_action(connection_id, self.network)?;
+        Ok(PreparedHyperliquidOrder {
+            client_order_id: format!("cancel:{oid}"),
+            nonce,
+            payload: serde_json::json!({
+                "action": {"type": "cancel", "cancels": [{"a": asset.index, "o": oid}]},
+                "signature": signature,
+                "nonce": nonce,
+                "vaultAddress": serde_json::Value::Null,
+            }),
+        })
+    }
+
     /// Validates an intent before it can enter a future signing queue.
     ///
     /// Validation is purposefully strict: unsupported stop-loss/take-profit
@@ -681,6 +710,21 @@ mod tests {
         assert_eq!(prepared.payload["action"]["orders"][0]["a"], 0);
         assert_eq!(prepared.payload["signature"]["v"], 27);
         assert_eq!(prepared.payload["nonce"], prepared.nonce);
+    }
+
+    #[test]
+    fn prepared_cancel_binds_symbol_to_meta_asset() {
+        let execution = adapter(HyperliquidNetwork::Testnet);
+        let meta = HyperliquidPerpMeta::parse(&serde_json::json!({
+            "universe": [{"name": "BTC", "szDecimals": 5}]
+        }))
+        .unwrap();
+        let prepared = execution.prepare_cancel("BTC", "42", &meta).unwrap();
+        assert_eq!(prepared.payload["action"]["cancels"][0]["a"], 0);
+        assert_eq!(prepared.payload["action"]["cancels"][0]["o"], 42);
+        assert!(execution
+            .prepare_cancel("BTC", "not-an-oid", &meta)
+            .is_err());
     }
 
     #[test]
