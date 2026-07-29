@@ -54,6 +54,9 @@ jobs:
       - name: release version contract
         run: bash tools/test_verify_release_version.sh
 
+      - name: benchmark regression contract
+        run: bash tools/test_verify_benchmark_regressions.sh
+
       - name: cargo +nightly fmt
         run: cargo +nightly fmt --all -- --check
 
@@ -70,12 +73,22 @@ jobs:
         run: |
           marker="$(mktemp)"
           trap 'rm -f "$marker"' EXIT
-          cargo bench -p quince-qfl --bench bench -- --noplot
-          cargo bench -p quince-indicators --bench bench -- --noplot
-          cargo bench -p quince-engine --bench bench -- --noplot
-          if [ "${GITHUB_REF}" = "refs/heads/master" ]; then
-            QUINCE_BENCHMARK_ALLOW_BOOTSTRAP=1 \
+          verify_recent_benchmarks() {
+            if [ "${GITHUB_REF}" = "refs/heads/master" ]; then
+              QUINCE_BENCHMARK_ALLOW_BOOTSTRAP=1 \
+                bash tools/verify_benchmark_regressions.sh --since "$marker"
+            else
               bash tools/verify_benchmark_regressions.sh --since "$marker"
-          else
-            bash tools/verify_benchmark_regressions.sh --since "$marker"
-          fi
+            fi
+            touch "$marker"
+          }
+
+          # Run latency-sensitive engine microbenchmarks before sustained CPU
+          # load can distort frequency scaling, and gate each suite separately
+          # so stale estimates can never contaminate a later decision.
+          cargo bench -p quince-engine --bench bench -- --noplot
+          verify_recent_benchmarks
+          cargo bench -p quince-qfl --bench bench -- --noplot
+          verify_recent_benchmarks
+          cargo bench -p quince-indicators --bench bench -- --noplot
+          verify_recent_benchmarks

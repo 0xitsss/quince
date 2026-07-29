@@ -1,6 +1,7 @@
 # Quince Book
 
 - [Introduction](README.md)
+- [Production beta runbook](production-beta.md)
 - [Native indicator catalogue](native-indicators.md)
 - [Writing a native indicator](writing-indicators.md)
 
@@ -36,6 +37,7 @@
 
 ### engine
 
+- [control](api/engine/control.md)
 - [indicators](api/engine/indicators.md)
 - [journal](api/engine/journal.md)
 - [lib](api/engine/index.md)
@@ -144,5 +146,6 @@
 - [okx_import](api/quince/okx_import.md)
 - [replay](api/quince/replay.md)
 - [replay_suite](api/quince/replay_suite.md)
+- [research](api/quince/research.md)
 - [wallet](api/quince/wallet.md)
 - [bin/dump_qfl](api/quince/bin/dump_qfl.md)

@@ -11,6 +11,7 @@ mod mock;
 mod okx_import;
 mod replay;
 mod replay_suite;
+mod research;
 mod wallet;
 
 use quince::engine::{Engine, EngineError, OrderJournal};
@@ -18,6 +19,8 @@ use quince::exchange::r#trait::Exchange;
 use quince::qfl::config::{load_strategy_config, ExchangeKind, Network};
 use quince::qfl::runtime::QflRuntime;
 use quince::risk::{RiskConfig, RiskControls};
+use std::net::SocketAddr;
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 use tracing_subscriber::EnvFilter;
 
@@ -25,10 +28,7 @@ fn start_dashboard_if_enabled(log_path: &str) -> Result<(), EngineError> {
     if !env_flag("QUINCE_DASHBOARD")? {
         return Ok(());
     }
-    let addr = std::env::var("QUINCE_DASHBOARD_ADDR")
-        .unwrap_or_else(|_| "127.0.0.1:3000".into())
-        .parse()
-        .map_err(|e| EngineError::Strategy(format!("invalid QUINCE_DASHBOARD_ADDR: {e}")))?;
+    let addr = dashboard_addr_from_env()?;
     dashboard::start(
         addr,
         std::path::Path::new(log_path).with_extension("orders.jsonl"),
@@ -108,14 +108,32 @@ fn run_operator_command() -> Result<bool, EngineError> {
             return Ok(true);
         }
     }
+    if let [command, directory, capture, output] = args.as_slice() {
+        if command == "research" {
+            let symbol = std::env::var("QUINCE_SYMBOL").unwrap_or_else(|_| "BTCUSDT".into());
+            let report = research::write_report(directory, capture, &symbol, output)
+                .map_err(|error| EngineError::Strategy(error.to_string()))?;
+            println!(
+                "{}",
+                serde_json::json!({
+                    "status": "ok",
+                    "output": output,
+                    "strategies_discovered": report.strategies_discovered,
+                    "strategies_succeeded": report.strategies_succeeded,
+                    "strategies_failed": report.strategies_failed,
+                })
+            );
+            return Ok(true);
+        }
+    }
     let [group, action, path] = args.as_slice() else {
         return Err(EngineError::Strategy(
-            "usage: quince preflight | quince import-okx-depth <symbol> <capture.jsonl> | quince import-okx-trades <symbol> <capture.jsonl> | quince merge-captures <trades.jsonl> <depth.jsonl> <capture.jsonl> | quince replay <strategy.qfl|qfr> <capture.jsonl> | quince replay-suite <strategy-directory> <capture.jsonl> | quince journal <inspect|verify> <orders.jsonl>".into(),
+            "usage: quince preflight | quince import-okx-depth <symbol> <capture.jsonl> | quince import-okx-trades <symbol> <capture.jsonl> | quince merge-captures <trades.jsonl> <depth.jsonl> <capture.jsonl> | quince replay <strategy.qfl|qfr> <capture.jsonl> | quince replay-suite <strategy-directory> <capture.jsonl> | quince research <strategy-directory> <capture.jsonl> <output-directory> | quince journal <inspect|verify> <orders.jsonl>".into(),
         ));
     };
     if group != "journal" || !matches!(action.as_str(), "inspect" | "verify") {
         return Err(EngineError::Strategy(
-            "usage: quince preflight | quince import-okx-depth <symbol> <capture.jsonl> | quince import-okx-trades <symbol> <capture.jsonl> | quince merge-captures <trades.jsonl> <depth.jsonl> <capture.jsonl> | quince replay <strategy.qfl|qfr> <capture.jsonl> | quince replay-suite <strategy-directory> <capture.jsonl> | quince journal <inspect|verify> <orders.jsonl>".into(),
+            "usage: quince preflight | quince import-okx-depth <symbol> <capture.jsonl> | quince import-okx-trades <symbol> <capture.jsonl> | quince merge-captures <trades.jsonl> <depth.jsonl> <capture.jsonl> | quince replay <strategy.qfl|qfr> <capture.jsonl> | quince replay-suite <strategy-directory> <capture.jsonl> | quince research <strategy-directory> <capture.jsonl> <output-directory> | quince journal <inspect|verify> <orders.jsonl>".into(),
         ));
     }
     let records = OrderJournal::recover(path)?;
@@ -152,6 +170,7 @@ fn run_preflight() -> Result<(), EngineError> {
     let live_enabled = env_flag("QUINCE_LIVE")?;
     let shadow_enabled = env_flag("QUINCE_SHADOW")?;
     validate_runtime_modes(is_mock, is_public, live_enabled)?;
+    validate_deployment_flags(live_enabled, shadow_enabled)?;
 
     let strategy =
         std::env::var("QUINCE_STRATEGY").unwrap_or_else(|_| "strategies/test_all.qfl".into());
@@ -175,11 +194,18 @@ fn run_preflight() -> Result<(), EngineError> {
     }
 
     let max_pos = env_f64("QUINCE_MAX_POSITION", 1.0)?;
+    let max_order_notional = env_f64("QUINCE_MAX_ORDER_NOTIONAL", 100_000.0)?;
+    let max_position_notional = env_f64("QUINCE_MAX_POSITION_NOTIONAL", 250_000.0)?;
     let max_dd = env_f64("QUINCE_MAX_DRAWDOWN", 0.05)?;
     let max_freq = env_u32("QUINCE_MAX_ORDER_FREQ", 10)?;
     let max_loss = env_f64("QUINCE_MAX_DAILY_LOSS", 1000.0)?;
     let max_market_data_age_ms = env_u64("QUINCE_MAX_MARKET_DATA_AGE_MS", 5_000)?;
     validate_risk_limits(max_pos, max_dd, max_freq, max_loss, max_market_data_age_ms)?;
+    if max_order_notional <= 0.0 || max_position_notional <= 0.0 {
+        return Err(EngineError::Strategy(
+            "QUINCE_MAX_ORDER_NOTIONAL and QUINCE_MAX_POSITION_NOTIONAL must be positive".into(),
+        ));
+    }
     if live_enabled
         && config.exchange == ExchangeKind::Binance
         && (std::env::var("BINANCE_API_KEY").is_err()
@@ -189,6 +215,15 @@ fn run_preflight() -> Result<(), EngineError> {
             "QUINCE_LIVE=1 requires BINANCE_API_KEY and BINANCE_SECRET_KEY".into(),
         ));
     }
+    validate_hyperliquid_beta_profile(config.exchange, config.network, is_mock, is_public)?;
+
+    let log_path = std::env::var("QUINCE_LOG").unwrap_or_else(|_| "trades.log".into());
+    let journal_path = validate_journal_path(&log_path)?;
+    let dashboard_addr = if env_flag("QUINCE_DASHBOARD")? {
+        Some(dashboard_addr_from_env()?)
+    } else {
+        None
+    };
 
     println!(
         "{}",
@@ -201,9 +236,103 @@ fn run_preflight() -> Result<(), EngineError> {
             "network": format!("{:?}", config.network).to_ascii_lowercase(),
             "input_mode": if is_mock { "mock" } else if is_public { "public" } else { "authenticated" },
             "execution_mode": if shadow_enabled { "shadow" } else if live_enabled { "live" } else { "guarded" },
+            "journal": journal_path,
+            "dashboard_addr": dashboard_addr.map(|address| address.to_string()),
             "risk": { "max_position": max_pos, "max_drawdown": max_dd, "max_order_frequency": max_freq, "max_daily_loss": max_loss, "max_market_data_age_ms": max_market_data_age_ms },
         })
     );
+    Ok(())
+}
+
+/// Dashboard access is intentionally local-only.  This protects a beta
+/// operator from accidentally exposing order/account state on a LAN or the
+/// public internet.  The validation is shared by `preflight` and startup.
+fn dashboard_addr_from_env() -> Result<SocketAddr, EngineError> {
+    let raw = std::env::var("QUINCE_DASHBOARD_ADDR").unwrap_or_else(|_| "127.0.0.1:3000".into());
+    validate_dashboard_address(&raw)
+}
+
+fn validate_dashboard_address(raw: &str) -> Result<SocketAddr, EngineError> {
+    let addr: SocketAddr = raw.parse().map_err(|error| {
+        EngineError::Strategy(format!("invalid QUINCE_DASHBOARD_ADDR: {error}"))
+    })?;
+    if !addr.ip().is_loopback() {
+        return Err(EngineError::Strategy(
+            "QUINCE_DASHBOARD_ADDR must bind to a loopback address".into(),
+        ));
+    }
+    Ok(addr)
+}
+
+/// Validate the durable journal without opening it for writing.  A beta
+/// launch must never create artifacts during preflight and must refuse any
+/// ambiguous order left by a prior process.
+fn validate_journal_path(log_path: &str) -> Result<PathBuf, EngineError> {
+    if log_path.trim().is_empty() {
+        return Err(EngineError::Strategy("QUINCE_LOG must not be empty".into()));
+    }
+    let log_path = Path::new(log_path);
+    if log_path.is_dir() {
+        return Err(EngineError::Strategy(
+            "QUINCE_LOG must name a file, not a directory".into(),
+        ));
+    }
+    let parent = log_path
+        .parent()
+        .filter(|path| !path.as_os_str().is_empty())
+        .unwrap_or_else(|| Path::new("."));
+    if !parent.is_dir() {
+        return Err(EngineError::Strategy(format!(
+            "QUINCE_LOG parent directory does not exist: {}",
+            parent.display()
+        )));
+    }
+    let journal_path = log_path.with_extension("orders.jsonl");
+    let records = OrderJournal::recover(&journal_path)?;
+    let unresolved = OrderJournal::unresolved_client_order_ids(&records);
+    if !unresolved.is_empty() {
+        return Err(EngineError::Strategy(format!(
+            "order journal {} has unresolved orders; reconcile before beta launch",
+            journal_path.display()
+        )));
+    }
+    Ok(journal_path)
+}
+
+/// Hyperliquid beta runs are testnet-only until the authenticated live path
+/// has an independently verified promotion.  This deliberately reads only
+/// the public wallet profile; it never decrypts the private-key file.
+fn validate_hyperliquid_beta_profile(
+    exchange: ExchangeKind,
+    network: Network,
+    is_mock: bool,
+    is_public: bool,
+) -> Result<(), EngineError> {
+    if exchange != ExchangeKind::Hyperliquid || is_mock || is_public {
+        return Ok(());
+    }
+    if network != Network::Testnet {
+        return Err(EngineError::Strategy(
+            "Hyperliquid beta preflight requires @network testnet".into(),
+        ));
+    }
+    let profile = wallet::load_profile()
+        .map_err(EngineError::Strategy)?
+        .ok_or_else(|| {
+            EngineError::Strategy(
+                "Hyperliquid testnet requires a configured wallet; run QUINCE_WALLET_SETUP=1 cargo run"
+                    .into(),
+            )
+        })?;
+    let address = profile.hyperliquid_address.as_bytes();
+    if address.len() != 42
+        || !profile.hyperliquid_address.starts_with("0x")
+        || !address[2..].iter().all(u8::is_ascii_hexdigit)
+    {
+        return Err(EngineError::Strategy(
+            "Hyperliquid wallet profile has an invalid EVM address".into(),
+        ));
+    }
     Ok(())
 }
 
@@ -220,6 +349,16 @@ fn validate_runtime_modes(
     if live_enabled && (is_mock || is_public) {
         return Err(EngineError::Strategy(
             "QUINCE_LIVE cannot be combined with QUINCE_MOCK or QUINCE_PUBLIC".into(),
+        ));
+    }
+    Ok(())
+}
+
+fn validate_deployment_flags(live_enabled: bool, shadow_enabled: bool) -> Result<(), EngineError> {
+    if live_enabled && shadow_enabled {
+        return Err(EngineError::Strategy(
+            "QUINCE_LIVE and QUINCE_SHADOW cannot both be enabled; choose one deployment mode"
+                .into(),
         ));
     }
     Ok(())
@@ -302,6 +441,68 @@ fn apply_shadow_mode<E: Exchange>(
     Ok(())
 }
 
+#[cfg(test)]
+#[allow(clippy::items_after_test_module)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn beta_dashboard_rejects_non_loopback_bindings() {
+        assert!(validate_dashboard_address("0.0.0.0:3000").is_err());
+        assert!(validate_dashboard_address("192.168.1.10:3000").is_err());
+        assert!(validate_dashboard_address("[::1]:3000").is_ok());
+        assert!(validate_dashboard_address("127.0.0.1:3000").is_ok());
+    }
+
+    #[test]
+    fn deployment_flags_do_not_allow_ambiguous_live_shadow_mode() {
+        assert!(validate_deployment_flags(true, true).is_err());
+        assert!(validate_deployment_flags(true, false).is_ok());
+        assert!(validate_deployment_flags(false, true).is_ok());
+    }
+
+    #[test]
+    fn hyperliquid_authenticated_beta_requires_testnet_before_wallet_access() {
+        let error = validate_hyperliquid_beta_profile(
+            ExchangeKind::Hyperliquid,
+            Network::Mainnet,
+            false,
+            false,
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("@network testnet"));
+        assert!(validate_hyperliquid_beta_profile(
+            ExchangeKind::Hyperliquid,
+            Network::Mainnet,
+            false,
+            true,
+        )
+        .is_ok());
+    }
+
+    #[test]
+    fn journal_preflight_is_read_only_and_rejects_bad_parent() {
+        let unique = format!("quince-beta-preflight-missing-{}", std::process::id());
+        let missing = std::env::temp_dir().join(unique).join("trades.log");
+        let error = validate_journal_path(&missing.display().to_string()).unwrap_err();
+        assert!(error
+            .to_string()
+            .contains("parent directory does not exist"));
+
+        let root =
+            std::env::temp_dir().join(format!("quince-beta-preflight-{}", std::process::id()));
+        std::fs::create_dir_all(&root).unwrap();
+        let log = root.join("trades.log");
+        let journal = root.join("trades.orders.jsonl");
+        assert_eq!(
+            validate_journal_path(&log.display().to_string()).unwrap(),
+            journal
+        );
+        assert!(!journal.exists(), "preflight must not create a journal");
+        std::fs::remove_dir_all(root).unwrap();
+    }
+}
+
 #[tokio::main]
 async fn main() -> Result<(), EngineError> {
     if run_operator_command()? {
@@ -327,6 +528,7 @@ async fn main() -> Result<(), EngineError> {
     let live_enabled = env_flag("QUINCE_LIVE")?;
     let shadow_enabled = env_flag("QUINCE_SHADOW")?;
     validate_runtime_modes(is_mock, is_public, live_enabled)?;
+    validate_deployment_flags(live_enabled, shadow_enabled)?;
     let symbol = std::env::var("QUINCE_SYMBOL").unwrap_or_else(|_| "btcusdt".into());
     let strategy =
         std::env::var("QUINCE_STRATEGY").unwrap_or_else(|_| "strategies/test_all.qfl".into());
@@ -341,6 +543,8 @@ async fn main() -> Result<(), EngineError> {
     }
 
     let max_pos = env_f64("QUINCE_MAX_POSITION", 1.0)?;
+    let max_order_notional = env_f64("QUINCE_MAX_ORDER_NOTIONAL", 100_000.0)?;
+    let max_position_notional = env_f64("QUINCE_MAX_POSITION_NOTIONAL", 250_000.0)?;
     let max_dd = env_f64("QUINCE_MAX_DRAWDOWN", 0.05)?;
     let max_freq = env_u32("QUINCE_MAX_ORDER_FREQ", 10)?;
     let max_loss = env_f64("QUINCE_MAX_DAILY_LOSS", 1000.0)?;
@@ -349,6 +553,8 @@ async fn main() -> Result<(), EngineError> {
 
     let risk_config = RiskConfig {
         max_position_size: max_pos,
+        max_order_notional,
+        max_position_notional,
         max_drawdown: max_dd,
         max_order_freq: max_freq,
         max_daily_loss: max_loss,
@@ -412,12 +618,12 @@ async fn main() -> Result<(), EngineError> {
             })?;
         if !wallet::has_private_key().map_err(EngineError::Strategy)? {
             return Err(EngineError::Strategy(
-                "Hyperliquid wallet secret is missing from the system keychain; run QUINCE_WALLET_SETUP=1 cargo run"
+                "Hyperliquid encrypted wallet file is missing; run QUINCE_WALLET_SETUP=1 cargo run"
                     .into(),
             ));
         }
         // Construct the authenticated boundary now, even though mutations are
-        // still gated in the adapter. This validates that the keychain secret
+        // still gated in the adapter. This validates that the encrypted secret
         // belongs to the configured address before any future live session.
         let network = if strategy_config.network == Network::Testnet {
             quince::exchange::hyperliquid::execution::HyperliquidNetwork::Testnet

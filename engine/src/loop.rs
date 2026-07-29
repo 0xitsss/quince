@@ -6,6 +6,10 @@
 //! strategy conditions via QFL runtime, manages order placement/tracking,
 //! applies risk controls, and coordinates all subsystems.
 
+use crate::control::{
+    default_strategy_control_channel, StrategyControlAuditRecord, StrategyControlCommand,
+    StrategyControlReceiver, StrategyControlSender,
+};
 use crate::indicators::{parse_using_strict, IndicatorBank};
 use crate::journal::{JournalError, JournalEvent, OrderJournal};
 use crate::orders::OrderManager;
@@ -23,6 +27,7 @@ use std::time::{Duration, Instant};
 
 const IDLE_SLEEP_MS: u64 = 1;
 const MAX_STREAM_MSGS_PER_ITER: usize = 100;
+const MAX_CONTROL_COMMANDS_PER_ITER: usize = 32;
 
 #[derive(Debug, thiserror::Error)]
 pub enum EngineError {
@@ -68,6 +73,8 @@ pub struct Engine<E: Exchange> {
     symbols: Vec<String>,
 
     orders_rx: crossbeam_channel::Receiver<Order>,
+    control_rx: StrategyControlReceiver,
+    control_sender: StrategyControlSender,
 
     qfl: QflRuntime,
 
@@ -114,6 +121,7 @@ impl<E: Exchange> Engine<E> {
         log_path: &str,
     ) -> Result<Self, EngineError> {
         let (orders_tx, orders_rx) = crossbeam_channel::unbounded();
+        let (control_sender, control_rx) = default_strategy_control_channel();
         // Bind lifecycle identity to the exact input artifact, not a path or
         // placeholder. Operators can tell whether a mode transition refers to
         // the same strategy bytes.
@@ -283,6 +291,8 @@ impl<E: Exchange> Engine<E> {
             exchange,
             symbols: symbols.to_vec(),
             orders_rx,
+            control_rx,
+            control_sender,
             qfl,
             risk,
             logger,
@@ -364,6 +374,20 @@ impl<E: Exchange> Engine<E> {
         Arc::clone(&self.telemetry)
     }
 
+    /// Return a bounded, non-blocking sender for the external control plane.
+    /// Commands enqueued through this handle are only applied by [`Self::run`].
+    pub fn control_sender(&self) -> StrategyControlSender {
+        self.control_sender.clone()
+    }
+
+    /// Snapshot bounded control-plane audit records for an operator API.
+    ///
+    /// The snapshot cannot mutate engine state and is intentionally separate
+    /// from the command sender to preserve the single-owner execution model.
+    pub fn control_audit_records(&self) -> Vec<StrategyControlAuditRecord> {
+        self.control_rx.audit_records()
+    }
+
     pub async fn run(&mut self) -> Result<(), EngineError> {
         // This is deliberately before stream subscription and, more
         // importantly, before the first order dispatch.  A stale account or
@@ -400,6 +424,11 @@ impl<E: Exchange> Engine<E> {
 
             let mut did_work = false;
             let now = Instant::now();
+
+            // Control commands have higher priority than strategy evaluation
+            // and order dispatch. They are still bounded so a flood of API
+            // calls cannot starve market-data processing.
+            did_work |= self.process_pending_control_commands();
 
             // Priority 2: Periodic eval — check FIRST to prevent starvation
             if now >= self.next_eval {
@@ -461,6 +490,69 @@ impl<E: Exchange> Engine<E> {
                 tokio::time::sleep(Duration::from_millis(IDLE_SLEEP_MS)).await;
             }
         }
+    }
+
+    fn apply_control_command(
+        &mut self,
+        command: StrategyControlCommand,
+    ) -> Result<(), EngineError> {
+        match command {
+            StrategyControlCommand::DeployShadow {
+                version,
+                artifact_digest,
+            } => self.deploy_strategy_revision(StrategyRevision::new(
+                version,
+                artifact_digest,
+                DeploymentMode::Shadow,
+            )),
+            StrategyControlCommand::PromoteShadow => self.promote_shadow_strategy(),
+            StrategyControlCommand::Rollback => {
+                self.strategy_lifecycle
+                    .rollback()
+                    .map_err(|error| EngineError::Strategy(error.to_string()))?;
+                self.telemetry.set_revision(
+                    &self
+                        .strategy_lifecycle
+                        .active()
+                        .expect("rolled-back strategy revision")
+                        .revision,
+                );
+                Ok(())
+            }
+            StrategyControlCommand::DemoteToShadow => {
+                self.set_deployment_mode(DeploymentMode::Shadow)
+            }
+            StrategyControlCommand::PauseExecution { reason } => {
+                self.risk.pause(reason);
+                Ok(())
+            }
+            StrategyControlCommand::ResumeExecution => {
+                self.risk.resume();
+                Ok(())
+            }
+        }
+    }
+
+    /// Drain a bounded command batch on the engine-owned thread.
+    ///
+    /// Keeping this separate from [`Self::run`] makes the single-owner
+    /// boundary testable without exposing mutable engine internals to a
+    /// dashboard or other transport layer.
+    fn process_pending_control_commands(&mut self) -> bool {
+        let mut processed = false;
+        for _ in 0..MAX_CONTROL_COMMANDS_PER_ITER {
+            let Ok(request) = self.control_rx.try_recv() else {
+                break;
+            };
+            processed = true;
+            let result = self.apply_control_command(request.command.clone());
+            let audit_result = result.as_ref().map(|_| ()).map_err(ToString::to_string);
+            self.control_rx.record_outcome(request, audit_result);
+            if let Err(error) = result {
+                tracing::warn!(%error, "engine control command rejected");
+            }
+        }
+        processed
     }
 
     async fn on_stream_msg(&mut self, msg: StreamMsg) {
@@ -557,6 +649,7 @@ impl<E: Exchange> Engine<E> {
                 puffin::profile_scope!("StreamMsg::ForceOrder");
             }
             StreamMsg::ReconcileRequired { source, reason } => {
+                self.telemetry.record_stream_integrity_event(&reason);
                 // Private-stream gaps are an integrity boundary, not a log
                 // detail. Refresh account state and query every locally
                 // active order before permitting the normal loop to proceed.
@@ -629,10 +722,12 @@ impl<E: Exchange> Engine<E> {
         // mark. `RiskControls` owns the high-water mark and pauses execution when
         // the real drawdown breaches the configured limit.
         let current_equity = self.current_equity();
-        if let Err(reason) = self
-            .risk
-            .check_order(&order, current_equity, current_position)
-        {
+        if let Err(reason) = self.risk.check_order_with_reference(
+            &order,
+            current_equity,
+            current_position,
+            Some(self.last_price),
+        ) {
             tracing::warn!("risk rejected order: {}", reason);
             return;
         }
@@ -769,9 +864,11 @@ impl<E: Exchange> Engine<E> {
     /// exchange orders must never be silently adopted into strategy state.
     async fn synchronize_execution_state(&mut self) -> Result<(), EngineError> {
         self.execution_sync_ready = false;
+        self.telemetry.set_execution_sync_ready(false);
         self.sync_account().await?;
         self.reconcile_pending_orders().await?;
         self.execution_sync_ready = true;
+        self.telemetry.set_execution_sync_ready(true);
         Ok(())
     }
 
@@ -1248,6 +1345,81 @@ mod tests {
         let (mut engine, path) = startup_sync_engine(true);
         assert!(engine.synchronize_execution_state().await.is_err());
         assert!(!engine.execution_sync_ready);
+        remove_startup_sync_artifacts(&path);
+    }
+
+    #[test]
+    fn control_sender_promotes_shadow_only_after_engine_loop_drains_command() {
+        let (mut engine, path) = startup_sync_engine(false);
+        engine
+            .set_deployment_mode(DeploymentMode::Shadow)
+            .expect("shadow transition succeeds");
+        let sender = engine.control_sender();
+
+        sender
+            .try_submit("engine-test", StrategyControlCommand::PromoteShadow)
+            .expect("command is accepted by bounded queue");
+        assert_eq!(
+            engine.strategy_lifecycle.active().unwrap().revision.mode,
+            DeploymentMode::Shadow,
+            "producer has no mutable access to engine state"
+        );
+
+        assert!(engine.process_pending_control_commands());
+        assert_eq!(
+            engine.strategy_lifecycle.active().unwrap().revision.mode,
+            DeploymentMode::Live
+        );
+        let audit = engine.control_audit_records();
+        assert_eq!(audit.len(), 2);
+        assert_eq!(
+            audit.iter().map(|record| record.status).collect::<Vec<_>>(),
+            vec![
+                crate::control::StrategyControlAuditStatus::Queued,
+                crate::control::StrategyControlAuditStatus::Applied
+            ]
+        );
+        remove_startup_sync_artifacts(&path);
+    }
+
+    #[test]
+    fn control_sender_rolls_back_complete_strategy_slot_inside_engine_loop() {
+        let (mut engine, path) = startup_sync_engine(false);
+        engine
+            .set_deployment_mode(DeploymentMode::Shadow)
+            .expect("shadow transition succeeds");
+        let sender = engine.control_sender();
+        sender
+            .try_submit("engine-test", StrategyControlCommand::Rollback)
+            .expect("command is accepted by bounded queue");
+
+        assert!(engine.process_pending_control_commands());
+        let active = engine.strategy_lifecycle.active().expect("active revision");
+        assert_eq!(active.revision.version, 1);
+        assert_eq!(active.revision.mode, DeploymentMode::Live);
+        remove_startup_sync_artifacts(&path);
+    }
+
+    #[test]
+    fn control_sender_pause_requires_explicit_resume_acknowledgement() {
+        let (mut engine, path) = startup_sync_engine(false);
+        let sender = engine.control_sender();
+        sender
+            .try_submit(
+                "engine-test",
+                StrategyControlCommand::PauseExecution {
+                    reason: "operator kill switch".into(),
+                },
+            )
+            .expect("pause command accepted");
+        assert!(engine.process_pending_control_commands());
+        assert!(engine.risk.is_paused());
+
+        sender
+            .try_submit("engine-test", StrategyControlCommand::ResumeExecution)
+            .expect("resume command accepted");
+        assert!(engine.process_pending_control_commands());
+        assert!(!engine.risk.is_paused());
         remove_startup_sync_artifacts(&path);
     }
 

@@ -21,6 +21,7 @@ use std::fs::File;
 use std::io::{BufRead, BufReader};
 
 const SCHEMA_VERSION: u8 = 1;
+const DEFAULT_INITIAL_EQUITY_QUOTE: f64 = 10_000.0;
 
 #[derive(Debug, thiserror::Error)]
 pub enum ReplayError {
@@ -142,6 +143,26 @@ fn replay_bps_env(name: &str, default: f64) -> Result<f64, ReplayError> {
     }
 }
 
+fn replay_initial_equity_from_env() -> Result<f64, ReplayError> {
+    let value = match std::env::var("QUINCE_REPLAY_INITIAL_EQUITY") {
+        Ok(value) => value.parse::<f64>().map_err(|_| {
+            ReplayError::CostModel("QUINCE_REPLAY_INITIAL_EQUITY must be a finite number".into())
+        })?,
+        Err(std::env::VarError::NotPresent) => DEFAULT_INITIAL_EQUITY_QUOTE,
+        Err(error) => {
+            return Err(ReplayError::CostModel(format!(
+                "read QUINCE_REPLAY_INITIAL_EQUITY: {error}"
+            )))
+        }
+    };
+    if !value.is_finite() || value <= 0.0 {
+        return Err(ReplayError::CostModel(
+            "QUINCE_REPLAY_INITIAL_EQUITY must be finite and greater than zero".into(),
+        ));
+    }
+    Ok(value)
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct ReplaySummary {
     pub schema_version: u8,
@@ -177,6 +198,111 @@ pub struct ReplaySummary {
     pub net_pnl_quote: f64,
     pub ending_position_qty: f64,
     pub ending_mark_price: Option<f64>,
+    /// Mark-to-market statistics sampled after each replay event. Ratios are
+    /// per observation, deliberately not annualized from irregular trade data.
+    pub performance: ReplayPerformance,
+}
+
+/// Reproducible performance statistics for one offline replay.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct ReplayPerformance {
+    pub initial_equity_quote: f64,
+    pub ending_equity_quote: f64,
+    pub net_return_fraction: f64,
+    pub max_drawdown_fraction: f64,
+    pub observations: u64,
+    pub mean_return_per_observation: f64,
+    pub volatility_per_observation: f64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub sharpe_per_observation: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub sortino_per_observation: Option<f64>,
+}
+
+#[derive(Debug)]
+struct EquityTracker {
+    initial_equity_quote: f64,
+    previous_equity_quote: f64,
+    peak_equity_quote: f64,
+    observations: u64,
+    return_count: u64,
+    return_sum: f64,
+    return_sum_sq: f64,
+    downside_return_sq: f64,
+    downside_count: u64,
+    max_drawdown_fraction: f64,
+}
+
+impl EquityTracker {
+    fn new(initial_equity_quote: f64) -> Self {
+        Self {
+            initial_equity_quote,
+            previous_equity_quote: initial_equity_quote,
+            peak_equity_quote: initial_equity_quote,
+            observations: 0,
+            return_count: 0,
+            return_sum: 0.0,
+            return_sum_sq: 0.0,
+            downside_return_sq: 0.0,
+            downside_count: 0,
+            max_drawdown_fraction: 0.0,
+        }
+    }
+
+    fn observe(&mut self, equity_quote: f64) {
+        if !equity_quote.is_finite() {
+            return;
+        }
+        self.observations += 1;
+        if self.previous_equity_quote > 0.0 {
+            let period_return = equity_quote / self.previous_equity_quote - 1.0;
+            if period_return.is_finite() {
+                self.return_count += 1;
+                self.return_sum += period_return;
+                self.return_sum_sq += period_return * period_return;
+                if period_return < 0.0 {
+                    self.downside_count += 1;
+                    self.downside_return_sq += period_return * period_return;
+                }
+            }
+        }
+        self.peak_equity_quote = self.peak_equity_quote.max(equity_quote);
+        if self.peak_equity_quote > 0.0 {
+            self.max_drawdown_fraction = self
+                .max_drawdown_fraction
+                .max((self.peak_equity_quote - equity_quote) / self.peak_equity_quote);
+        }
+        self.previous_equity_quote = equity_quote;
+    }
+
+    fn finish(self, ending_equity_quote: f64) -> ReplayPerformance {
+        let mean = if self.return_count > 0 {
+            self.return_sum / self.return_count as f64
+        } else {
+            0.0
+        };
+        let variance = (self.return_count > 1).then(|| {
+            (self.return_sum_sq - self.return_count as f64 * mean * mean)
+                / (self.return_count - 1) as f64
+        });
+        let volatility = variance.map(|value| value.max(0.0).sqrt()).unwrap_or(0.0);
+        let downside_deviation = (self.downside_count > 0)
+            .then(|| (self.downside_return_sq / self.downside_count as f64).sqrt());
+        ReplayPerformance {
+            initial_equity_quote: self.initial_equity_quote,
+            ending_equity_quote,
+            net_return_fraction: (ending_equity_quote - self.initial_equity_quote)
+                / self.initial_equity_quote,
+            max_drawdown_fraction: self.max_drawdown_fraction,
+            observations: self.observations,
+            mean_return_per_observation: mean,
+            volatility_per_observation: volatility,
+            sharpe_per_observation: (volatility > 0.0).then(|| mean / volatility),
+            sortino_per_observation: downside_deviation
+                .filter(|value| *value > 0.0)
+                .map(|value| mean / value),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, Default)]
@@ -338,23 +464,46 @@ pub fn run(
     replay_path: &str,
     symbol: &str,
 ) -> Result<ReplaySummary, ReplayError> {
-    run_with_cost_model(
+    run_with_settings(
         strategy_path,
         replay_path,
         symbol,
         ReplayCostModel::from_env()?,
+        replay_initial_equity_from_env()?,
     )
 }
 
 /// As [`run`], with explicit cost assumptions for deterministic tests and
 /// programmatic callers. It is still strictly offline paper execution.
+#[cfg(test)]
 pub fn run_with_cost_model(
     strategy_path: &str,
     replay_path: &str,
     symbol: &str,
     cost_model: ReplayCostModel,
 ) -> Result<ReplaySummary, ReplayError> {
+    run_with_settings(
+        strategy_path,
+        replay_path,
+        symbol,
+        cost_model,
+        DEFAULT_INITIAL_EQUITY_QUOTE,
+    )
+}
+
+fn run_with_settings(
+    strategy_path: &str,
+    replay_path: &str,
+    symbol: &str,
+    cost_model: ReplayCostModel,
+    initial_equity_quote: f64,
+) -> Result<ReplaySummary, ReplayError> {
     let cost_model = cost_model.validate()?;
+    if !initial_equity_quote.is_finite() || initial_equity_quote <= 0.0 {
+        return Err(ReplayError::CostModel(
+            "initial equity must be finite and greater than zero".into(),
+        ));
+    }
     if symbol.trim().is_empty() {
         return Err(ReplayError::Invalid {
             line: 0,
@@ -399,9 +548,21 @@ pub fn run_with_cost_model(
         net_pnl_quote: 0.0,
         ending_position_qty: 0.0,
         ending_mark_price: None,
+        performance: ReplayPerformance {
+            initial_equity_quote,
+            ending_equity_quote: initial_equity_quote,
+            net_return_fraction: 0.0,
+            max_drawdown_fraction: 0.0,
+            observations: 0,
+            mean_return_per_observation: 0.0,
+            volatility_per_observation: 0.0,
+            sharpe_per_observation: None,
+            sortino_per_observation: None,
+        },
     };
     let mut book = ReplayBook::default();
     let mut portfolio = PaperPortfolio::default();
+    let mut equity_tracker = EquityTracker::new(initial_equity_quote);
     let mut previous_timestamp_ms = None;
 
     for (index, line) in BufReader::new(file).lines().enumerate() {
@@ -507,8 +668,15 @@ pub fn run_with_cost_model(
                 summary.log_samples.push(log);
             }
         }
+        let mark_price = book.mark_price();
+        let equity_quote = initial_equity_quote
+            + portfolio.realized_gross_pnl_quote
+            + portfolio.unrealized_gross_pnl(mark_price)
+            - summary.fees_quote;
+        equity_tracker.observe(equity_quote);
     }
     summary.finalize_pnl(&portfolio, book.mark_price());
+    summary.performance = equity_tracker.finish(initial_equity_quote + summary.net_pnl_quote);
     Ok(summary)
 }
 
@@ -640,6 +808,21 @@ mod tests {
             .write_all(contents.as_bytes())
             .unwrap();
         path.to_string_lossy().into_owned()
+    }
+
+    #[test]
+    fn equity_tracker_reports_drawdown_and_non_annualized_risk_metrics() {
+        let mut tracker = EquityTracker::new(100.0);
+        tracker.observe(110.0);
+        tracker.observe(99.0);
+        tracker.observe(104.0);
+        let metrics = tracker.finish(104.0);
+        assert_eq!(metrics.initial_equity_quote, 100.0);
+        assert_eq!(metrics.ending_equity_quote, 104.0);
+        assert!((metrics.max_drawdown_fraction - 0.1).abs() < 1e-12);
+        assert_eq!(metrics.observations, 3);
+        assert!(metrics.sharpe_per_observation.is_some());
+        assert!(metrics.sortino_per_observation.is_some());
     }
 
     #[test]

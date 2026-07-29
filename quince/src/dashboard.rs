@@ -8,9 +8,18 @@
 //! crossbeam channel; the engine's latency-sensitive loop never waits on HTTP,
 //! a mutex, or a dashboard client.
 
-use axum::{extract::State, http::StatusCode, response::Html, routing::get, Json, Router};
-use quince::engine::{OrderJournal, RuntimeTelemetry, RuntimeTelemetrySnapshot};
-use serde::Serialize;
+use axum::{
+    extract::{DefaultBodyLimit, State},
+    http::StatusCode,
+    response::Html,
+    routing::{get, post},
+    Json, Router,
+};
+use quince::engine::{
+    OrderJournal, RuntimeTelemetry, RuntimeTelemetrySnapshot, StrategyControlCommand,
+    StrategyControlError, StrategyControlSender,
+};
+use serde::{Deserialize, Serialize};
 use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
@@ -50,6 +59,121 @@ struct DashboardState {
 }
 
 type Shared = Arc<DashboardState>;
+
+/// A lifecycle request accepted by the control-plane transport.
+///
+/// This remains a proposal: the engine owns the matching receiver, validates
+/// lifecycle state, and appends the terminal audit result.
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+#[allow(dead_code)] // Opt-in router; deliberately absent from the default dashboard.
+pub(crate) enum ControlAction {
+    PromoteShadow,
+    Rollback,
+    DemoteToShadow,
+    PauseExecution,
+    ResumeExecution,
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq)]
+#[allow(dead_code)] // Constructed by Axum only when an operator opts in.
+struct ControlRequest {
+    action: ControlAction,
+    requested_by: String,
+    #[serde(default)]
+    reason: Option<String>,
+}
+
+#[allow(dead_code)] // Reached only by the opt-in Axum handler.
+fn command_for(request: &ControlRequest) -> Result<StrategyControlCommand, String> {
+    let command = match request.action {
+        ControlAction::PromoteShadow => StrategyControlCommand::PromoteShadow,
+        ControlAction::Rollback => StrategyControlCommand::Rollback,
+        ControlAction::DemoteToShadow => StrategyControlCommand::DemoteToShadow,
+        ControlAction::PauseExecution => {
+            let reason = request
+                .reason
+                .as_deref()
+                .map(str::trim)
+                .filter(|reason| !reason.is_empty() && reason.len() <= 256)
+                .ok_or_else(|| "pause_execution requires a 1..=256 byte reason".to_owned())?;
+            return Ok(StrategyControlCommand::PauseExecution {
+                reason: reason.to_owned(),
+            });
+        }
+        ControlAction::ResumeExecution => StrategyControlCommand::ResumeExecution,
+    };
+    if request.reason.is_some() {
+        return Err("reason is only accepted for pause_execution".into());
+    }
+    Ok(command)
+}
+
+#[derive(Debug, Serialize)]
+#[allow(dead_code)] // Serialized by the opt-in Axum handler.
+struct ControlAccepted {
+    request_id: u64,
+    status: &'static str,
+}
+
+#[derive(Debug, Serialize)]
+#[allow(dead_code)] // Serialized by the opt-in Axum handler.
+struct ControlRejected {
+    error: String,
+}
+
+/// Returns an opt-in control router. The default dashboard stays read-only.
+/// Callers must pass an engine-created sender: the transport has no mutable
+/// VM, journal, exchange, or receiver access.
+#[allow(dead_code)] // Enabled only by a future explicit control-plane bootstrap.
+pub(crate) fn control_router(sender: StrategyControlSender) -> Router {
+    Router::new()
+        .route("/api/v1/control/commands", post(submit_control_command))
+        .layer(DefaultBodyLimit::max(4 * 1024))
+        .with_state(sender)
+}
+
+#[allow(dead_code)] // Registered only by `control_router`.
+async fn submit_control_command(
+    State(sender): State<StrategyControlSender>,
+    Json(request): Json<ControlRequest>,
+) -> Result<(StatusCode, Json<ControlAccepted>), (StatusCode, Json<ControlRejected>)> {
+    let command = command_for(&request)
+        .map_err(|error| (StatusCode::BAD_REQUEST, Json(ControlRejected { error })))?;
+    match sender.try_submit(request.requested_by, command) {
+        Ok(request_id) => Ok((
+            StatusCode::ACCEPTED,
+            Json(ControlAccepted {
+                request_id,
+                status: "queued",
+            }),
+        )),
+        Err(StrategyControlError::InvalidActor) => Err((
+            StatusCode::BAD_REQUEST,
+            Json(ControlRejected {
+                error: "requested_by must be a non-empty operator identity".into(),
+            }),
+        )),
+        Err(StrategyControlError::QueueFull) => Err((
+            StatusCode::TOO_MANY_REQUESTS,
+            Json(ControlRejected {
+                error: "control queue is full; command was not accepted".into(),
+            }),
+        )),
+        Err(StrategyControlError::Disconnected) => Err((
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(ControlRejected {
+                error: "control loop is unavailable; command was not accepted".into(),
+            }),
+        )),
+        Err(error) => Err((
+            StatusCode::BAD_REQUEST,
+            Json(ControlRejected {
+                error: error.to_string(),
+            }),
+        )),
+    }
+}
 
 pub fn start(addr: SocketAddr, journal_path: PathBuf) -> Result<(), String> {
     let telemetry = RuntimeTelemetry::global();
@@ -186,7 +310,12 @@ async fn health(State(state): State<Shared>) -> StatusCode {
 
 async fn readiness(State(state): State<Shared>) -> StatusCode {
     match state.snapshot.read() {
-        Ok(snapshot) if readiness_status(&snapshot, now_ms()) => StatusCode::OK,
+        Ok(snapshot)
+            if readiness_status(&snapshot, now_ms())
+                && state.telemetry.snapshot().execution_sync_ready =>
+        {
+            StatusCode::OK
+        }
         _ => StatusCode::SERVICE_UNAVAILABLE,
     }
 }
@@ -309,5 +438,74 @@ mod tests {
                 suppressed_orders: 0,
             }
         );
+    }
+
+    fn request(action: ControlAction, requested_by: &str) -> ControlRequest {
+        ControlRequest {
+            action,
+            requested_by: requested_by.into(),
+            reason: None,
+        }
+    }
+
+    #[tokio::test]
+    async fn control_transport_queues_an_auditable_engine_command_without_mutating_engine() {
+        let (sender, receiver) = quince::engine::strategy_control_channel(1, 8).unwrap();
+        let (status, response) = submit_control_command(
+            State(sender),
+            Json(request(ControlAction::PromoteShadow, "operator-42")),
+        )
+        .await
+        .unwrap();
+        assert_eq!(status, StatusCode::ACCEPTED);
+        assert_eq!(response.0.request_id, 1);
+        assert_eq!(response.0.status, "queued");
+
+        let queued = receiver.try_recv().unwrap();
+        assert_eq!(queued.requested_by, "operator-42");
+        assert_eq!(queued.command, StrategyControlCommand::PromoteShadow);
+    }
+
+    #[tokio::test]
+    async fn control_transport_rejects_invalid_actors_and_never_enqueues_them() {
+        let (sender, receiver) = quince::engine::strategy_control_channel(1, 8).unwrap();
+        let rejected =
+            submit_control_command(State(sender), Json(request(ControlAction::Rollback, "  ")))
+                .await
+                .unwrap_err();
+        assert_eq!(rejected.0, StatusCode::BAD_REQUEST);
+        assert!(receiver.try_recv().is_err());
+    }
+
+    #[tokio::test]
+    async fn control_transport_fails_closed_when_the_bounded_engine_queue_is_full() {
+        let (sender, _receiver) = quince::engine::strategy_control_channel(1, 8).unwrap();
+        sender
+            .try_submit("operator-1", StrategyControlCommand::Rollback)
+            .unwrap();
+        let rejected = submit_control_command(
+            State(sender),
+            Json(request(ControlAction::DemoteToShadow, "operator-2")),
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(rejected.0, StatusCode::TOO_MANY_REQUESTS);
+    }
+
+    #[test]
+    fn pause_is_the_only_transport_command_that_accepts_a_bounded_reason() {
+        let mut pause = request(ControlAction::PauseExecution, "operator-42");
+        pause.reason = Some("market-data integrity breach".into());
+        assert_eq!(
+            command_for(&pause).unwrap(),
+            StrategyControlCommand::PauseExecution {
+                reason: "market-data integrity breach".into(),
+            }
+        );
+        assert!(command_for(&request(ControlAction::PauseExecution, "operator-42")).is_err());
+
+        let mut resume = request(ControlAction::ResumeExecution, "operator-42");
+        resume.reason = Some("ignored reason".into());
+        assert!(command_for(&resume).is_err());
     }
 }

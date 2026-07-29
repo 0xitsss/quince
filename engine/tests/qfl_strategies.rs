@@ -175,6 +175,8 @@ fn write_strategy(name: &str, source: &str) -> String {
 fn risk_config() -> RiskControls {
     RiskControls::new(RiskConfig {
         max_position_size: 10.0,
+        max_order_notional: 1_000_000.0,
+        max_position_notional: 1_000_000.0,
         max_drawdown: 0.1,
         max_order_freq: 100,
         max_daily_loss: 10000.0,
@@ -617,6 +619,8 @@ end
     let exchange = MockExchange::new();
     let risk = RiskControls::new(RiskConfig {
         max_position_size: 1.0,
+        max_order_notional: 1_000_000.0,
+        max_position_notional: 1_000_000.0,
         max_drawdown: 0.1,
         max_order_freq: 100,
         max_daily_loss: 10000.0,

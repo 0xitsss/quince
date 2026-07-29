@@ -11,6 +11,9 @@ pub use controls::RiskControls;
 
 pub struct RiskConfig {
     pub max_position_size: f64,
+    pub max_order_notional: f64,
+    /// Maximum marked gross exposure after applying a new non-reduce-only order.
+    pub max_position_notional: f64,
     pub max_drawdown: f64,
     pub max_order_freq: u32,
     pub max_daily_loss: f64,
@@ -21,6 +24,8 @@ impl Default for RiskConfig {
     fn default() -> Self {
         Self {
             max_position_size: 1.0,
+            max_order_notional: 100_000.0,
+            max_position_notional: 250_000.0,
             max_drawdown: 0.05,
             max_order_freq: 10,
             max_daily_loss: 1000.0,

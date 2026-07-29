@@ -31,14 +31,19 @@ crossbeam-channel.workspace = true
 async-trait.workspace = true
 chrono.workspace = true
 hex = "0.4"
-keyring.workspace = true
 k256.workspace = true
 rand.workspace = true
 rpassword.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 sha3.workspace = true
+sha2.workspace = true
 thiserror.workspace = true
 axum.workspace = true
+aes = "0.8"
+cbc = "0.1"
+cipher = "0.4"
+hmac = "0.12"
+pbkdf2 = "0.12"
 puffin = { workspace = true, optional = true }
 puffin_http = { workspace = true, optional = true }

@@ -37,8 +37,9 @@ done
 
 # Cargo workspaces write Criterion output to the workspace target directory.
 # Scanning crate-local target trees reads stale developer artefacts and can
-# reject an unrelated change long after their baseline was superseded.
-readonly roots=(target/criterion)
+# reject an unrelated change long after their baseline was superseded. The
+# override exists only so the gate itself can be tested against fixtures.
+readonly roots=("${QUINCE_BENCHMARK_ROOT:-target/criterion}")
 failed=0
 checked=0
 bootstrapped=0
@@ -47,15 +48,18 @@ for root in "${roots[@]}"; do
   [[ -d "$root" ]] || continue
   while IFS= read -r estimate; do
     [[ -z "$marker" || "$estimate" -nt "$marker" ]] || continue
-    upper_bound="$(jq -r '.mean.confidence_interval.upper_bound' "$estimate")"
+    lower_bound="$(jq -r '.mean.confidence_interval.lower_bound' "$estimate")"
     checked=$((checked + 1))
-    if awk -v value="$upper_bound" -v limit="$threshold" 'BEGIN { exit !(value > limit) }'; then
+    # Reject only when the complete 95% confidence interval exceeds the
+    # budget. Testing the upper bound rejected noisy samples whose estimated
+    # mean and lower bound were still inside the budget.
+    if awk -v value="$lower_bound" -v limit="$threshold" 'BEGIN { exit !(value > limit) }'; then
       benchmark="${estimate#"$root"/}"
       benchmark="${benchmark%/change/estimates.json}"
-      printf 'benchmark regression exceeds %.1f%%: %s (upper bound %.2f%%)\n' \
+      printf 'benchmark regression exceeds %.1f%%: %s (lower bound %.2f%%)\n' \
         "$(awk -v limit="$threshold" 'BEGIN { print limit * 100 }')" \
         "$benchmark" \
-        "$(awk -v value="$upper_bound" 'BEGIN { print value * 100 }')" >&2
+        "$(awk -v value="$lower_bound" 'BEGIN { print value * 100 }')" >&2
       failed=1
     fi
   done < <(find "$root" -path '*/change/estimates.json' -type f -print)

@@ -15,12 +15,12 @@ fi
 work_dir="$(mktemp -d)"
 trap 'rm -rf "$work_dir"' EXIT
 
-find "$source_dir" -maxdepth 1 -type f -name '*.rs' -print0 \
-    | xargs -0 rg --no-filename -o 'name\s*:\s*"(custom_[a-z_]+|signed_volume)"' \
+find "$source_dir" -maxdepth 1 -type f -name '*.rs' \
+    -exec grep -hEo 'name[[:space:]]*:[[:space:]]*"(custom_[a-z_]+|signed_volume)"' {} + \
     | sed -E 's/.*"([^"]+)"/\1/' \
     | sort -u > "$work_dir/registered"
 
-rg -o '^\| `(custom_[a-z_]+|signed_volume)`' "$catalogue" \
+grep -Eo '^\| `(custom_[a-z_]+|signed_volume)`' "$catalogue" \
     | sed -E 's/^\| `([^`]+)`.*/\1/' \
     | sort -u > "$work_dir/documented"
 

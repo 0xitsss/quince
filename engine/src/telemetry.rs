@@ -16,6 +16,12 @@ pub struct RuntimeTelemetrySnapshot {
     pub market_events: u64,
     pub order_intents: u64,
     pub suppressed_orders: u64,
+    /// Exchange-declared stream gaps/overflows requiring reconciliation.
+    pub stream_integrity_events: u64,
+    pub stream_overflows: u64,
+    pub stream_gaps: u64,
+    pub stream_stale_or_other: u64,
+    pub execution_sync_ready: bool,
     /// Number of market events whose full engine handling time was sampled.
     pub market_event_latency_samples: u64,
     /// Approximate percentiles, expressed as conservative upper bounds in µs.
@@ -37,6 +43,11 @@ pub struct RuntimeTelemetry {
     market_events: AtomicU64,
     order_intents: AtomicU64,
     suppressed_orders: AtomicU64,
+    stream_integrity_events: AtomicU64,
+    stream_overflows: AtomicU64,
+    stream_gaps: AtomicU64,
+    stream_stale_or_other: AtomicU64,
+    execution_sync_ready: AtomicU8,
     market_event_latency_ns: [AtomicU64; LATENCY_BUCKETS],
 }
 
@@ -49,6 +60,11 @@ impl Default for RuntimeTelemetry {
             market_events: AtomicU64::new(0),
             order_intents: AtomicU64::new(0),
             suppressed_orders: AtomicU64::new(0),
+            stream_integrity_events: AtomicU64::new(0),
+            stream_overflows: AtomicU64::new(0),
+            stream_gaps: AtomicU64::new(0),
+            stream_stale_or_other: AtomicU64::new(0),
+            execution_sync_ready: AtomicU8::new(0),
             market_event_latency_ns: std::array::from_fn(|_| AtomicU64::new(0)),
         }
     }
@@ -91,6 +107,23 @@ impl RuntimeTelemetry {
         self.suppressed_orders.fetch_add(1, Ordering::Relaxed);
     }
 
+    pub fn record_stream_integrity_event(&self, reason: &str) {
+        self.stream_integrity_events.fetch_add(1, Ordering::Relaxed);
+        let normalized = reason.to_ascii_lowercase();
+        if normalized.contains("overflow") {
+            self.stream_overflows.fetch_add(1, Ordering::Relaxed);
+        } else if normalized.contains("gap") {
+            self.stream_gaps.fetch_add(1, Ordering::Relaxed);
+        } else {
+            self.stream_stale_or_other.fetch_add(1, Ordering::Relaxed);
+        }
+    }
+
+    pub fn set_execution_sync_ready(&self, ready: bool) {
+        self.execution_sync_ready
+            .store(u8::from(ready), Ordering::Release);
+    }
+
     /// Records complete market-event handling latency, including indicator and
     /// QFL evaluation. Histogram buckets are powers of two nanoseconds.
     pub fn record_market_event_latency(&self, elapsed: Duration) {
@@ -112,6 +145,11 @@ impl RuntimeTelemetry {
             market_events: self.market_events.load(Ordering::Relaxed),
             order_intents: self.order_intents.load(Ordering::Relaxed),
             suppressed_orders: self.suppressed_orders.load(Ordering::Relaxed),
+            stream_integrity_events: self.stream_integrity_events.load(Ordering::Relaxed),
+            stream_overflows: self.stream_overflows.load(Ordering::Relaxed),
+            stream_gaps: self.stream_gaps.load(Ordering::Relaxed),
+            stream_stale_or_other: self.stream_stale_or_other.load(Ordering::Relaxed),
+            execution_sync_ready: self.execution_sync_ready.load(Ordering::Acquire) != 0,
             market_event_latency_samples: latency.samples,
             market_event_latency_p50_us: latency.p50_us,
             market_event_latency_p95_us: latency.p95_us,
@@ -193,6 +231,11 @@ mod tests {
                 market_events: 1,
                 order_intents: 1,
                 suppressed_orders: 1,
+                stream_integrity_events: 0,
+                stream_overflows: 0,
+                stream_gaps: 0,
+                stream_stale_or_other: 0,
+                execution_sync_ready: false,
                 market_event_latency_samples: 0,
                 market_event_latency_p50_us: 0,
                 market_event_latency_p95_us: 0,

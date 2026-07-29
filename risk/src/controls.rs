@@ -12,6 +12,8 @@ const DEFAULT_MAX_MARKET_DATA_AGE: Duration = Duration::from_secs(5);
 
 pub struct RiskControls {
     pub max_position_size: f64,
+    pub max_order_notional: f64,
+    pub max_position_notional: f64,
     pub max_drawdown: f64,
     pub max_order_freq: u32,
     pub max_daily_loss: f64,
@@ -33,6 +35,8 @@ impl RiskControls {
     pub fn new(config: crate::RiskConfig) -> Self {
         Self {
             max_position_size: config.max_position_size,
+            max_order_notional: config.max_order_notional,
+            max_position_notional: config.max_position_notional,
             max_drawdown: config.max_drawdown,
             max_order_freq: config.max_order_freq,
             max_daily_loss: config.max_daily_loss,
@@ -116,6 +120,16 @@ impl RiskControls {
         current_equity: f64,
         current_position: f64,
     ) -> Result<(), String> {
+        self.check_order_with_reference(order, current_equity, current_position, None)
+    }
+
+    pub fn check_order_with_reference(
+        &mut self,
+        order: &Order,
+        current_equity: f64,
+        current_position: f64,
+        reference_price: Option<f64>,
+    ) -> Result<(), String> {
         if self.paused {
             return Err(format!(
                 "risk execution is paused: {}",
@@ -136,6 +150,18 @@ impl RiskControls {
 
         if !order.qty.is_finite() || order.qty <= 0.0 {
             return Err("order qty must be finite and positive".into());
+        }
+        if let Some(price) = reference_price {
+            if !price.is_finite() || price <= 0.0 {
+                return self.reject_and_pause("reference price must be finite and positive");
+            }
+            let notional = order.qty * price;
+            if !notional.is_finite() || notional > self.max_order_notional {
+                return Err(format!(
+                    "order notional {notional:.8} exceeds max order notional {:.8}",
+                    self.max_order_notional
+                ));
+            }
         }
         if !current_equity.is_finite() {
             return self.reject_and_pause("current equity must be finite");
@@ -160,6 +186,15 @@ impl RiskControls {
                 (current_position + signed_qty).abs(),
                 self.max_position_size
             ));
+        }
+        if let Some(price) = reference_price {
+            let projected_notional = (current_position + signed_qty).abs() * price;
+            if !projected_notional.is_finite() || projected_notional > self.max_position_notional {
+                return Err(format!(
+                    "projected position notional {projected_notional:.8} exceeds max position notional {:.8}",
+                    self.max_position_notional
+                ));
+            }
         }
 
         self.peak_equity = self.peak_equity.max(current_equity);
@@ -234,6 +269,8 @@ mod tests {
     fn risk() -> RiskControls {
         let mut controls = RiskControls::new(crate::RiskConfig {
             max_position_size: 10.0,
+            max_order_notional: 1_000.0,
+            max_position_notional: 5_000.0,
             max_drawdown: 0.1,
             max_order_freq: 5,
             max_daily_loss: 1000.0,
@@ -255,6 +292,20 @@ mod tests {
         let result = r.check_order(&make_order(20.0), 10000.0, 0.0);
         assert!(result.is_err());
         assert!(result.unwrap_err().contains("max position size"));
+    }
+
+    #[test]
+    fn check_order_rejects_notional_at_engine_reference_price() {
+        let mut r = risk();
+        let result = r.check_order_with_reference(&make_order(2.0), 10_000.0, 0.0, Some(600.0));
+        assert!(result.unwrap_err().contains("max order notional"));
+    }
+
+    #[test]
+    fn check_order_rejects_projected_pending_exposure_notional() {
+        let mut r = risk();
+        let result = r.check_order_with_reference(&make_order(1.0), 10_000.0, 9.0, Some(600.0));
+        assert!(result.unwrap_err().contains("max position notional"));
     }
 
     #[test]

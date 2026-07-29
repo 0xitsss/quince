@@ -8,7 +8,7 @@
 [![License](https://img.shields.io/badge/license-AGPL--3.0%20OR%20Commercial-blue?style=for-the-badge)](https://www.gnu.org/licenses/agpl-3.0)
 [![REUSE](https://img.shields.io/badge/REUSE-compliant-green?style=for-the-badge)](https://reuse.software)
 [![Rust](https://img.shields.io/badge/rust-1.80+-orange?style=for-the-badge&logo=rust)](https://www.rust-lang.org)
-[![Version](https://img.shields.io/badge/version-0.7.8-purple?style=for-the-badge)](https://github.com/0xitsss/quince)
+[![Version](https://img.shields.io/badge/version-0.7.9-purple?style=for-the-badge)](https://github.com/0xitsss/quince)
 [![Docs](https://img.shields.io/badge/docs-mdBook-blue?style=for-the-badge&logo=mdbook)](https://0xitsss.github.io/quince)
 [![SonarQube](https://img.shields.io/badge/sonar-passing-brightgreen?style=for-the-badge&logo=sonarcloud)](https://sonarcloud.io/project/overview?id=0xitsss_quince)
 
@@ -44,6 +44,7 @@ trading.
   - [Trading Strategy Lifecycle (hot-reload)](#trading-strategy-lifecycle-hot-reload)
 - [Performance](#performance)
 - [Documentation](#documentation)
+- [Production Beta](#production-beta)
 - [REUSE / SPDX Compliance](#reuse--spdx-compliance)
 - [Version History](#version-history)
 - [License](#license)
@@ -155,11 +156,14 @@ Create or import a dedicated Hyperliquid EVM wallet with hidden input:
 QUINCE_WALLET_SETUP=1 cargo run --locked
 ```
 
-The wizard stores the secret in the OS credential store and only the public
-address in the local profile. Never place a private key in QFL, `.env`, shell
-history, or a repository file. First interactive launch opens this wizard
-automatically; use `QUINCE_SKIP_WALLET_SETUP=1` only for an intentional
-wallet-free session.
+The wizard stores the secret in `~/.config/quince/wallet.enc.json` (or
+`$XDG_CONFIG_HOME/quince`) using AES-256-CBC with encrypt-then-MAC
+authentication; the passphrase is never saved. The public address remains in
+`wallet.json`. For a non-interactive authenticated process, provide
+`QUINCE_WALLET_PASSPHRASE` through a secret manager. Never place a private key
+or passphrase in QFL, `.env`, shell history, or a repository file. First
+interactive launch opens this wizard automatically; use
+`QUINCE_SKIP_WALLET_SETUP=1` only for an intentional wallet-free session.
 
 Live execution is opt-in and requires exchange credentials. Start with the
 relevant testnet/public/shadow workflow and verify reconciliation before
@@ -185,6 +189,14 @@ cargo run --locked --bin quince -- journal verify trades.orders.jsonl
 
 # Inspect compiled QFL bytecode
 cargo run --locked --bin dump_qfl -- strategies/custom_logistic_regression.qfl
+
+# Replay every QFL strategy in a directory and write deterministic JSON + HTML.
+# Fees, slippage, and starting equity are explicit research assumptions.
+QUINCE_SYMBOL=BTCUSDT \
+QUINCE_REPLAY_FEE_BPS=4 \
+QUINCE_REPLAY_SLIPPAGE_BPS=2 \
+QUINCE_REPLAY_INITIAL_EQUITY=10000 \
+  cargo run --locked --bin quince -- research strategies captures/btcusdt.jsonl target/research/btcusdt
 ```
 
 ### Verification
@@ -203,6 +215,19 @@ cargo bench -p quince-engine --bench bench -- --noplot
 
 The full operator and language reference is published in the
 [mdBook](https://0xitsss.github.io/quince/).
+
+## Production Beta
+
+Quince's beta path is deliberately gated: offline preflight → public/shadow →
+costed replay → Binance Futures testnet → tightly limited Binance live. The
+dashboard is loopback-only and read-only; it is not a remote trading console.
+Hyperliquid currently supports wallet onboarding and public data, while its
+authenticated execution boundary remains fail-closed.
+
+Use the [production beta runbook](https://0xitsss.github.io/quince/production-beta.html)
+for exact commands, explicit small risk bounds, promotion criteria, and
+emergency stop/reconciliation procedure. Never put credentials or wallet
+secrets in a repository, QFL file, or shell history.
 
 ---
 
@@ -627,11 +652,12 @@ strategy, documentation, and configuration surface.
 
 | Version | Phase | Changes |
 | ------- | ----- | ------- |
-| v0.7.8 | Current | Compile-time native indicator system with 52 documented indicators, including online logistic regression; strict `@using` validation; expanded exchange contract matrices; mdBook catalogue guarded by CI; SPDX/REUSE coverage and production documentation refresh. |
+| v0.7.9 | Current | Production-beta control plane, execution readiness and stream-integrity telemetry; deterministic research reports with costed replay metrics; notional risk limits; AES-256-CBC + HMAC encrypted wallet files; portable indicator-catalogue CI gate. |
+| v0.7.8 | Previous | Compile-time native indicator system with 52 documented indicators, including online logistic regression; strict `@using` validation; expanded exchange contract matrices; mdBook catalogue guarded by CI; SPDX/REUSE coverage and production documentation refresh. |
 | v0.7.7 | Previous | Production replay toolchain with strict capture validation, costs, deterministic capture merging and OKX import; execution-sync risk gate and marked-equity drawdown protection; all third-party GitHub Actions pinned to immutable commit SHAs |
 | v0.7.5 | 8f | Durable order journal with crash-safe recovery; engine-generated idempotency keys and Binance client-ID reconciliation; hardened Binance request lifecycle; Hyperliquid authenticated execution boundary remains fail-closed pending verified signing vectors |
 | v0.7.6 | 8g | Verified Hyperliquid testnet execution primitives and strict preflight/reconciliation boundaries; strategy lifecycle with Shadow mode; Axum readiness/metrics; public-data DOM scalping signal strategy |
-| v0.7.4 | 8e | Automatic first-run wallet setup using the OS keychain; stricter live-mode and environment validation; read-only Binance public adapter; release Thin LTO; CI quality gates; risk-accounting hardening |
+| v0.7.4 | 8e | Automatic first-run wallet setup; stricter live-mode and environment validation; read-only Binance public adapter; release Thin LTO; CI quality gates; risk-accounting hardening |
 | v0.7.3 | 8d | Exchange directives (`@exchange`, `@network`); Hyperliquid public trades/L2 Book adapter; market-order notional and position-risk hardening |
 | v0.7.2 | 8c | SIMD-accelerated indicators: 6 AVX2 kernels (sum, weighted_sum, sum_and_sum_xy, sum_abs_diff, min_max, sum_sq_diff) — ~3× speedup on large windows; engine criterion benchmarks (28 benches); ringvec_as_chunks for zero-copy SIMD feeding; clippy clean, 965 tests |
 | v0.7.1 | 8b | Fix vm_jmp off-by-one causing infinite loop in compound conditions; fix AND/OR short-circuit rd init; 944 tests |

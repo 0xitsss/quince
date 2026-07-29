@@ -13,7 +13,7 @@ members = [
 resolver = "2"
 
 [workspace.package]
-version = "0.7.8"
+version = "0.7.9"
 edition = "2021"
 license = "AGPL-3.0-only"
 
@@ -33,7 +33,6 @@ puffin = "0.20"
 puffin_http = "0.17"
 simd-json = "0.14"
 crossbeam-channel = "0.5"
-keyring = "3"
 k256 = "0.13"
 rand = "0.8"
 rpassword = "7"
